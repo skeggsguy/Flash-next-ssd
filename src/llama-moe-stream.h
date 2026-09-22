@@ -6,6 +6,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -142,6 +143,15 @@ struct llama_moe_stream_layer {
     std::vector<uint32_t> route_hotness; // [n_expert] decayed selection counts, for eviction
     std::vector<uint8_t>  seen;          // [n_expert] for cold-miss attribution
     int64_t use_counter = 0;
+
+    // Per-layer borrowing log. The global counters in llama_moe_stream_stats sum these, but a
+    // whole-model hit rate cannot say WHICH layers miss - and the miss load is known to be wildly
+    // uneven between layers (see llama_moe_stream_hash_router). Incremented at exactly the sites
+    // that increment the global counters, so sum over layers == global at every moment.
+    // Never decayed, unlike route_hotness: these are cumulative over the run.
+    int64_t n_hit       = 0;
+    int64_t n_miss      = 0;
+    int64_t n_miss_cold = 0;
 
     // scratch for the remap callback
     std::vector<int32_t> uniq;
@@ -284,7 +294,7 @@ struct llama_moe_stream {
 
     size_t size_bufs() const;
 
-    void print_stats() const;
+    void print_stats();
 
     // LLAMA_MOE_STREAM_NO_ZEROCOPY: stage reads through a bounce buffer even when the backend offers
     // a host pointer. Kept as a switch because reading straight into the cache measured no better.
@@ -402,6 +412,14 @@ struct llama_moe_stream {
         int64_t t_io_upload_us = 0;
         int64_t n_slabs_read   = 0;
 
+        // Expert bytes read, split by which of the two runners served them: n_bytes_file is the
+        // set opened from the model's own shards, n_bytes_alt the set opened from
+        // --moe-stream-alt-path. With one runner n_bytes_alt stays 0. The point of the split is
+        // that it is the only in-engine evidence that striping is actually striping: a 53/47 flag
+        // that reads 100/0 is a misconfiguration no throughput number would name.
+        int64_t n_bytes_file = 0;
+        int64_t n_bytes_alt  = 0;
+
         // read latency distribution; see MOE_STREAM_READ_BUCKET_US
         int64_t n_read_bucket[MOE_STREAM_READ_BUCKETS] = {0};
     };
@@ -428,6 +446,45 @@ struct llama_moe_stream {
     void dump_route_hotness_locked() const;
 
     bool dump_hotness = false;
+
+    // LLAMA_MOE_STREAM_TRACE=<path>: the borrowing log proper - every slip, in routing order, as it
+    // is written. The hotness counts above say how often a book was wanted over a whole run; they
+    // cannot say in what ORDER, so they cannot drive a cache simulator or size a reserve shelf
+    // against a replacement policy. This writes the raw selected ids instead and leaves the
+    // arithmetic to sim/ (see sim/README.md for the format and sim/trace_reader.py for a reader).
+    //
+    // Little-endian, packed, no alignment padding. Header once at file start:
+    //     char magic[4] = "MSTR", u32 version = 1, u32 n_expert_used, u32 n_layer
+    // then one record per llama_moe_stream_remap call:
+    //     u8 il, u32 n_tokens, u8 kind (0 = decode single token, 1 = prefill ubatch),
+    //     i16 ids[n_tokens*n_expert_used]
+    //
+    // ~40 MB per 40K-token turn at n_expert_used = 10, which is cheap enough to leave on for a
+    // whole rung. Only the single-wave remap path is traced: a ubatch that touches more experts
+    // than the cache holds goes through llama_moe_stream_wave_ids instead and is NOT in the file.
+    // That is the prefill sweep, whose per-token order carries no information a simulator can use
+    // (every book is touched); decode, which is what the reserve shelf is built against, is here.
+    std::string trace_path;                // LLAMA_MOE_STREAM_TRACE, empty = off
+    FILE *      trace_file    = nullptr;
+    int64_t     trace_records = 0;         // records written since the last flush
+    int64_t     trace_skipped = 0;         // calls whose routing width was not n_expert_used
+    std::vector<int16_t> trace_ids;        // scratch: one record's ids, narrowed to i16
+
+    // The model's routing width (n_expert_used), set at load time. The graph runs its warmup pass
+    // with n_expert_used = n_expert, so a call's own id count cannot be trusted to be the width -
+    // this is what tells a real slip from the 512-wide warmup sweep.
+    uint32_t n_expert_used = 0;
+
+    // open on first use (n_expert_used is only known once a router has run), append one record,
+    // flush. All three are called with mtx held, except trace_close which runs at shutdown.
+    void trace_open_locked(uint32_t n_expert_used);
+    void trace_record_locked(int32_t il, uint32_t n_tokens, uint8_t kind, const int32_t * ids, int64_t n);
+    void trace_flush_locked();
+    void trace_close();
+
+    // streamed layers, i.e. non-null entries of `layers` - the suffix that keeps a model and its
+    // draft head from writing over each other's trace and hotness files
+    int64_t n_streamed_layers() const;
 
     // LLAMA_MOE_STREAM_HOTNESS_JSON=<path>: also write the FULL per-layer selection counts there,
     // rewritten on every dump so the last write is the run's final state. Feeds the keep-manifest

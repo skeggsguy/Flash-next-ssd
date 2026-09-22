@@ -172,6 +172,11 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
         dump_hotness = true;   // the json path implies the dump
     }
 
+    // the borrowing log: every slip in routing order (format documented on llama_moe_stream::trace_path)
+    if (const char * s = std::getenv("LLAMA_MOE_STREAM_TRACE")) {
+        trace_path = s;
+    }
+
     // MUST be read here and not in open_files: create_cache_tensor decides whether to allocate the
     // GPU residency table, and it runs while the model's tensors are being loaded - long before
     // open_files. Parsing this late silently disabled the whole feature.
@@ -204,6 +209,116 @@ llama_moe_stream::~llama_moe_stream() {
     for (auto & w : workers) {
         w.join();
     }
+    // after the workers are gone, so nothing can append to a closed file
+    trace_close();
+}
+
+int64_t llama_moe_stream::n_streamed_layers() const {
+    int64_t n = 0;
+    for (const auto & sl : layers) {
+        n += sl != nullptr;
+    }
+    return n;
+}
+
+// --- the borrowing log ------------------------------------------------------------------------
+//
+// One file per llama_moe_stream instance. A model and its MTP draft head each own one and both
+// would write LLAMA_MOE_STREAM_TRACE, so the streamed-layer count is spliced into the name the
+// same way dump_route_hotness_locked does it: trace.mstr -> trace.48L.mstr / trace.1L.mstr.
+void llama_moe_stream::trace_open_locked(uint32_t n_expert_used_in) {
+    if (trace_file != nullptr || trace_path.empty()) {
+        return;
+    }
+
+    std::string path = trace_path;
+    const size_t dot = path.find_last_of('.');
+    const std::string suffix = "." + std::to_string(n_streamed_layers()) + "L";
+    path = (dot == std::string::npos || path.find('/', dot) != std::string::npos)
+         ? path + suffix
+         : path.substr(0, dot) + suffix + path.substr(dot);
+
+    trace_file = fopen(path.c_str(), "wb");
+    if (trace_file == nullptr) {
+        LLAMA_LOG_WARN("%s: moe stream: cannot write trace %s - the borrowing log is off\n",
+                __func__, path.c_str());
+        trace_path.clear(); // do not retry on every remap
+        return;
+    }
+    // one buffered write per record would be a syscall per token per layer
+    setvbuf(trace_file, nullptr, _IOFBF, 1024*1024);
+
+    const uint32_t version = 1;
+    const uint32_t n_layer = (uint32_t) layers.size();
+    fwrite("MSTR", 1, 4, trace_file);
+    fwrite(&version,          sizeof(uint32_t), 1, trace_file);
+    fwrite(&n_expert_used_in, sizeof(uint32_t), 1, trace_file);
+    fwrite(&n_layer,          sizeof(uint32_t), 1, trace_file);
+
+    LLAMA_LOG_WARN("%s: moe stream: borrowing log -> %s (%u ids per slip, %u floors)\n",
+            __func__, path.c_str(), n_expert_used_in, n_layer);
+}
+
+// Append one call's selected ids. `n` must be n_tokens*n_expert_used: the graph's warmup pass runs
+// with n_expert_used = n_expert (llama-graph.cpp, llm_graph_context's initialiser list), which is a
+// 512-wide sweep of every expert and not routing at all. Those calls are skipped rather than
+// recorded, so every record in the file has the one stride the header names and no warmup traffic
+// reaches the calibration. (kind 2 is reserved for a future warmup-tagged record.)
+void llama_moe_stream::trace_record_locked(int32_t il, uint32_t n_tokens, uint8_t kind, const int32_t * ids, int64_t n) {
+    if (trace_path.empty() && trace_file == nullptr) {
+        return;
+    }
+    if (n_expert_used == 0 || il < 0 || il > 0xff) {
+        return;
+    }
+    if (n != (int64_t) n_tokens * (int64_t) n_expert_used) {
+        trace_skipped++; // warmup sweep, or a routing width we cannot describe
+        return;
+    }
+
+    trace_open_locked(n_expert_used);
+    if (trace_file == nullptr) {
+        return;
+    }
+
+    // i16 is enough for every expert count this engine streams (n_expert < 32768 is asserted at
+    // registration below); narrowing here halves the file against the graph's i32 ids
+    trace_ids.resize((size_t) n);
+    for (int64_t i = 0; i < n; i++) {
+        trace_ids[i] = (int16_t) ids[i];
+    }
+
+    const uint8_t  il_u8 = (uint8_t) il;
+    fwrite(&il_u8,   sizeof(uint8_t),  1, trace_file);
+    fwrite(&n_tokens, sizeof(uint32_t), 1, trace_file);
+    fwrite(&kind,    sizeof(uint8_t),  1, trace_file);
+    fwrite(trace_ids.data(), sizeof(int16_t), (size_t) n, trace_file);
+
+    // flushed periodically so a server killed mid-run still leaves a readable trace, and so the
+    // reader's "a truncated tail is a truncated tail" rule has something to be true about
+    if (++trace_records >= 4096) {
+        trace_flush_locked();
+    }
+}
+
+void llama_moe_stream::trace_flush_locked() {
+    if (trace_file != nullptr) {
+        fflush(trace_file);
+        trace_records = 0;
+    }
+}
+
+void llama_moe_stream::trace_close() {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (trace_file != nullptr) {
+        fclose(trace_file);
+        trace_file = nullptr;
+    }
+    if (trace_skipped > 0) {
+        LLAMA_LOG_WARN("%s: moe stream: borrowing log skipped %" PRId64 " calls whose routing width "
+                       "was not %u (the graph's warmup pass routes to every expert)\n",
+                __func__, trace_skipped, n_expert_used);
+    }
 }
 
 ggml_tensor * llama_moe_stream::create_cache_tensor(
@@ -214,6 +329,9 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
     GGML_ASSERT(meta->ne[2] > 0 && meta->ne[3] == 1);
 
     const uint32_t n_expert  = meta->ne[2];
+    // the borrowing log narrows selected ids to i16; every MoE this engine streams is far below
+    // that, and an expert pool that was not would silently corrupt the trace
+    GGML_ASSERT(n_expert <= 32767);
     const size_t   nb_expert = ggml_nbytes(meta) / n_expert;
     GGML_ASSERT(nb_expert * n_expert == ggml_nbytes(meta));
     GGML_ASSERT(n_slots > 0 && n_slots < n_expert);
@@ -644,6 +762,11 @@ void llama_moe_stream::worker_loop() {
         stats.t_io_read_us   += t1 - t0;
         stats.t_io_upload_us += ok ? t2 - t1 : 0;
         stats.n_slabs_read   += 1;
+        if (ok) {
+            // which runner fetched it. With one runner every byte is n_bytes_file; patch 4b makes
+            // the choice at the read above and counts the annex's share into n_bytes_alt.
+            stats.n_bytes_file += (int64_t) wt.nb_expert;
+        }
 
         {
             int b = 0;
@@ -830,6 +953,16 @@ void llama_moe_stream::maybe_dump_stats_locked() {
             LLAMA_LOG_WARN("%s: moe stream: read us <100/<250/<500/<1k/<2k/<4k/<8k/more = %s | "
                            "page-cache L2 %4.1f%%\n",
                     __func__, hist, d_sl > 0 ? 100.0*fast/d_sl : 0.0);
+
+            // which runner served the window's bytes. A 53/47 split that reads 100/0 is a
+            // misconfiguration, and no throughput number would name it.
+            const int64_t d_bf = stats.n_bytes_file - stats_prev.n_bytes_file;
+            const int64_t d_ba = stats.n_bytes_alt  - stats_prev.n_bytes_alt;
+            const int64_t d_bt = d_bf + d_ba;
+            LLAMA_LOG_WARN("%s: moe stream: expert bytes file/alt = %7.2f/%7.2f MiB (%4.1f%%/%4.1f%%)\n",
+                    __func__, d_bf/1048576.0, d_ba/1048576.0,
+                    d_bt > 0 ? 100.0*d_bf/d_bt : 0.0,
+                    d_bt > 0 ? 100.0*d_ba/d_bt : 0.0);
         }
 
         if (n_slot_chk > 0) {
@@ -967,6 +1100,18 @@ void llama_moe_stream::dump_route_hotness_locked() const {
             }
             fprintf(f, "]");
         }
+        fprintf(f, "\n  },\n  \"hits\": {");
+        // Per-layer hit/miss/cold-miss beside the selection counts. Unlike "layers" these never
+        // decay, so they are the run's whole history whatever LLAMA_MOE_STREAM_HOT_DECAY says.
+        first_layer = true;
+        for (const auto & sl : layers) {
+            if (sl == nullptr || sl->route_hotness.empty()) {
+                continue;
+            }
+            fprintf(f, "%s\n    \"%d\": [%" PRId64 ",%" PRId64 ",%" PRId64 "]",
+                    first_layer ? "" : ",", sl->il, sl->n_hit, sl->n_miss, sl->n_miss_cold);
+            first_layer = false;
+        }
         fprintf(f, "\n  }\n}\n");
         fclose(f);
         if (rename(tmp.c_str(), path.c_str()) != 0) {
@@ -976,8 +1121,10 @@ void llama_moe_stream::dump_route_hotness_locked() const {
     }
 }
 
-void llama_moe_stream::print_stats() const {
+void llama_moe_stream::print_stats() {
     std::lock_guard<std::mutex> lock(mtx);
+
+    trace_flush_locked();
 
     const int64_t n_touched = stats.n_hit + stats.n_miss;
     LLAMA_LOG_WARN("%s: moe stream: remap calls = %" PRId64 ", expert hits = %" PRId64 ", misses = %" PRId64 " (%" PRId64 " cold), hit rate = %.2f%%\n",
@@ -992,6 +1139,13 @@ void llama_moe_stream::print_stats() const {
     if (n_slot_chk > 0) {
         LLAMA_LOG_WARN("%s: moe stream: gpu slot resolve = %" PRId64 " calls verified, %" PRId64 " mismatches\n",
                 __func__, n_slot_chk, n_slot_bad);
+    }
+    {
+        const int64_t n_bytes = stats.n_bytes_file + stats.n_bytes_alt;
+        LLAMA_LOG_WARN("%s: moe stream: expert bytes read = %.2f GiB file + %.2f GiB alt (%4.1f%%/%4.1f%%)\n",
+                __func__, stats.n_bytes_file/1073741824.0, stats.n_bytes_alt/1073741824.0,
+                n_bytes > 0 ? 100.0*stats.n_bytes_file/n_bytes : 0.0,
+                n_bytes > 0 ? 100.0*stats.n_bytes_alt/n_bytes  : 0.0);
     }
     if (stats.n_slabs_read > 0) {
         for (int b = 0; b < MOE_STREAM_READ_BUCKETS; b++) {
@@ -1112,6 +1266,7 @@ void llama_moe_stream_layer::service_requests(llama_moe_stream & mgr) {
 
         if (!seen[e]) {
             mgr.stats.n_miss_cold++;
+            n_miss_cold++;
         }
 
         // mirror the GPU's decision so the reader threads and a later CPU-path call agree with it
@@ -1124,6 +1279,7 @@ void llama_moe_stream_layer::service_requests(llama_moe_stream & mgr) {
         }
 
         mgr.stats.n_miss++;
+        n_miss++;
         demand_slots.push_back(s);
     }
 
@@ -1189,6 +1345,11 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     mgr->stats.n_calls++;
     mgr->start_workers_locked();
 
+    // the borrowing log. One record per call, before any of the staging below, so a record means
+    // "the router chose this", not "the cache managed to serve it". kind 0 is a single decode
+    // token; a multi-token ubatch reaching the single-wave path is reading in, so it is kind 1.
+    mgr->trace_record_locked(sl->il, (uint32_t) a->ne[1], a->ne[1] == 1 ? 0 : 1, ids, n);
+
     // distinct experts touched by this ubatch, in first-use order
     sl->touched.assign(sl->n_expert, 0);
     sl->uniq.clear();
@@ -1238,6 +1399,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
                 mgr->stats.n_hit_ready++;
             }
             mgr->stats.n_hit++;
+            sl->n_hit++;
             sl->keep[s] = 1;
             sl->demand_slots.push_back(s);
         } else {
@@ -1251,6 +1413,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             }
             if (!sl->seen[e]) {
                 mgr->stats.n_miss_cold++;
+                sl->n_miss_cold++;
             }
             mgr->reserve_slot_locked(*sl, e, v);
             // one work item PER SLAB: the 2-3 slabs of an expert are independent reads, and
@@ -1265,6 +1428,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             }
             // (workers woken per slab inside the loop above)
             mgr->stats.n_miss++;
+            sl->n_miss++;
             waited = true;
             sl->keep[v] = 1;
             sl->demand_slots.push_back(v);
@@ -1846,6 +2010,7 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
                     stats.n_preload_ready++; // resident from the previous wave's preload
                 }
                 stats.n_hit++;
+                sl.n_hit++;
                 sl.keep[s] = 1;
                 sl.demand_slots.push_back(s);
             } else {
@@ -1859,6 +2024,7 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
                 }
                 if (!sl.seen[e]) {
                     stats.n_miss_cold++;
+                    sl.n_miss_cold++;
                 }
                 reserve_slot_locked(sl, e, v);
                 // one work item PER SLAB: the 2-3 slabs of an expert are independent reads, and
@@ -1873,6 +2039,7 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
                 }
                 // (workers woken per slab inside the loop above)
                 stats.n_miss++;
+                sl.n_miss++;
                 waited = true;
                 sl.keep[v] = 1;
                 sl.demand_slots.push_back(v);
@@ -1894,6 +2061,7 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
             }
             if (!sl.seen[e]) {
                 stats.n_miss_cold++;
+                sl.n_miss_cold++;
             }
             reserve_slot_locked(sl, e, v);
             sl.keep[v] = 1;
@@ -2049,6 +2217,10 @@ static std::unique_lock<std::mutex> stage_wave_for_op(llama_moe_stream_layer & s
 
     if (w == 0) {
         mgr->plan_waves_locked(sl, ids, n);
+        // the ubatch's own routing, recorded once per layer rather than once per wave. Always
+        // kind 1: the multi-wave path only runs when a ubatch touches more experts than the cache
+        // holds, which is reading in.
+        mgr->trace_record_locked(sl.il, n_ids > 0 ? (uint32_t) (n/n_ids) : 0, /*kind =*/ 1, ids, n);
     }
     GGML_ASSERT(sl.plan_next_wave == w); // waves must run in order (enforced by the graph ordering token)
 
