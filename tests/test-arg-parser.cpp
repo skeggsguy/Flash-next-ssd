@@ -249,6 +249,34 @@ static void test(void) {
     assert(params.n_predict == 6789);
     assert(params.n_batch == 9090);
 
+    {
+        // two runners: both flags, and the fact that either implies --moe-stream. A split that
+        // parsed as 0 or 100 would run and read every byte off one drive.
+        common_params moe_params;
+        argv = {"binary_name", "-m", "model_file.gguf",
+                "--moe-stream-alt-path", "/annex/m-00001-of-00004.gguf",
+                "--moe-stream-alt-split", "53"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), moe_params, LLAMA_EXAMPLE_COMMON));
+        assert(moe_params.moe_stream_alt_path == "/annex/m-00001-of-00004.gguf");
+        assert(moe_params.moe_stream_alt_split == 53);
+        assert(moe_params.moe_stream == true);
+    }
+
+    {
+        // the default is the two drives' measured throughput share on the study's box
+        common_params moe_params;
+        argv = {"binary_name", "-m", "model_file.gguf",
+                "--moe-stream-alt-path", "/annex/m-00001-of-00004.gguf"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), moe_params, LLAMA_EXAMPLE_COMMON));
+        assert(moe_params.moe_stream_alt_split == 53);
+    }
+
+    for (const char * bad : {"0", "100", "-1"}) {
+        common_params moe_params;
+        argv = {"binary_name", "-m", "model_file.gguf", "--moe-stream-alt-split", bad};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), moe_params, LLAMA_EXAMPLE_COMMON));
+    }
+
     // --draft cannot be used outside llama-speculative
     argv = {"binary_name", "--spec-draft-n-max", "123"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SPECULATIVE));

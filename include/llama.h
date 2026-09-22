@@ -346,6 +346,15 @@ extern "C" {
         uint32_t moe_stream_slots;      // expert cache slots per streamed layer (0 = auto)
         uint64_t moe_stream_budget;     // total cache byte budget, used when slots == 0 (0 = auto heuristic)
         int32_t  moe_stream_io_threads; // expert load I/O threads (<= 0 = default)
+
+        // Two runners: a second, byte-identical copy of the model on another drive, so expert
+        // reads are split across two devices instead of queueing on one. moe_stream_alt_path is
+        // that copy's FIRST shard (its siblings are derived the way the split loader derives
+        // them from -m), and moe_stream_alt_split is the percentage of expert ids served from
+        // the model's own shards - the rest come from the alt copy. NULL = one runner.
+        const char * moe_stream_alt_path;
+        int32_t      moe_stream_alt_split; // 1..99, percent of expert ids on the model's own path
+
         bool     moe_stream_direct;     // use O_DIRECT for expert reads (bypass page cache); falls back if unsupported
 
         // Keep the booleans together to avoid misalignment during copy-by-value.

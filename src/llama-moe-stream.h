@@ -304,6 +304,24 @@ struct llama_moe_stream {
 
     llama_files files; // privately reopened GGUF files, same indices as the loader's
 
+    // Two runners. A second, byte-identical copy of the model lives on another drive and
+    // files_alt holds its shards, opened with the same indices as `files` - the shards are copies,
+    // so a weight's file_idx and offs are the same in both and nothing about the layout changes.
+    // An expert is read from one set or the other by its ID: the first alt_split percent of a
+    // layer's expert ids from `files`, the rest from `files_alt`. Splitting by id rather than by
+    // hotness keeps the proportion stable - hot and cold experts are spread across the range, so
+    // the byte share follows the id share whatever the workload routes to. The percentage is the
+    // two drives' measured throughput share (53/47 on this box), not a guess.
+    llama_files files_alt;
+    std::string alt_path;         // the alt copy's FIRST shard; empty = one runner
+    int32_t     alt_split = 100;  // percent of expert ids served from `files`
+
+    // which of the two sets serves expert `expert` of a layer that has `n_expert` experts
+    bool use_alt(int32_t expert, uint32_t n_expert) const {
+        return !files_alt.empty() && n_expert > 0 &&
+               ((int64_t) expert*100) / (int64_t) n_expert >= (int64_t) alt_split;
+    }
+
     llama_moe_stream_ple ple;
     std::unique_ptr<llama_file> ple_file; // buffered by default
     bool ple_direct = false;              // LLAMA_MOE_STREAM_PLE_DIRECT reads the rows uncached instead
@@ -505,6 +523,13 @@ struct llama_moe_stream {
     void stage_wave_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, int32_t w, uint32_t n_ids); // make wave w resident + preload next
     void emit_wave_slots(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int32_t w, uint32_t n_ids, int64_t n_tok); // write the slot ids
 };
+
+// The alt copy's shard list, derived from its first shard exactly as the split loader derives -m's
+// siblings (llama_get_list_splits). Declared here so a test can hold it to that promise: the two
+// sets are indexed by the same file_idx, so a disagreement would read an expert from the wrong
+// shard and change the words without crashing. Throws if `first` is not the first shard of an
+// n_split-way split.
+std::vector<std::string> llama_moe_stream_alt_paths(const std::string & first, size_t n_split);
 
 // Metal servicer entry point (LLAMA_MOE_STREAM_GPU_SLOT=3). Runs on Metal's listener queue with
 // the GPU stalled, so it must do the reads and return. user_data is the llama_moe_stream.

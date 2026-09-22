@@ -596,6 +596,8 @@ struct common_params {
     uint32_t moe_stream_slots      = 0;     // expert cache slots per streamed layer (0 = auto)
     uint64_t moe_stream_budget     = 0;     // total expert cache byte budget, used when slots == 0 (0 = auto)
     int32_t  moe_stream_io_threads = 0;     // expert load I/O threads (<= 0 = default)
+    std::string moe_stream_alt_path;        // two runners: first shard of the copy on the other drive
+    int32_t  moe_stream_alt_split  = 53;    // percent of expert ids served from the model's own path
     bool     moe_stream_direct     = false; // use O_DIRECT for expert reads (bypass page cache)
 
     bool single_turn       = false; // single turn chat conversation

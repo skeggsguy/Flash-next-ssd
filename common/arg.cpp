@@ -2821,6 +2821,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_STREAM_IO_THREADS"));
     add_opt(common_arg(
+        {"--moe-stream-alt-path"}, "FNAME",
+        "two runners: the FIRST shard of a byte-identical copy of the model on another drive. "
+        "Its sibling shards are found beside it exactly as they are for -m. Expert reads are then "
+        "split between the two copies by --moe-stream-alt-split, so two devices are busy at once "
+        "instead of one. Implies --moe-stream",
+        [](common_params & params, const std::string & value) {
+            params.moe_stream = true;
+            params.moe_stream_alt_path = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_STREAM_ALT_PATH"));
+    add_opt(common_arg(
+        {"--moe-stream-alt-split"}, "N",
+        string_format(
+            "percentage of expert ids served from the model's own shards when --moe-stream-alt-path "
+            "is set; the remaining ids come from the alt copy (default: %d). The split is by expert "
+            "id, not by how hot an expert is, so it is proportional and stable",
+            params.moe_stream_alt_split),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 99) {
+                throw std::invalid_argument("--moe-stream-alt-split must be between 1 and 99");
+            }
+            params.moe_stream = true;
+            params.moe_stream_alt_split = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_STREAM_ALT_SPLIT"));
+    add_opt(common_arg(
         {"--moe-stream-direct"},
         "use O_DIRECT for --moe-stream expert reads (bypass the page cache); implies --moe-stream. "
         "falls back to buffered reads if O_DIRECT is unsupported by the OS or filesystem",

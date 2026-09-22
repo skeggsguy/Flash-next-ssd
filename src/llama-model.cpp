@@ -1636,6 +1636,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             // count: the graph's warmup pass runs with n_expert_used = n_expert, and those calls
             // are a sweep of the whole pool rather than routing.
             pimpl->moe_stream->n_expert_used = hparams.n_expert_used_max();
+            // two runners: the byte-identical copy on the other drive, and the share of expert
+            // ids that stays on the model's own path
+            if (params.moe_stream_alt_path && *params.moe_stream_alt_path) {
+                pimpl->moe_stream->alt_path  = params.moe_stream_alt_path;
+                pimpl->moe_stream->alt_split = std::min(99, std::max(1, params.moe_stream_alt_split));
+            }
             LLAMA_LOG_INFO("%s: MoE expert SSD streaming enabled, %u of %u experts cached per layer, %d I/O threads\n",
                     __func__, n_slots, hparams.n_expert, pimpl->moe_stream->n_io_threads);
         }
@@ -3032,6 +3038,8 @@ llama_model_params llama_model_default_params() {
         /*.moe_stream_slots            =*/ 0,
         /*.moe_stream_budget           =*/ 0,
         /*.moe_stream_io_threads       =*/ 0,
+        /*.moe_stream_alt_path         =*/ nullptr,
+        /*.moe_stream_alt_split        =*/ 53,
         /*.moe_stream_direct           =*/ false,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,

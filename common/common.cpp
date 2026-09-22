@@ -1709,6 +1709,8 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.moe_stream_slots      = params.moe_stream_slots;
     mparams.moe_stream_budget     = params.moe_stream_budget;
     mparams.moe_stream_io_threads = params.moe_stream_io_threads;
+    mparams.moe_stream_alt_path   = params.moe_stream_alt_path.empty() ? nullptr : params.moe_stream_alt_path.c_str();
+    mparams.moe_stream_alt_split  = params.moe_stream_alt_split;
     mparams.moe_stream_direct     = params.moe_stream_direct;
 
     if (params.kv_overrides.empty()) {
