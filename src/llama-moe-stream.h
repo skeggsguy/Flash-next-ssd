@@ -473,15 +473,18 @@ struct llama_moe_stream {
     //
     // Little-endian, packed, no alignment padding. Header once at file start:
     //     char magic[4] = "MSTR", u32 version = 1, u32 n_expert_used, u32 n_layer
-    // then one record per llama_moe_stream_remap call:
-    //     u8 il, u32 n_tokens, u8 kind (0 = decode single token, 1 = prefill ubatch),
+    // then one record per routing call:
+    //     u8 il, u32 n_tokens, u8 kind (0 = a single token, 1 = a multi-token ubatch),
     //     i16 ids[n_tokens*n_expert_used]
     //
     // ~40 MB per 40K-token turn at n_expert_used = 10, which is cheap enough to leave on for a
-    // whole rung. Only the single-wave remap path is traced: a ubatch that touches more experts
-    // than the cache holds goes through llama_moe_stream_wave_ids instead and is NOT in the file.
-    // That is the prefill sweep, whose per-token order carries no information a simulator can use
-    // (every book is touched); decode, which is what the reserve shelf is built against, is here.
+    // whole rung. Two call sites write, both under mtx: llama_moe_stream_remap (the single-wave
+    // path: one decode token is kind 0, a ubatch that fits the cache in one pass is kind 1) and
+    // stage_wave_for_op at wave 0 (the multi-wave path a large ubatch takes; always kind 1, once
+    // per layer per ubatch, not once per wave). The wave path has to be here because route_hotness
+    // is decode-only: without it the prefill sweep would be invisible to the borrowing log. kind
+    // says how many tokens the call routed, not why: with the MTP draft on, a verification ubatch
+    // is several tokens and is written as kind 1.
     std::string trace_path;                // LLAMA_MOE_STREAM_TRACE, empty = off
     FILE *      trace_file    = nullptr;
     int64_t     trace_records = 0;         // records written since the last flush
