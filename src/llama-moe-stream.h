@@ -329,8 +329,19 @@ struct llama_moe_stream {
     size_t  max_nb_expert      = 0;
     int64_t hot_decay_interval = 0; // remap calls between route-hotness halvings (0 = no decay)
 
-    std::vector<std::pair<ggml_backend_buffer_type_t, ggml_context_ptr>> ctxs; // one per buft
+    std::vector<std::pair<ggml_backend_buffer_type_t, ggml_context_ptr>> ctxs; // one per buft, or per chunk
+    std::vector<size_t> ctx_bytes; // cache bytes placed in ctxs[i], same index
     std::vector<ggml_backend_buffer_ptr> bufs;
+
+    // The gentle opening. Each backend buffer is pinned the moment it is created (Metal adds it to
+    // a residency set and requests residency at once), so a desk allocated as one buffer asks the
+    // OS for all of it in one step and the OS has to make room just as fast - by compressing other
+    // processes' memory, or, if it cannot keep up, by swapping. LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB
+    // caps each cache buffer at that size, and LLAMA_MOE_STREAM_ALLOC_PAUSE_MS (default 500 when
+    // chunking) waits between them, so the desk is claimed in steps. 0 = one buffer per buft, as
+    // before. Only where the slabs live changes, never their contents.
+    size_t  alloc_chunk_bytes = 0;
+    int32_t alloc_pause_ms    = 0;
 
     // The GPU slot tables get their own context and buffer, so that turning the feature on leaves
     // the expert-cache buffer byte-for-byte as it is with the feature off. Sharing the cache

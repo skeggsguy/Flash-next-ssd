@@ -15,6 +15,8 @@
 #include <string>       // std::string, for the json path
 #include <cstring>
 #include <stdexcept>
+#include <thread>       // sleep_for, for the gentle opening
+#include <chrono>
 
 #ifdef _WIN32
 #include <malloc.h>
@@ -186,6 +188,14 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
         gpu_slot = std::max(0, atoi(s));
     }
 
+    if (const char * s = std::getenv("LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB")) {
+        alloc_chunk_bytes = (size_t) std::max<int64_t>(0, std::atoll(s)) << 20;
+    }
+    alloc_pause_ms = alloc_chunk_bytes > 0 ? 500 : 0;
+    if (const char * s = std::getenv("LLAMA_MOE_STREAM_ALLOC_PAUSE_MS")) {
+        alloc_pause_ms = std::max(0, atoi(s));
+    }
+
     if (const char * s = std::getenv("LLAMA_MOE_STREAM_LRU")) {
         pure_lru = atoi(s) != 0; // an EMPTY value must mean off, not on
     }
@@ -338,10 +348,16 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
     GGML_ASSERT(nb_expert * n_expert == ggml_nbytes(meta));
     GGML_ASSERT(n_slots > 0 && n_slots < n_expert);
 
+    // the newest context of this buft takes the tensor unless that would push it past the chunk
+    // size; an empty context always takes it, so a slab bigger than a chunk still gets a home
+    const size_t cache_bytes = nb_expert * n_slots;
     ggml_context * ctx = nullptr;
-    for (auto & [cur_buft, cur_ctx] : ctxs) {
-        if (cur_buft == buft) {
-            ctx = cur_ctx.get();
+    for (size_t i = ctxs.size(); i-- > 0;) {
+        if (ctxs[i].first == buft) {
+            if (alloc_chunk_bytes == 0 || ctx_bytes[i] == 0 || ctx_bytes[i] + cache_bytes <= alloc_chunk_bytes) {
+                ctx = ctxs[i].second.get();
+                ctx_bytes[i] += cache_bytes;
+            }
             break;
         }
     }
@@ -356,6 +372,7 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
             throw std::runtime_error("failed to create ggml context for MoE expert streaming");
         }
         ctxs.emplace_back(buft, ctx);
+        ctx_bytes.push_back(cache_bytes);
     }
 
     ggml_tensor * cache = ggml_new_tensor_3d(ctx, meta->type, meta->ne[0], meta->ne[1], n_slots);
@@ -537,10 +554,16 @@ void llama_moe_stream::alloc_bufs(bool no_alloc) {
         }
     }
 
+    size_t n_real = 0;
     for (auto & [buft, ctx_ptr] : ctxs) {
         ggml_context * ctx = ctx_ptr.get();
         if (ggml_get_first_tensor(ctx) == nullptr) {
             continue;
+        }
+
+        // the gentle opening: let the OS make room for the last chunk before pinning the next
+        if (!no_alloc && n_real++ > 0 && alloc_pause_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(alloc_pause_ms));
         }
 
         ggml_backend_buffer_t buf;
