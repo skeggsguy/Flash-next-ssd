@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 
 // Adaptive draft depth controller for MTP speculative decoding (draft-mtp-adaptive).
 //
@@ -21,6 +24,13 @@
 // at the floor max(1, --spec-draft-n-min-adaptive) and stays in
 // [floor, n_max]; --spec-draft-n-max bounds the upper end of the adaptive
 // range.
+//
+// LLAMA_SPEC_ADAPTIVE_CLIMB replaces the climb table: comma-separated thresholds
+// for depth 1, 2, 3, ..., the last one covering every deeper depth (e.g.
+// "2,4,3,3,2" lowers the 3->4 barrier from 10 to 3 for content that is
+// predictable throughout, such as tool calls). Unset keeps the table below; a
+// value that does not parse as positive integers aborts rather than silently
+// running the default. The drop rule is unchanged.
 struct common_speculative_adaptive {
     int n_cur   = 0; // current adaptive draft depth N
     int n_climb = 0; // consecutive verifies that accepted every drafted token
@@ -29,6 +39,15 @@ struct common_speculative_adaptive {
     // consecutive full accepts needed to climb one step from depth N; low at the
     // floor and at depth, high in the middle where acceptance is marginal
     static int climb_threshold(int depth) {
+        return climb_threshold(depth, climb_override());
+    }
+
+    // the same, against an explicit override table (empty: the built-in one)
+    static int climb_threshold(int depth, const std::vector<int> & table) {
+        if (!table.empty()) {
+            const size_t i = (size_t) std::max(1, depth) - 1;
+            return table[std::min(i, table.size() - 1)];
+        }
         switch (depth) {
             case 1: return 2;
             case 2: return 4;
@@ -38,6 +57,40 @@ struct common_speculative_adaptive {
             case 6: return 2;
             default: return 2; // depth >= 7
         }
+    }
+
+    // LLAMA_SPEC_ADAPTIVE_CLIMB, read once; empty means the built-in table
+    static const std::vector<int> & climb_override() {
+        static const std::vector<int> table = parse_climb(std::getenv("LLAMA_SPEC_ADAPTIVE_CLIMB"));
+        return table;
+    }
+
+    // "2,4,3" -> {2, 4, 3}; null or empty -> {}; anything else that is not a list
+    // of positive integers aborts
+    static std::vector<int> parse_climb(const char * s) {
+        std::vector<int> table;
+        if (s == nullptr || *s == '\0') {
+            return table;
+        }
+        const char * p = s;
+        while (true) {
+            char * end = nullptr;
+            const long v = std::strtol(p, &end, 10);
+            if (end == p || v <= 0 || v > 1000000) {
+                fprintf(stderr, "LLAMA_SPEC_ADAPTIVE_CLIMB=\"%s\": expected positive integers separated by commas\n", s);
+                std::abort();
+            }
+            table.push_back((int) v);
+            if (*end == '\0') {
+                break;
+            }
+            if (*end != ',') {
+                fprintf(stderr, "LLAMA_SPEC_ADAPTIVE_CLIMB=\"%s\": expected positive integers separated by commas\n", s);
+                std::abort();
+            }
+            p = end + 1;
+        }
+        return table;
     }
 
     // accumulated (n_draft - n_accepted) needed to drop one step from depth N;

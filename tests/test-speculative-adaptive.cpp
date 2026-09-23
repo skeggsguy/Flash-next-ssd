@@ -205,12 +205,33 @@ static void test_floor(void) {
     assert(ctrl.n_cur == 2);
 }
 
+static void test_climb_override(void) {
+    using A = common_speculative_adaptive;
+
+    // unset or empty keeps the built-in table
+    assert(A::parse_climb(nullptr).empty());
+    assert(A::parse_climb("").empty());
+    assert(A::climb_threshold(3, {}) == 10);
+
+    // a list is read in depth order and its last value covers every deeper depth
+    const std::vector<int> table = A::parse_climb("2,4,3,3,2");
+    assert((table == std::vector<int>{2, 4, 3, 3, 2}));
+    assert(A::climb_threshold(1, table) == 2);
+    assert(A::climb_threshold(3, table) == 3); // the 3->4 barrier, 10 -> 3
+    assert(A::climb_threshold(5, table) == 2);
+    assert(A::climb_threshold(9, table) == 2);
+
+    // one value applies to every depth
+    assert(A::climb_threshold(3, A::parse_climb("5")) == 5);
+}
+
 int main(void) {
     test_reset();
     test_climb();
     test_drop();
     test_full_accept_resets_pressure();
     test_floor();
+    test_climb_override();
 
     printf("test-speculative-adaptive: all tests OK\n\n");
 
