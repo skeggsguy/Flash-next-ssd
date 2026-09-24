@@ -13,6 +13,8 @@
 #import <Metal/Metal.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <mach/mach_time.h>
+#include <sys/time.h>
 
 #undef MIN
 #undef MAX
@@ -54,6 +56,9 @@ struct ggml_metal {
     _Atomic  uint64_t prof_gpu_ns;
     _Atomic  uint64_t prof_cmd_bufs;
 
+    // GGML_METAL_CBLOG: graph_compute calls so far, stamped on each command buffer's line
+    uint64_t cblog_seq;
+
     // capture state
     int capture_compute;
     bool capture_started;
@@ -92,6 +97,8 @@ struct ggml_metal {
     // once set, graph_compute will return GGML_STATUS_FAILED until the backend is recreated
     bool has_error;
 };
+
+static void ggml_metal_cblog_open(void);
 
 ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     GGML_LOG_INFO("%s: allocating\n", __func__);
@@ -159,6 +166,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
             res->prof_group = res->gpu_profile ? dispatch_group_create() : NULL;
             atomic_store(&res->prof_gpu_ns, 0);
             atomic_store(&res->prof_cmd_bufs, 0);
+            ggml_metal_cblog_open();
+            res->cblog_seq = 0;
         }
 
         res->use_graph_optimize = true;
@@ -211,6 +220,74 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 // GPUEndTime/GPUStartTime are Metal's own GPU-side clock, so this measures execution, not the wall
 // time the CPU spent waiting. Only the graph-compute buffers are instrumented - the tensor get/set
 // buffers are not part of the model's compute.
+// GGML_METAL_CBLOG=<path>: one line per graph-compute command buffer and per synchronize, in host
+// seconds (mach_absolute_time, the same clock Metal's GPUStartTime/GPUEndTime use), so the gaps
+// between the GPU finishing one graph and starting the next can be split into waiting for the CPU,
+// encoding, and Metal's own launch latency. Nothing is added to the command buffers themselves.
+//   A <host_s> <unix_s>                              clock anchor, once
+//   G <ctx> <seq> <t_enter> <n_nodes>                 graph_compute entered
+//   B <ctx> <seq> <cb> <t_commit> <gpu_start> <gpu_end> <kernel_start> <kernel_end>
+//   S <ctx> <t_start> <t_end> <jobs> <barriers>       synchronize waited; running totals of GPU jobs
+//                                                     and barriers encoded so far
+static FILE * g_cblog = NULL;
+static pthread_mutex_t g_cblog_mutex = PTHREAD_MUTEX_INITIALIZER;
+static double g_cblog_tick = 0.0;
+
+static double ggml_metal_cblog_now(void) {
+    return mach_absolute_time()*g_cblog_tick;
+}
+
+static void ggml_metal_cblog_close(void) {
+    pthread_mutex_lock(&g_cblog_mutex);
+    if (g_cblog) {
+        fflush(g_cblog);
+    }
+    pthread_mutex_unlock(&g_cblog_mutex);
+}
+
+static void ggml_metal_cblog_open(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char * path = getenv("GGML_METAL_CBLOG");
+        if (!path || !*path) {
+            return;
+        }
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        g_cblog_tick = (double) tb.numer/tb.denom/1e9;
+        g_cblog = fopen(path, "w");
+        if (!g_cblog) {
+            GGML_LOG_ERROR("%s: cannot open GGML_METAL_CBLOG %s\n", __func__, path);
+            return;
+        }
+        setvbuf(g_cblog, NULL, _IOFBF, 1 << 20);
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        fprintf(g_cblog, "A %.9f %.6f\n", ggml_metal_cblog_now(), tv.tv_sec + tv.tv_usec/1e6);
+        atexit(ggml_metal_cblog_close);
+    });
+}
+
+#define GGML_METAL_CBLOG(...) do {                  \
+        if (g_cblog) {                              \
+            pthread_mutex_lock(&g_cblog_mutex);     \
+            fprintf(g_cblog, __VA_ARGS__);          \
+            pthread_mutex_unlock(&g_cblog_mutex);   \
+        }                                           \
+    } while (0)
+
+static void ggml_metal_cblog_track(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf, int cb_idx) {
+    if (!g_cblog) {
+        return;
+    }
+    const uint64_t seq = ctx->cblog_seq;
+    const double t_commit = ggml_metal_cblog_now();
+    [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        GGML_METAL_CBLOG("B %p %llu %d %.9f %.9f %.9f %.9f %.9f\n", (void *) ctx, (unsigned long long) seq, cb_idx,
+                t_commit, [cb GPUStartTime], [cb GPUEndTime], [cb kernelStartTime], [cb kernelEndTime]);
+    }];
+}
+
 static void ggml_metal_prof_track(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf) {
     if (!ctx->gpu_profile) {
         return;
@@ -309,8 +386,14 @@ const char * ggml_metal_get_name(ggml_metal_t ctx) {
 void ggml_metal_synchronize(ggml_metal_t ctx) {
     // wait for any backend operations to finish
     if (ctx->cmd_buf_last) {
+        const double t0 = g_cblog ? ggml_metal_cblog_now() : 0.0;
         [ctx->cmd_buf_last waitUntilCompleted];
         ctx->cmd_buf_last = nil;
+        if (g_cblog) {
+            extern _Atomic uint64_t ggml_metal_n_dispatch, ggml_metal_n_barrier;
+            GGML_METAL_CBLOG("S %p %.9f %.9f %llu %llu\n", (void *) ctx, t0, ggml_metal_cblog_now(),
+                    (unsigned long long) atomic_load(&ggml_metal_n_dispatch), (unsigned long long) atomic_load(&ggml_metal_n_barrier));
+        }
     }
 
     // check status of all command buffers
@@ -592,6 +675,11 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     if (ctx->has_error) {
         GGML_LOG_ERROR("%s: backend is in error state from a previous command buffer failure - recreate the backend to recover\n", __func__);
         return GGML_STATUS_FAILED;
+    }
+
+    if (g_cblog) {
+        ctx->cblog_seq++;
+        GGML_METAL_CBLOG("G %p %llu %.9f %d\n", (void *) ctx, (unsigned long long) ctx->cblog_seq, ggml_metal_cblog_now(), gf->n_nodes);
     }
 
     // number of nodes encoded by the main thread (empirically determined)
@@ -882,6 +970,7 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {
             ggml_metal_prof_track(ctx, cmd_buf);
+            ggml_metal_cblog_track(ctx, cmd_buf, cb_idx);
             [cmd_buf commit];
         }
     });

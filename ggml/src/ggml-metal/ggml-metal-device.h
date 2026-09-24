@@ -377,7 +377,7 @@ bool ggml_metal_device_has_moe_servicer(ggml_metal_device_t dev);
 // back the event so the caller can encode the signal and the wait. Values are handed out in encode
 // order, which is why mode 3 forces a single command buffer - out-of-order values would let a wait
 // be satisfied by an unrelated signal.
-ggml_metal_event_t ggml_metal_device_moe_handshake(ggml_metal_device_t dev, void * state_host, int32_t layer, uint64_t * value);
+ggml_metal_event_t ggml_metal_device_moe_handshake(ggml_metal_device_t dev, void * state_host, int32_t layer, int32_t tail_off, uint64_t * value);
 
 ggml_metal_device_t ggml_metal_device_init(int device, int n_devices);
 void ggml_metal_device_free(ggml_metal_device_t dev);

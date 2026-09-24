@@ -1024,12 +1024,20 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     ggml_tensor * members = ggml_get_rows(ctx0, k_all, inp->blk_cells);
     members = ggml_reshape_4d(ctx0, members, idx_dim, r, n_blocks, n_stream);
 
-    // mean over the block members; r is small, so summing slices beats a transpose plus sum_rows
+    // mean over the block members; r is small, so summing slices beats a transpose plus sum_rows.
+    // LLAMA_QSA_POOL_VIEWS=1 adds the strided slices directly (the binary ops take strided
+    // sources), which drops the r copies - r extra jobs over every block, per layer, per token.
+    static const bool pool_views = [] {
+        const char * e = getenv("LLAMA_QSA_POOL_VIEWS");
+        return e && atoi(e) > 0;
+    }();
     ggml_tensor * pooled = nullptr;
     for (int64_t i = 0; i < r; ++i) {
-        ggml_tensor * slice = ggml_cont(ctx0,
-                ggml_view_3d(ctx0, members, idx_dim, n_blocks, n_stream,
-                        members->nb[2], members->nb[3], i*members->nb[1]));
+        ggml_tensor * slice = ggml_view_3d(ctx0, members, idx_dim, n_blocks, n_stream,
+                members->nb[2], members->nb[3], i*members->nb[1]);
+        if (!pool_views || (r == 1)) {
+            slice = ggml_cont(ctx0, slice);
+        }
         pooled = pooled ? ggml_add(ctx0, pooled, slice) : slice;
     }
     pooled = ggml_scale(ctx0, pooled, 1.0f/(float) r);

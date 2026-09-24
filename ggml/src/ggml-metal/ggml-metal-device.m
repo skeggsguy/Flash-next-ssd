@@ -13,6 +13,7 @@
 #include <stdatomic.h>
 #include <limits.h>
 #include <pthread.h>
+#include <mach/mach_time.h>
 
 #ifndef TARGET_OS_VISION
 #define TARGET_OS_VISION 0
@@ -1279,11 +1280,17 @@ void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder
     [encoder->obj setThreadgroupMemoryLength:size atIndex:idx];
 }
 
+// GGML_METAL_CBLOG: running totals of GPU jobs and barriers, printed on each synchronize line
+_Atomic uint64_t ggml_metal_n_dispatch = 0;
+_Atomic uint64_t ggml_metal_n_barrier  = 0;
+
 void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
+    atomic_fetch_add_explicit(&ggml_metal_n_dispatch, 1, memory_order_relaxed);
     [encoder->obj dispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2) threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
 }
 
 void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
+    atomic_fetch_add_explicit(&ggml_metal_n_barrier, 1, memory_order_relaxed);
     [encoder->obj memoryBarrierWithScope:MTLBarrierScopeBuffers];
 }
 
@@ -1923,6 +1930,7 @@ struct ggml_metal_moe_req {
     ggml_metal_device_t dev;
     void *              state_host;
     int32_t             layer;
+    int32_t             tail_off; // the slot table's tail, in int32s (kernel_moe_slot_resolve's layout)
     uint64_t            reply;
 };
 
@@ -1942,7 +1950,103 @@ static void ggml_metal_moe_cb(void * ud, uint64_t v) {
     free(r);
 }
 
-ggml_metal_event_t ggml_metal_device_moe_handshake(ggml_metal_device_t dev, void * state_host, int32_t layer, uint64_t * value) {
+// GGML_METAL_MOE_POLL=1: answer the handshake from one dedicated thread that polls the event's
+// signaledValue, instead of MTLSharedEventListener's dispatch-queue notification. The notify path
+// measured ~280 us a round trip per layer on M5 Pro (13.4 ms of a 56 ms decode token over 48
+// layers); a poller sees the GPU's signal within microseconds. Requests are answered in the order
+// they were encoded, which is commit order (n_cb is pinned to 1 while a servicer is set). The
+// thread spins only while requests are outstanding and sleeps on a condition variable otherwise.
+struct ggml_metal_moe_poll_item {
+    struct ggml_metal_moe_req       * r;
+    uint64_t                          wait;
+    struct ggml_metal_moe_poll_item * next;
+};
+
+static pthread_mutex_t                   g_moe_poll_mu   = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t                    g_moe_poll_cv   = PTHREAD_COND_INITIALIZER;
+static struct ggml_metal_moe_poll_item * g_moe_poll_head = NULL;
+static struct ggml_metal_moe_poll_item * g_moe_poll_tail = NULL;
+
+static void ggml_metal_moe_cb(void * ud, uint64_t v);
+
+static void * ggml_metal_moe_poll_main(void * arg) {
+    GGML_UNUSED(arg);
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    for (;;) {
+        pthread_mutex_lock(&g_moe_poll_mu);
+        while (g_moe_poll_head == NULL) {
+            pthread_cond_wait(&g_moe_poll_cv, &g_moe_poll_mu);
+        }
+        struct ggml_metal_moe_poll_item * it = g_moe_poll_head;
+        g_moe_poll_head = it->next;
+        if (g_moe_poll_head == NULL) {
+            g_moe_poll_tail = NULL;
+        }
+        pthread_mutex_unlock(&g_moe_poll_mu);
+
+        id<MTLSharedEvent> event = (id<MTLSharedEvent>) it->r->dev->moe_event->obj;
+        uint64_t spins = 0;
+        while (event.signaledValue < it->wait) {
+            // a load stall or a long prefill can keep the GPU away for seconds; stop burning a
+            // core after ~2 ms of spinning
+            if (++spins > 20000) {
+                usleep(50);
+            }
+        }
+        const uint64_t t_seen = mach_absolute_time();
+        ggml_metal_moe_cb(it->r, it->wait);
+        const uint64_t t_done = mach_absolute_time();
+        free(it);
+
+        // every 4096 handshakes: how long the servicer itself took, and how long the GPU took to
+        // notice the reply (seen by the next request's signal arriving; only meaningful per layer)
+        {
+            static uint64_t n = 0, svc = 0, svc_max = 0;
+            const uint64_t d = t_done - t_seen;
+            n++; svc += d; if (d > svc_max) svc_max = d;
+            if (n % 4096 == 0) {
+                mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+                fprintf(stderr, "moe poll: %llu handshakes, servicer mean %.1f us max %.1f us\n",
+                        (unsigned long long) n, svc*tb.numer/tb.denom/1e3/n, svc_max*tb.numer/tb.denom/1e3);
+                svc = 0; svc_max = 0; n = 0;
+            }
+        }
+    }
+    return NULL;
+}
+
+static bool ggml_metal_moe_poll_enabled(void) {
+    static int enabled = -1;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char * s = getenv("GGML_METAL_MOE_POLL");
+        enabled = s && atoi(s) > 0;
+        if (enabled) {
+            pthread_t th;
+            pthread_create(&th, NULL, ggml_metal_moe_poll_main, NULL);
+            pthread_detach(th);
+        }
+    });
+    return enabled;
+}
+
+static void ggml_metal_moe_poll_push(struct ggml_metal_moe_req * r, uint64_t wait) {
+    struct ggml_metal_moe_poll_item * it = malloc(sizeof(*it));
+    it->r    = r;
+    it->wait = wait;
+    it->next = NULL;
+    pthread_mutex_lock(&g_moe_poll_mu);
+    if (g_moe_poll_tail) {
+        g_moe_poll_tail->next = it;
+    } else {
+        g_moe_poll_head = it;
+    }
+    g_moe_poll_tail = it;
+    pthread_cond_signal(&g_moe_poll_cv);
+    pthread_mutex_unlock(&g_moe_poll_mu);
+}
+
+ggml_metal_event_t ggml_metal_device_moe_handshake(ggml_metal_device_t dev, void * state_host, int32_t layer, int32_t tail_off, uint64_t * value) {
     if (!ggml_metal_device_has_moe_servicer(dev)) {
         return NULL;
     }
@@ -1953,10 +2057,15 @@ ggml_metal_event_t ggml_metal_device_moe_handshake(ggml_metal_device_t dev, void
     r->dev        = dev;
     r->state_host = state_host;
     r->layer      = layer;
+    r->tail_off   = tail_off;
     r->reply      = v + 1;
 
     // registered before the command buffer is committed, so the signal cannot be missed
-    ggml_metal_event_notify(dev->moe_event, v, ggml_metal_moe_cb, r);
+    if (ggml_metal_moe_poll_enabled()) {
+        ggml_metal_moe_poll_push(r, v);
+    } else {
+        ggml_metal_event_notify(dev->moe_event, v, ggml_metal_moe_cb, r);
+    }
 
     *value = v;
 

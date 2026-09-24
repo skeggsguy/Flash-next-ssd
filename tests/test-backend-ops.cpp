@@ -11173,6 +11173,31 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
+    // Qwen3.8-Flash-Next writing (n = 1) at the model's own staff and book shapes, to rank each
+    // kernel's reach against the memory bandwidth (select with -p "FNW" is not possible, so run
+    // with -o MUL_MAT / MUL_MAT_ID and read the n=1 lines)
+    {
+        struct { int64_t m, k; ggml_type t; } staff[] = {
+            { 10240, 2560, GGML_TYPE_Q8_0 }, // attn_qkv
+            {  6144, 2560, GGML_TYPE_Q8_0 }, // attn_gate
+            {  2560, 6144, GGML_TYPE_Q8_0 }, // ssm_out / attn_output
+            { 12288, 2560, GGML_TYPE_Q8_0 }, // attn_q
+            {   320,10240, GGML_TYPE_Q8_0 }, // hc_*_down
+            { 10240,  320, GGML_TYPE_Q8_0 }, // hc_*_up
+            {   512, 2560, GGML_TYPE_F32  }, // ffn_gate_inp (router, F32)
+            {   640, 2560, GGML_TYPE_Q8_0 }, // ffn_gate/up_shexp
+            {  2560,  640, GGML_TYPE_Q8_0 }, // ffn_down_shexp
+            {248320, 2560, GGML_TYPE_Q8_0 }, // output
+        };
+        for (const auto & c : staff) {
+            test_cases.emplace_back(new test_mul_mat(c.t, GGML_TYPE_F32, c.m, 1, c.k, {1, 1}, {1, 1}));
+        }
+        test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_K, GGML_TYPE_F32, 512, 10, false,  640, 1, 2560));
+        test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q8_0, GGML_TYPE_F32, 512, 10, false, 2560, 1,  640));
+        test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, {2560, 4, 1, 1}));
+        test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {2560, 1, 1, 1}, {1, 1, 1, 1}));
+    }
+
     // Expert-GEMM kernel survey at the two target models' routed-expert shapes, across every quant
     // type the checkpoints use plus reference formats. n=512 is PP-like (a wave's rows for one
     // expert), n=1 is TG-like. Ranking these by time per EFFECTIVE bit-per-weight - not by time

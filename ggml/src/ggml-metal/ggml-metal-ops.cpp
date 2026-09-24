@@ -5409,6 +5409,25 @@ int ggml_metal_op_moe_slot_resolve(ggml_metal_op_t ctx, int idx) {
     // mode 4 is a TIMING PROBE ONLY: residency on the GPU with no handshake, so the GEMM can read
     // a slot before it is filled. It exists to separate the cost of the removed graph splits from
     // the cost of the handshake that replaced them.
+    // GGML_METAL_MOE_HS_PROBE (timing only, with mode 4 - the GEMM can read unfilled slots): 1 ends
+    // and restarts the encoder where the handshake would, 2 also encodes the signal, never the wait;
+    // together with modes 3 and 4 they split the handshake's cost into its parts
+    if (mode == 4) {
+        static const int hs_probe = getenv("GGML_METAL_MOE_HS_PROBE") ? atoi(getenv("GGML_METAL_MOE_HS_PROBE")) : 0;
+        if (hs_probe >= 1) {
+            ctx->encoder_end();
+            if (hs_probe >= 2) {
+                uint64_t v = 0;
+                ggml_metal_event_t ev = ggml_metal_device_moe_handshake(
+                        ctx->dev, ggml_backend_tensor_get_host_ptr(op->src[1]), layer, 2*n_slots + n_expert, &v);
+                if (ev) {
+                    ggml_metal_event_encode_signal_value(ev, ctx->cmd_buf, v);
+                }
+            }
+            ctx->encoder_start();
+        }
+    }
+
     if (mode == 3) {
         // Hand the request list to the CPU and block here until it has loaded the slabs. This is
         // what replaces the graph split the CPU remap op used to force: ~34 us of shared-event
@@ -5416,7 +5435,7 @@ int ggml_metal_op_moe_slot_resolve(ggml_metal_op_t ctx, int idx) {
         uint64_t v = 0;
 
         ggml_metal_event_t ev = ggml_metal_device_moe_handshake(
-                ctx->dev, ggml_backend_tensor_get_host_ptr(op->src[1]), layer, &v);
+                ctx->dev, ggml_backend_tensor_get_host_ptr(op->src[1]), layer, 2*n_slots + n_expert, &v);
 
         if (!ev) {
             // without the handshake the GEMM would read slots that were never filled, and it would

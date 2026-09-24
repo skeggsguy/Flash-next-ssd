@@ -1328,6 +1328,18 @@ void llama_moe_stream_layer::service_requests(llama_moe_stream & mgr) {
 
     const int32_t nreq = tail[MOE_SLOT_TAIL_NREQ];
 
+    // LLAMA_MOE_STREAM_SVC_NOLOCK=1 (probe): a call with nothing to load returns without the
+    // manager lock, which the I/O workers also hold - the GPU waits on this reply at every layer.
+    // Its only work under the lock is the call counter and the periodic stats line, so both
+    // undercount decode calls while this is on.
+    static const bool svc_nolock = [] {
+        const char * s = std::getenv("LLAMA_MOE_STREAM_SVC_NOLOCK");
+        return s && atoi(s) > 0;
+    }();
+    if (svc_nolock && nreq == 0 && tail[MOE_SLOT_TAIL_NBAD] == 0) {
+        return;
+    }
+
     std::unique_lock<std::mutex> lk(mgr.mtx);
 
     if (mgr.load_failed) {
