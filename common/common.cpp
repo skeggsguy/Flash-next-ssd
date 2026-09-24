@@ -1309,6 +1309,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         common_params params_dft = common_base_params_to_speculative(params);
 
         auto mparams_dft = common_model_params_to_llama(params_dft);
+        mparams_dft.moe_stream_alt_path = nullptr; // the draft has no copy on the other drive
         auto cparams_dft = common_context_params_to_llama(params_dft);
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;

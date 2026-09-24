@@ -2674,6 +2674,11 @@ common_speculative_init_result::common_speculative_init_result(
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
+    // Two runners (--moe-stream-alt-path) name a byte-identical copy of the TARGET's shards on
+    // another drive. The draft is a different file with no such copy, so it streams from its own
+    // path only; inheriting the target's alt path fails the twin-size check at load.
+    mparams.moe_stream_alt_path = nullptr;
+
     // The draft inherits the target's expert-cache budget. For a small MoE drafter that can
     // accidentally cover every expert, disable streaming, and consume memory needed by the target.
     // Zero keeps the inherited setting.
