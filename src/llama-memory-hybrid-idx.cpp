@@ -8,11 +8,28 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cinttypes>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <stdexcept>
+
+// patch 4i switches, read when the memory is made
+static bool llama_qsa_keep_env(const char * name) {
+    const char * value = std::getenv(name);
+    return value != nullptr && std::atoi(value) > 0;
+}
+
+static const char * llama_qsa_keep_mode_name(llama_qsa_keep_mode mode) {
+    switch (mode) {
+        case LLAMA_QSA_KEEP_LEGACY: return "LEGACY";
+        case LLAMA_QSA_KEEP_FULL:   return "FULL";
+        case LLAMA_QSA_KEEP_INCR:   return "INCR";
+    }
+    return "?";
+}
 
 static bool qwen4exp_indexer_f16() {
     static const bool enabled = [] {
@@ -85,7 +102,24 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             model, hparams_idx, type_idx_k, type_v, v_trans, offload, unified,
             kv_size, n_seq_max, n_pad, n_swa, swa_type,
             nullptr, filter_idx, nullptr, nullptr, "idx_");
-    }()) {}
+    }()) {
+    qsa_keep_init(model, offload);
+}
+
+llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
+    if (!keep.enabled) {
+        return;
+    }
+
+    const auto stats = qsa_keep_stats();
+
+    LLAMA_LOG_INFO("%s: qsa keep: LEGACY = %" PRIu64 ", FULL = %" PRIu64 ", INCR = %" PRIu64 "\n",
+            __func__, stats.n_legacy, stats.n_full, stats.n_incr);
+
+    for (const auto & [il, sum] : stats.check) {
+        LLAMA_LOG_INFO("%s: qsa keep check: layer %3d sum |kept - rebuilt| = %g\n", __func__, il, sum);
+    }
+}
 
 llama_memory_context_ptr llama_memory_hybrid_idx::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
     // note: repeats llama_memory_hybrid::init_batch, as the indexer needs the attention slot infos that the base context hides
@@ -166,9 +200,28 @@ void llama_memory_hybrid_idx::clear(bool data) {
     if (mem_idx) {
         mem_idx->clear(data);
     }
+
+    // no full block is left, so every stream is trivially in step with the store
+    keep.inflight.clear();
+
+    for (auto & [ratio, synced] : keep.synced) {
+        std::fill(synced.begin(), synced.end(), 1);
+    }
+    std::fill(keep.dup.begin(), keep.dup.end(), QSA_DUP_FREE);
 }
 
 bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+    // a removal only turns full blocks partial, and a partial block becomes full again only through a
+    // write, which pools it afresh in that ubatch: so no kept row goes stale here (the MTP trim and the
+    // checkpoint cuts cost nothing). a removal can take a repeated position away, though
+    qsa_keep_settle();
+
+    for (uint32_t s = 0; s < keep.dup.size(); ++s) {
+        if (keep.dup[s] == QSA_DUP_PRESENT && (seq_id < 0 || mem_idx->seq_stream(seq_id) == s)) {
+            keep.dup[s] = QSA_DUP_UNKNOWN;
+        }
+    }
+
     // same order as llama_memory_hybrid::seq_rm: the recurrent cache can refuse, so try it first
     if (!get_mem_recr()->seq_rm(seq_id, p0, p1)) {
         return false;
@@ -182,6 +235,9 @@ bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_po
 }
 
 void llama_memory_hybrid_idx::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+    // the destination stream takes cells it did not pool (a cross-stream copy replaces all of them)
+    qsa_keep_unsync(seq_id_dst);
+
     llama_memory_hybrid::seq_cp(seq_id_src, seq_id_dst, p0, p1);
 
     if (mem_idx) {
@@ -190,6 +246,8 @@ void llama_memory_hybrid_idx::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_i
 }
 
 void llama_memory_hybrid_idx::seq_keep(llama_seq_id seq_id) {
+    qsa_keep_unsync(-1);
+
     llama_memory_hybrid::seq_keep(seq_id);
 
     if (mem_idx) {
@@ -198,6 +256,9 @@ void llama_memory_hybrid_idx::seq_keep(llama_seq_id seq_id) {
 }
 
 void llama_memory_hybrid_idx::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift) {
+    // moved positions move blocks: a kept row is keyed by position and roped at it
+    qsa_keep_unsync(seq_id);
+
     llama_memory_hybrid::seq_add(seq_id, p0, p1, shift);
 
     if (mem_idx) {
@@ -206,6 +267,8 @@ void llama_memory_hybrid_idx::seq_add(llama_seq_id seq_id, llama_pos p0, llama_p
 }
 
 void llama_memory_hybrid_idx::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
+    qsa_keep_unsync(seq_id);
+
     llama_memory_hybrid::seq_div(seq_id, p0, p1, d);
 
     if (mem_idx) {
@@ -219,6 +282,16 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid_idx::memory_bre
     if (mem_idx) {
         for (const auto & buft_size : mem_idx->memory_breakdown()) {
             mb[buft_size.first] += buft_size.second;
+        }
+    }
+
+    for (const auto & [ctx, buf] : keep.ctxs_bufs) {
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(buf.get());
+
+        if (hparams_idx.no_alloc) {
+            mb[buft] += ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
+        } else {
+            mb[buft] += ggml_backend_buffer_get_size(buf.get());
         }
     }
 
@@ -246,6 +319,14 @@ void llama_memory_hybrid_idx::state_read(llama_io_read_i & io, llama_seq_id seq_
     // the indexer restore adopts the attention cache's layout instead of searching for cells of its own
     // two find_slot calls agree only while both caches see the same occupancy, which a restore cannot promise
     llama_kv_cache::slot_info_vec_t sinfos_attn;
+
+    // restored keys were never pooled into the store. a PARTIAL_ONLY restore brings back the
+    // recurrent state alone, so the indexer's cells and the kept rows are untouched
+    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
+        qsa_keep_unsync(seq_id);
+    } else {
+        qsa_keep_settle();
+    }
 
     try {
         if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
@@ -298,38 +379,83 @@ void llama_memory_hybrid_idx::set_input_qsa(
         const llama_ubatch * ubatch,
         uint32_t ratio,
         int64_t n_kv,
-        bool blk_bias) const {
+        bool blk_bias,
+        const llama_qsa_keep_inputs & keep) const {
+    const llama_qsa_keep_mode mode = keep.plan == nullptr ? LLAMA_QSA_KEEP_LEGACY : keep.plan->mode;
+
+    const bool keep_full = mode == LLAMA_QSA_KEEP_FULL;
+    const bool keep_incr = mode == LLAMA_QSA_KEEP_INCR;
+
     GGML_ASSERT(ratio > 0);
     GGML_ASSERT(n_kv > 0);
     GGML_ASSERT(get_mem_idx() != nullptr);
-    GGML_ASSERT(blk_cells != nullptr && blk_pos != nullptr && bias != nullptr);
+    GGML_ASSERT(bias != nullptr);
     GGML_ASSERT(cell_blk != nullptr || blk_bias);
 
-    if (cell_blk != nullptr) {
-        GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
-    }
-    GGML_ASSERT(ggml_backend_buffer_is_host(blk_cells->buffer));
-    GGML_ASSERT(ggml_backend_buffer_is_host(blk_pos->buffer));
-    GGML_ASSERT(ggml_backend_buffer_is_host(bias->buffer));
+    // today's pooling reads blk_cells and blk_pos; INCR pools its own rows and may leave both out
+    GGML_ASSERT(keep_incr || (blk_cells != nullptr && blk_pos != nullptr));
+    GGML_ASSERT(keep_full == (keep.blk_dst != nullptr));
+    GGML_ASSERT(keep_incr == (keep.fresh_cells != nullptr) && keep_incr == (keep.fresh_pos != nullptr) &&
+                keep_incr == (keep.fresh_dst   != nullptr) && keep_incr == (keep.blk_src   != nullptr));
+    GGML_ASSERT(keep.plan == nullptr || keep.plan->ratio == ratio);
 
-    const int64_t n_ns     = blk_cells->ne[1];        // streams in this ubatch
-    GGML_ASSERT(n_ns > 0 && blk_pos->ne[0] % (4*n_ns) == 0);
-    const int64_t n_blocks = blk_pos->ne[0]/(4*n_ns);
+    for (const ggml_tensor * t : { cell_blk, blk_cells, blk_pos, bias,
+            keep.fresh_cells, keep.fresh_pos, keep.fresh_dst, keep.blk_src, keep.blk_dst }) {
+        GGML_ASSERT(t == nullptr || ggml_backend_buffer_is_host(t->buffer));
+    }
+
+    const int64_t n_ns     = bias->ne[2];             // streams in this ubatch
     const int64_t n_tokens = ubatch->n_tokens;
     const int64_t r        = ratio;
+    const int64_t n_blocks = (n_kv + r - 1)/r;
 
-    GGML_ASSERT(n_tokens % n_ns == 0);
+    GGML_ASSERT(n_ns > 0 && n_tokens % n_ns == 0);
     const int64_t n_tps = n_tokens/n_ns;             // tokens per stream
 
-    GGML_ASSERT(blk_cells->ne[0] == r*n_blocks);
-    GGML_ASSERT(cell_blk == nullptr || (cell_blk->ne[0] == n_kv && cell_blk->ne[1] == n_ns));
+    GGML_ASSERT(blk_cells == nullptr || (blk_cells->ne[0] == r*n_blocks && blk_cells->ne[1] == n_ns));
+    GGML_ASSERT(blk_pos   == nullptr || blk_pos->ne[0] == 4*n_blocks*n_ns);
+    GGML_ASSERT(cell_blk  == nullptr || (cell_blk->ne[0] == n_kv && cell_blk->ne[1] == n_ns));
     GGML_ASSERT(bias->ne[0] == (blk_bias ? n_blocks : n_kv));
-    GGML_ASSERT(bias->ne[1] == n_tps && bias->ne[2] == n_ns);
+    GGML_ASSERT(bias->ne[1] == n_tps);
+
+    // INCR still needs today's member lists and positions, to copy the rows it pools from them
+    std::vector<int32_t> blk_cells_buf;
+    std::vector<int32_t> blk_pos_buf;
+
+    if (blk_cells == nullptr) {
+        blk_cells_buf.resize(r*n_blocks*n_ns);
+    }
+    if (blk_pos == nullptr) {
+        blk_pos_buf.resize(4*n_blocks*n_ns);
+    }
 
     int32_t * dst_cell_blk  = cell_blk == nullptr ? nullptr : (int32_t *) cell_blk->data;
-    int32_t * dst_blk_cells = (int32_t *) blk_cells->data;
-    int32_t * dst_blk_pos   = (int32_t *) blk_pos->data;
+    int32_t * dst_blk_cells = blk_cells == nullptr ? blk_cells_buf.data() : (int32_t *) blk_cells->data;
+    int32_t * dst_blk_pos   = blk_pos   == nullptr ? blk_pos_buf.data()   : (int32_t *) blk_pos->data;
     float   * dst_bias      = (float   *) bias->data;
+
+    // FULL and INCR: the store's rows, and the rows INCR pools
+    const int64_t n_rows     = keep_full || keep_incr ? qsa_keep_n_rows(ratio) : 0;
+    const int32_t row_dead   = (int32_t) n_rows - 2;
+    const int32_t row_filler = (int32_t) n_rows - 1;
+
+    const int64_t n_slots = keep_incr ? keep.plan->n_slots : 0;
+    const int64_t n_fresh = keep_incr ? n_slots + 2 : 0;
+
+    if (keep_incr) {
+        GGML_ASSERT(keep.fresh_cells->ne[0] == r*n_fresh && keep.fresh_cells->ne[1] == n_ns);
+        GGML_ASSERT(keep.fresh_pos->ne[0]   == 4*n_fresh*n_ns);
+        GGML_ASSERT(keep.fresh_dst->ne[0]   == n_fresh && keep.fresh_dst->ne[1] == n_ns);
+        GGML_ASSERT(keep.blk_src->ne[0]     == n_blocks && keep.blk_src->ne[1] == n_ns);
+    }
+    if (keep_full) {
+        GGML_ASSERT(keep.blk_dst->ne[0] == n_blocks && keep.blk_dst->ne[1] == n_ns);
+    }
+    if (keep_full || keep_incr) {
+        GGML_ASSERT(keep.plan->ns == n_ns);
+    }
+
+    std::vector<int32_t> fresh;
 
     // a block is keyed on (sequence set, index bucket): a unified cache counts every sequence
     // from zero, so the bucket alone would pool two sequences into one block
@@ -560,6 +686,85 @@ void llama_memory_hybrid_idx::set_input_qsa(
             }
         }
 
+        if (keep_full || keep_incr) {
+            // the planner's cheap checks must agree with the full scan above: a stream it let through
+            // holds one sequence, no repeated position, and nothing past the cell window
+            GGML_ASSERT(one_seq && !dup && !oor && !ranked && "qsa keep: the plan disagrees with the cells");
+            GGML_ASSERT(get_mem_idx()->seq_stream(seq_of_stream) == keep.plan->s0 + s);
+
+            // a full block's store row is its position bucket; the unused rows keep today's values
+            // (the dead block's own members, cell 0 at position 0 for the rest), and are pooled afresh
+            const auto row_of = [&](int64_t b) -> int32_t {
+                if (b < n_bid) {
+                    return bid_idx[b]/(int32_t) r;
+                }
+                return have_dead && b == dead_bid ? row_dead : row_filler;
+            };
+
+            if (keep_full) {
+                int64_t * cur_blk_dst = (int64_t *) keep.blk_dst->data + s*n_blocks;
+
+                for (int64_t b = 0; b < n_blocks; ++b) {
+                    cur_blk_dst[b] = row_of(b);
+                }
+            }
+
+            if (keep_incr) {
+                int32_t * cur_blk_src = (int32_t *) keep.blk_src->data + s*n_blocks;
+
+                for (int64_t b = 0; b < n_blocks; ++b) {
+                    cur_blk_src[b] = row_of(b);
+                }
+
+                // the full blocks this ubatch wrote a key into; the rest are in the store already
+                fresh.clear();
+
+                for (int64_t ii = 0; ii < n_tps; ++ii) {
+                    const int64_t pb = ubatch->pos[s*n_tps + ii]/r;
+                    const int32_t g  = grp_head[pb];
+
+                    if (g >= 0 && grp_bid[g] >= 0) {
+                        fresh.push_back(grp_bid[g]);
+                    }
+                }
+
+                std::sort(fresh.begin(), fresh.end());
+                fresh.erase(std::unique(fresh.begin(), fresh.end()), fresh.end());
+
+                GGML_ASSERT((int64_t) fresh.size() <= n_slots && "qsa keep: more filled blocks than the plan made room for");
+
+                int32_t * cur_fresh_cells = (int32_t *) keep.fresh_cells->data + s*(r*n_fresh);
+                int32_t * cur_fresh_pos   = (int32_t *) keep.fresh_pos->data;
+                int64_t * cur_fresh_dst   = (int64_t *) keep.fresh_dst->data + s*n_fresh;
+
+                // rows [0, n_slots) are the filled blocks then fillers, row n_slots the dead block,
+                // row n_slots + 1 a filler; each copies today's members and positions of its block
+                for (int64_t k = 0; k < n_fresh; ++k) {
+                    int64_t b   = -1;
+                    int32_t dst = row_filler;
+
+                    if (k < (int64_t) fresh.size()) {
+                        b   = fresh[k];
+                        dst = row_of(b);
+                    } else if (k == n_slots) {
+                        b   = have_dead ? dead_bid : -1;
+                        dst = row_dead;
+                    }
+
+                    for (int64_t i = 0; i < r; ++i) {
+                        cur_fresh_cells[k*r + i] = b < 0 ? 0 : cur_blk_cells[b*r + i];
+                    }
+
+                    for (int64_t sec = 0; sec < 4; ++sec) {
+                        cur_fresh_pos[sec*(n_fresh*n_ns) + s*n_fresh + k] =
+                            b < 0 ? 0 : dst_blk_pos[sec*(n_blocks*n_ns) + s*n_blocks + b];
+                    }
+
+                    cur_fresh_dst[k] = dst;
+                }
+            }
+        }
+
         for (int64_t ii = 0; ii < n_tps; ++ii) {
             const int64_t      i      = s*n_tps + ii;
             const llama_seq_id seq_id = ubatch->seq_id[i][0];
@@ -637,6 +842,376 @@ void llama_memory_hybrid_idx::set_input_qsa(
     }
 }
 
+void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offload) {
+    keep.enabled = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_KEEP");
+    keep.check   = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_CHECK");
+    keep.debug   = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_DEBUG");
+
+    if (!keep.enabled) {
+        return;
+    }
+
+    const auto & hparams = model.hparams;
+
+    const uint32_t n_stream = mem_idx->get_n_stream();
+    const int64_t  n_embd   = hparams.indexer_head_size;
+
+    struct ggml_backend_buft_comparator {
+        bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
+            return strcmp(ggml_backend_buft_name(lhs), ggml_backend_buft_name(rhs)) < 0;
+        }
+    };
+
+    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
+
+    const std::vector<uint32_t> layer_ids = mem_idx->get_layer_ids();
+
+    for (const uint32_t il : layer_ids) {
+        const uint32_t r = hparams.dsv4_compress_ratios[il];
+        if (r == 0) {
+            continue; // a dense layer, no summaries
+        }
+
+        // on the layer's device, as the indexer cache it summarises
+        ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
+        if (offload) {
+            buft = ggml_backend_dev_buffer_type(model.dev_layer(il));
+        }
+
+        auto it = ctx_map.find(buft);
+        if (it == ctx_map.end()) {
+            ggml_init_params params = {
+                /*.mem_size   =*/ size_t(2u*layer_ids.size()*ggml_tensor_overhead()),
+                /*.mem_buffer =*/ NULL,
+                /*.no_alloc   =*/ true,
+            };
+
+            ggml_context * ctx = ggml_init(params);
+            if (!ctx) {
+                throw std::runtime_error("failed to create ggml context for the qsa keep store");
+            }
+
+            it = ctx_map.emplace(buft, ctx).first;
+        }
+
+        // F32: a kept row must equal the rebuilt one bit for bit
+        qsa_keep_layer layer;
+        layer.rows = ggml_new_tensor_3d(it->second.get(), GGML_TYPE_F32, n_embd, qsa_keep_n_rows(r), n_stream);
+        ggml_format_name(layer.rows, "qsa_keep_rows_l%d", il);
+
+        if (keep.check) {
+            layer.sum = ggml_new_tensor_1d(it->second.get(), GGML_TYPE_F32, 1);
+            ggml_format_name(layer.sum, "qsa_keep_check_l%d", il);
+        }
+
+        keep.layers[il] = layer;
+
+        if (std::find(keep.ratios.begin(), keep.ratios.end(), r) == keep.ratios.end()) {
+            keep.ratios.push_back(r);
+            keep.synced[r].assign(n_stream, 1);
+        }
+    }
+
+    keep.dup.assign(n_stream, QSA_DUP_FREE);
+
+    size_t size = 0;
+
+    for (auto & [buft, ctx] : ctx_map) {
+        ggml_backend_buffer_t buf;
+        if (hparams_idx.no_alloc) {
+            // same as the KV cache: a dummy buffer, so the scheduler does not allocate the tensors
+            buf = ggml_backend_buft_alloc_buffer(buft, 0);
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
+                t->buffer = buf;
+            }
+        } else {
+            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
+        }
+        if (!buf) {
+            throw std::runtime_error("failed to allocate buffer for the qsa keep store");
+        }
+
+        ggml_backend_buffer_clear(buf, 0);
+
+        size += ggml_backend_buffer_get_size(buf);
+
+        keep.ctxs_bufs.emplace_back(std::move(ctx), buf);
+    }
+
+    LLAMA_LOG_INFO("%s: qsa keep: %zu layers, %u streams, %.2f MiB%s%s\n", __func__,
+            keep.layers.size(), n_stream, size/1024.0/1024.0,
+            keep.check ? ", check" : "", keep.debug ? ", debug" : "");
+}
+
+ggml_tensor * llama_memory_hybrid_idx::qsa_keep_rows(int32_t il) const {
+    const auto it = keep.layers.find(il);
+    GGML_ASSERT(it != keep.layers.end());
+
+    return it->second.rows;
+}
+
+ggml_tensor * llama_memory_hybrid_idx::qsa_keep_sum(int32_t il) const {
+    const auto it = keep.layers.find(il);
+    GGML_ASSERT(it != keep.layers.end() && it->second.sum != nullptr);
+
+    return it->second.sum;
+}
+
+uint32_t llama_memory_hybrid_idx::qsa_keep_n_rows(uint32_t ratio) const {
+    GGML_ASSERT(ratio > 0 && mem_idx != nullptr);
+
+    // every position bucket a cell can reach, then the dead block's row and the filler's
+    return (mem_idx->get_size() + ratio - 1)/ratio + 2;
+}
+
+// true if two cells of the stream share a position; the caller knows the stream holds one sequence
+static bool llama_qsa_keep_has_dup(const llama_kv_cells & cells, llama_pos pos_max) {
+    std::vector<uint8_t> seen(pos_max + 1, 0);
+
+    for (uint32_t j = 0; j < cells.used_max_p1(); ++j) {
+        if (cells.is_empty(j)) {
+            continue;
+        }
+
+        const llama_pos p = cells.pos_get(j);
+        if (seen[p]) {
+            return true;
+        }
+        seen[p] = 1;
+    }
+
+    return false;
+}
+
+std::vector<llama_qsa_keep_plan> llama_memory_hybrid_idx::qsa_keep_plan(
+        const llama_ubatch & ubatch, uint32_t s0, uint32_t ns, uint32_t n_kv,
+        const std::vector<llama_pos> & pos_max_prev) {
+    GGML_ASSERT(keep.enabled);
+    GGML_ASSERT(ns > 0 && ubatch.n_tokens % ns == 0 && pos_max_prev.size() == ns);
+
+    // a plan still in flight belongs to a ubatch whose compute never finished
+    qsa_keep_settle();
+
+    const uint32_t n_tps = ubatch.n_tokens/ns;
+
+    // per stream, whatever the ratio: its sequence's last position, or -1 when it cannot keep rows
+    std::vector<llama_pos> pos_max(ns, -1);
+
+    for (uint32_t s = 0; s < ns; ++s) {
+        const llama_seq_id seq = ubatch.seq_id[s*n_tps][0];
+        const uint32_t     st  = s0 + s;
+
+        GGML_ASSERT(mem_idx->seq_stream(seq) == st);
+
+        const auto & cells = mem_idx->get_cells(seq);
+
+        // the store keys a block by position alone, so a second sequence in the stream would share it
+        int n_seq_present = 0;
+        for (int sq = 0; sq < LLAMA_MAX_SEQ && n_seq_present < 2; ++sq) {
+            if (cells.seq_pos_min(sq) >= 0) {
+                n_seq_present++;
+            }
+        }
+
+        // repeats are tracked for a sequence alone in its stream: the positions below belong to it.
+        // a shared stream looks again once one sequence is left
+        if (n_seq_present != 1) {
+            keep.dup[st] = QSA_DUP_UNKNOWN;
+            continue;
+        }
+
+        // positions past everything the stream held, rising: no repeat can have appeared
+        if (keep.dup[st] == QSA_DUP_FREE) {
+            llama_pos prev = pos_max_prev[s];
+
+            for (uint32_t ii = 0; ii < n_tps; ++ii) {
+                const llama_pos p = ubatch.pos[s*n_tps + ii];
+                if (p <= prev) {
+                    keep.dup[st] = QSA_DUP_UNKNOWN;
+                    break;
+                }
+                prev = p;
+            }
+        }
+
+        const llama_pos pmax = cells.seq_pos_max(seq);
+
+        // beyond twice the cells the position cannot sit in any window; skip the scan's bitmap
+        if (pmax < 0 || pmax >= 2*(llama_pos) cells.size()) {
+            continue;
+        }
+
+        if (keep.dup[st] == QSA_DUP_UNKNOWN) {
+            keep.dup[st] = llama_qsa_keep_has_dup(cells, pmax) ? QSA_DUP_PRESENT : QSA_DUP_FREE;
+        }
+
+        if (keep.dup[st] == QSA_DUP_FREE) {
+            pos_max[s] = pmax;
+        }
+    }
+
+    std::vector<llama_qsa_keep_plan> plans;
+
+    std::vector<int64_t> touched;
+
+    for (const uint32_t r : keep.ratios) {
+        const int64_t n_blocks = (n_kv + r - 1)/r;
+
+        llama_qsa_keep_plan plan;
+        plan.ratio = r;
+        plan.s0    = s0;
+        plan.ns    = ns;
+
+        // blocks n_tps positions in a row can reach
+        const int64_t n_slots = std::min<int64_t>(n_blocks, (n_tps + r - 2)/r + 1);
+
+        bool eligible = true;
+        bool synced   = true;
+
+        for (uint32_t s = 0; s < ns; ++s) {
+            eligible = eligible && pos_max[s] >= 0 && pos_max[s]/r < n_blocks;
+            synced   = synced   && keep.synced.at(r)[s0 + s];
+        }
+
+        if (!eligible) {
+            plan.mode = LLAMA_QSA_KEEP_LEGACY;
+        } else if (!synced || n_slots + 2 >= n_blocks) {
+            // a rebuild, or pooling the few fresh rows would cost as much as pooling them all
+            plan.mode = LLAMA_QSA_KEEP_FULL;
+        } else {
+            plan.mode = LLAMA_QSA_KEEP_INCR;
+
+            // positions that jump can touch more blocks than n_slots; set_input asserts the bound
+            for (uint32_t s = 0; s < ns && plan.mode == LLAMA_QSA_KEEP_INCR; ++s) {
+                touched.clear();
+                for (uint32_t ii = 0; ii < n_tps; ++ii) {
+                    touched.push_back(ubatch.pos[s*n_tps + ii]/r);
+                }
+
+                std::sort(touched.begin(), touched.end());
+
+                if (std::unique(touched.begin(), touched.end()) - touched.begin() > n_slots) {
+                    plan.mode = LLAMA_QSA_KEEP_FULL;
+                }
+            }
+
+            if (plan.mode == LLAMA_QSA_KEEP_INCR) {
+                plan.n_slots = (uint32_t) n_slots;
+            }
+        }
+
+        if (keep.debug) {
+            LLAMA_LOG_INFO("%s: qsa keep: n_tokens = %4u, streams [%u, %u), n_kv = %6u, ratio = %u, n_blocks = %6" PRId64
+                    ", mode = %-6s, n_slots = %4u, synced = %d, committed LEGACY/FULL/INCR = %" PRIu64 "/%" PRIu64 "/%" PRIu64 "\n",
+                    __func__, ubatch.n_tokens, s0, s0 + ns, n_kv, r, n_blocks,
+                    llama_qsa_keep_mode_name(plan.mode), plan.n_slots, synced ? 1 : 0,
+                    keep.n_legacy, keep.n_full, keep.n_incr);
+        }
+
+        plans.push_back(plan);
+    }
+
+    keep.inflight = plans;
+
+    return plans;
+}
+
+std::vector<llama_qsa_keep_plan> llama_memory_hybrid_idx::qsa_keep_plan_reserve(uint32_t n_stream) const {
+    std::vector<llama_qsa_keep_plan> plans;
+
+    for (const uint32_t r : keep.ratios) {
+        llama_qsa_keep_plan plan;
+        plan.mode  = LLAMA_QSA_KEEP_FULL;
+        plan.ratio = r;
+        plan.s0    = 0;
+        plan.ns    = n_stream;
+
+        plans.push_back(plan);
+    }
+
+    return plans;
+}
+
+void llama_memory_hybrid_idx::qsa_keep_commit() {
+    for (const auto & plan : keep.inflight) {
+        auto & synced = keep.synced.at(plan.ratio);
+
+        switch (plan.mode) {
+            case LLAMA_QSA_KEEP_LEGACY:
+                {
+                    // blocks it filled were never written into the store
+                    std::fill(synced.begin() + plan.s0, synced.begin() + plan.s0 + plan.ns, 0);
+                    keep.n_legacy++;
+                } break;
+            case LLAMA_QSA_KEEP_FULL:
+                {
+                    std::fill(synced.begin() + plan.s0, synced.begin() + plan.s0 + plan.ns, 1);
+                    keep.n_full++;
+                } break;
+            case LLAMA_QSA_KEEP_INCR:
+                {
+                    keep.n_incr++;
+                } break;
+        }
+    }
+
+    keep.inflight.clear();
+}
+
+void llama_memory_hybrid_idx::qsa_keep_settle() {
+    for (const auto & plan : keep.inflight) {
+        auto & synced = keep.synced.at(plan.ratio);
+
+        std::fill(synced.begin() + plan.s0, synced.begin() + plan.s0 + plan.ns, 0);
+    }
+
+    keep.inflight.clear();
+}
+
+void llama_memory_hybrid_idx::qsa_keep_unsync(llama_seq_id seq_id) {
+    qsa_keep_settle();
+
+    if (!keep.enabled) {
+        return;
+    }
+
+    for (uint32_t s = 0; s < keep.dup.size(); ++s) {
+        if (seq_id >= 0 && mem_idx->seq_stream(seq_id) != s) {
+            continue;
+        }
+
+        for (auto & [ratio, synced] : keep.synced) {
+            synced[s] = 0;
+        }
+
+        keep.dup[s] = QSA_DUP_UNKNOWN;
+    }
+}
+
+llama_qsa_keep_stats llama_memory_hybrid_idx::qsa_keep_stats() const {
+    llama_qsa_keep_stats res;
+
+    res.n_legacy = keep.n_legacy;
+    res.n_full   = keep.n_full;
+    res.n_incr   = keep.n_incr;
+
+    if (keep.check && !hparams_idx.no_alloc) {
+        for (const uint32_t il : mem_idx->get_layer_ids()) {
+            const auto it = keep.layers.find(il);
+            if (it == keep.layers.end()) {
+                continue;
+            }
+
+            float sum = 0.0f;
+            ggml_backend_tensor_get(it->second.sum, &sum, 0, sizeof(sum));
+
+            res.check.emplace_back(il, sum);
+        }
+    }
+
+    return res;
+}
+
 //
 // llama_memory_hybrid_idx_context
 //
@@ -653,6 +1228,18 @@ static std::vector<uint32_t> llama_memory_hybrid_idx_ns(const llama_kv_cache::sl
     return res;
 }
 
+// first stream of each ubatch's slot info, where get_k/get_v's views start
+static std::vector<uint32_t> llama_memory_hybrid_idx_s0(const llama_kv_cache::slot_info_vec_t & sinfos) {
+    std::vector<uint32_t> res;
+    res.reserve(sinfos.size());
+
+    for (const auto & sinfo : sinfos) {
+        res.push_back(sinfo.s0);
+    }
+
+    return res;
+}
+
 llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(llama_memory_status status) :
     llama_memory_hybrid_context(status) {}
 
@@ -663,8 +1250,13 @@ llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(llama_memory_hy
     // without it the reserved worst case is the dense graph, so ggml-alloc must grow the buffer on the first decode
     ns_ubatch(mem->get_mem_idx() == nullptr ?
         std::vector<uint32_t>() : std::vector<uint32_t>{ mem->get_mem_idx()->get_n_stream() }),
+    s0_ubatch(mem->get_mem_idx() == nullptr ?
+        std::vector<uint32_t>() : std::vector<uint32_t>{ 0 }),
     ctx_idx(mem->get_mem_idx() == nullptr ? nullptr :
-        new llama_kv_cache_context(mem->get_mem_idx())) {}
+        new llama_kv_cache_context(mem->get_mem_idx())),
+    // the reserved graph is the largest one: every row pooled and written into the store
+    qsa_plans(mem->get_mem_idx() == nullptr ? std::vector<llama_qsa_keep_plan>() :
+        mem->qsa_keep_plan_reserve(mem->get_mem_idx()->get_n_stream())) {}
 
 llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(
         llama_memory_hybrid_idx * mem,
@@ -685,10 +1277,18 @@ llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(
     llama_memory_hybrid_context(mem, std::move(sinfos_attn), ubatches),
     mem(mem),
     ns_ubatch(llama_memory_hybrid_idx_ns(sinfos_idx)),
+    s0_ubatch(llama_memory_hybrid_idx_s0(sinfos_idx)),
     ctx_idx(mem->get_mem_idx() == nullptr ? nullptr :
-        new llama_kv_cache_context(mem->get_mem_idx(), std::move(sinfos_idx), ubatches)) {}
+        new llama_kv_cache_context(mem->get_mem_idx(), std::move(sinfos_idx), ubatches)),
+    is_batch(true) {}
 
 bool llama_memory_hybrid_idx_context::next() {
+    // next() follows only a compute that finished, so this ubatch's plans take effect now
+    if (qsa_planned) {
+        mem->qsa_keep_commit();
+        qsa_planned = false;
+    }
+
     if (ctx_idx) {
         ctx_idx->next();
     }
@@ -701,8 +1301,30 @@ bool llama_memory_hybrid_idx_context::next() {
 bool llama_memory_hybrid_idx_context::apply() {
     bool res = llama_memory_hybrid_context::apply();
 
+    const bool plan = is_batch && ctx_idx && mem->qsa_keep();
+
+    // each stream's last position before this ubatch lands: new positions above it cannot repeat one
+    std::vector<llama_pos> pos_max_prev;
+
+    if (plan) {
+        const auto &   ubatch = get_ubatch();
+        const uint32_t ns     = get_n_stream();
+
+        for (uint32_t s = 0; s < ns; ++s) {
+            const llama_seq_id seq = ubatch.seq_id[s*(ubatch.n_tokens/ns)][0];
+
+            pos_max_prev.push_back(mem->get_mem_idx()->get_cells(seq).seq_pos_max(seq));
+        }
+    }
+
     if (ctx_idx) {
         res = res & ctx_idx->apply();
+    }
+
+    // planned after the indexer's apply: the cells hold the ubatch and n_kv is known
+    if (plan) {
+        qsa_plans   = mem->qsa_keep_plan(get_ubatch(), s0_ubatch[i_cur], get_n_stream(), get_idx()->get_n_kv(), pos_max_prev);
+        qsa_planned = true;
     }
 
     return res;
@@ -718,6 +1340,12 @@ uint32_t llama_memory_hybrid_idx_context::get_n_stream() const {
     return ns_ubatch[i_cur];
 }
 
+uint32_t llama_memory_hybrid_idx_context::get_stream0() const {
+    GGML_ASSERT(i_cur < s0_ubatch.size());
+
+    return s0_ubatch[i_cur];
+}
+
 void llama_memory_hybrid_idx_context::set_input_qsa(
         ggml_tensor * cell_blk,
         ggml_tensor * blk_cells,
@@ -726,8 +1354,34 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
         const llama_ubatch * ubatch,
         uint32_t ratio,
         int64_t n_kv,
-        bool blk_bias) const {
+        bool blk_bias,
+        const llama_qsa_keep_inputs & keep) const {
     GGML_ASSERT(mem != nullptr);
 
-    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias);
+    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias, keep);
+}
+
+const llama_qsa_keep_plan & llama_memory_hybrid_idx_context::get_qsa_plan(uint32_t ratio) const {
+    for (const auto & plan : qsa_plans) {
+        if (plan.ratio == ratio) {
+            return plan;
+        }
+    }
+
+    // switch off, or no plan made for this context
+    static const llama_qsa_keep_plan legacy;
+
+    return legacy;
+}
+
+bool llama_memory_hybrid_idx_context::get_qsa_keep_check() const {
+    return mem->qsa_keep_check();
+}
+
+ggml_tensor * llama_memory_hybrid_idx_context::get_qsa_keep_rows(int32_t il) const {
+    return mem->qsa_keep_rows(il);
+}
+
+ggml_tensor * llama_memory_hybrid_idx_context::get_qsa_keep_sum(int32_t il) const {
+    return mem->qsa_keep_sum(il);
 }

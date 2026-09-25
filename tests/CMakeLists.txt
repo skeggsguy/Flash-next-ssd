@@ -255,6 +255,61 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     )
     set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED generate-models)
 
+    # qwen4exp's indexer cache, with the QSA block summaries rebuilt every ubatch (switch off) and kept (patch 4i)
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-qwen4exp
+        LABEL main
+        ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf"
+    )
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-qwen4exp-qsa-keep
+        LABEL main
+        ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback-qwen4exp test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
+        FIXTURES_REQUIRED generate-models
+    )
+    set_tests_properties(test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
+        ENVIRONMENT "LLAMA_QSA_KEEP=1"
+    )
+
+    llama_test(
+        test-save-load-state
+        NAME test-save-load-state-qsa-keep
+        LABEL main
+        ARGS --models "${MODEL_DIR}"
+    )
+    set_tests_properties(test-save-load-state-qsa-keep PROPERTIES
+        FIXTURES_REQUIRED generate-models
+        ENVIRONMENT "LLAMA_QSA_KEEP=1"
+    )
+    # both write dump_state.bin into the same directory
+    set_tests_properties(test-save-load-state test-save-load-state-qsa-keep PROPERTIES RESOURCE_LOCK dump_state_bin)
+
+    # patch 4i: keeping the QSA block summaries is bit-identical to rebuilding them, on the GPU and
+    # the CPU, and with each switch that changes how the summaries are pooled or read
+    llama_build(test-qsa-keep.cpp)
+
+    foreach (QSA_KEEP_ENV "" "QWEN4EXP_QSA_GATHER=0" "LLAMA_QSA_POOL_VIEWS=1" "LLAMA_QWEN4EXP_BLOCK_TOPK=0" "LLAMA_QSA_GATHER=0")
+        set(QSA_KEEP_NAME test-qsa-keep)
+        if (QSA_KEEP_ENV)
+            string(REGEX REPLACE "=.*" "" QSA_KEEP_SUFFIX "${QSA_KEEP_ENV}")
+            string(TOLOWER "${QSA_KEEP_SUFFIX}" QSA_KEEP_SUFFIX)
+            string(REPLACE "_" "-" QSA_KEEP_SUFFIX "${QSA_KEEP_SUFFIX}")
+            set(QSA_KEEP_NAME "${QSA_KEEP_NAME}-${QSA_KEEP_SUFFIX}")
+        endif()
+
+        llama_test(test-qsa-keep NAME ${QSA_KEEP_NAME}     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+        llama_test(test-qsa-keep NAME ${QSA_KEEP_NAME}-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+
+        set_tests_properties(${QSA_KEEP_NAME} ${QSA_KEEP_NAME}-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
+        if (QSA_KEEP_ENV)
+            set_tests_properties(${QSA_KEEP_NAME} ${QSA_KEEP_NAME}-cpu PROPERTIES ENVIRONMENT "${QSA_KEEP_ENV}")
+        endif()
+    endforeach()
+
     llama_build(test-fusion.cpp)
 endif()
 
