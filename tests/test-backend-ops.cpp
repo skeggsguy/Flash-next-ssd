@@ -11743,6 +11743,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {cols, nrows, 1, 1}, 2048));
         }
     }
+    // qwen4exp at its real shapes on the radix path. Reading in: the block top-k, one row per
+    // token of a 4096-token ubatch, one column per block of 4 cells (9K to 64K of context),
+    // 513 blocks (indexer_top_k 2048 + 3, in whole blocks). Writing past ~9K: the gather path's
+    // cell top-k, one row, 2304 cells (the same 2051 padded to 256).
+    for (auto cols : {2304, 4096, 8192, 16384}) {
+        test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {cols, 4096, 1, 1}, 513));
+        test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {cols, 4096, 1, 1}, 2048));
+    }
+    for (auto cols : {9216, 16384, 65536}) {
+        test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {cols, 1, 1, 1}, 2304));
+    }
     // backend sampler: one row of the vocab (llama-sampler.cpp top_k)
     for (auto k : {20, 40}) {
         test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {151936, 1, 1, 1}, k));

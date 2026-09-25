@@ -250,9 +250,11 @@ kernel void kernel_top_k_f32_i32(
         threadgroup atomic_uint * histo     [[threadgroup(0)]],
         threadgroup        uint * sh_bucket [[threadgroup(1)]],
         threadgroup        uint * sh_above  [[threadgroup(2)]],
-        threadgroup atomic_uint * out_count [[threadgroup(3)]],
+        threadgroup        uint * sh_scan   [[threadgroup(3)]],
         uint3   tgpig[[threadgroup_position_in_grid]],
         ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort  sgitg[[simdgroup_index_in_threadgroup]],
+        ushort  tiisg[[thread_index_in_simdgroup]],
         ushort3   ntg[[threads_per_threadgroup]]) {
 
     const uint ncols = args.ne00;
@@ -312,29 +314,87 @@ kernel void kernel_top_k_f32_i32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    if (tid == 0) {
-        atomic_store_explicit(out_count, 0u, memory_order_relaxed);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Compaction. The picks are every key above the threshold and the lowest-index `desired` keys
+    // equal to it, written in ascending index order, so the same row gives the same bytes every run.
+    // An atomic output counter here made both the order and the tie fill a race between simdgroups,
+    // and qwen4exp's sparse attention could then read different blocks from run to run (its scores
+    // are relu'd sums, so many blocks can tie at 0).
+    //
+    // A pick's place is the number of picks before it: the above-threshold keys before it, plus the
+    // ties before it, capped at `desired`. The row is walked in tiles of NPT consecutive elements per
+    // thread (fewer tiles, so fewer barriers), and a threadgroup prefix sum over the threads counts
+    // both kinds at once: an above key counts 1, a tie 1 << 16, and a tile holds at most NPT*1024 of
+    // either, so neither half carries into the other.
+    const uint NPT = 4;
 
-    // emit everything above the threshold, then fill the rest from ties
     const uint threshold = prefix;
+    const uint n_above   = top_k - desired;
+    const uint nsg       = (ntg_x + N_SIMDWIDTH - 1)/N_SIMDWIDTH;
 
-    for (uint i = tid; i < ncols; i += ntg_x) {
-        if (ggml_top_k_f2ui(src0_row[i]) > threshold) {
-            const uint pos = atomic_fetch_add_explicit(out_count, 1u, memory_order_relaxed);
-            dst_row[pos] = (int32_t) i;
+    uint base_above = 0; // picks of each kind in the tiles before this one
+    uint base_tie   = 0;
+
+    for (uint i0 = 0; i0 < ncols; i0 += NPT*ntg_x) {
+        const uint i = i0 + NPT*tid;
+
+        uint flags[NPT];
+        uint flag = 0; // this thread's elements, both kinds
+        for (uint j = 0; j < NPT; ++j) {
+            flags[j] = 0;
+            if (i + j < ncols) {
+                const uint key = ggml_top_k_f2ui(src0_row[i + j]);
+                flags[j] = key > threshold ? 1u : (key == threshold ? 0x10000u : 0u);
+            }
+            flag += flags[j];
         }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint i = tid; i < ncols; i += ntg_x) {
-        if (ggml_top_k_f2ui(src0_row[i]) == threshold) {
-            const uint pos = atomic_fetch_add_explicit(out_count, 1u, memory_order_relaxed);
-            if (pos < top_k) {
-                dst_row[pos] = (int32_t) i;
+        const uint before_sg = simd_prefix_exclusive_sum(flag);
+        if (tiisg == N_SIMDWIDTH - 1) {
+            sh_scan[sgitg] = before_sg + flag;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // sh_scan[0 .. nsg) becomes each simdgroup's offset in the tile, sh_scan[N_SIMDWIDTH] the tile's total
+        if (sgitg == 0) {
+            const uint n   = tiisg < nsg ? sh_scan[tiisg] : 0u;
+            const uint off = simd_prefix_exclusive_sum(n);
+            if (tiisg < nsg) {
+                sh_scan[tiisg] = off;
+            }
+            if (tiisg == N_SIMDWIDTH - 1) {
+                sh_scan[N_SIMDWIDTH] = off + n;
             }
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const uint before = sh_scan[sgitg] + before_sg;
+        const uint total  = sh_scan[N_SIMDWIDTH];
+
+        uint above_before = base_above + (before & 0xFFFFu);
+        uint ties_before  = base_tie   + (before >> 16);
+
+        for (uint j = 0; j < NPT; ++j) {
+            if (flags[j] == 1u) {
+                dst_row[above_before + min(ties_before, desired)] = (int32_t) (i + j);
+                above_before++;
+            } else if (flags[j] != 0u) {
+                if (ties_before < desired) {
+                    dst_row[above_before + ties_before] = (int32_t) (i + j);
+                }
+                ties_before++;
+            }
+        }
+
+        base_above += total & 0xFFFFu;
+        base_tie   += total >> 16;
+
+        // every thread reads the same total, so all of them leave together once the picks are placed
+        if (base_above == n_above && base_tie >= desired) {
+            break;
+        }
+
+        // sh_scan is rewritten by the next tile
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 

@@ -5687,7 +5687,8 @@ static void ggml_metal_op_top_k_bitonic(ggml_metal_op_t ctx, int idx) {
 
 // radix-select: one workgroup per row. Maps each float to an order-preserving unsigned
 // key, finds the k-th largest via 4 radix-8 histogram passes, then compacts the top-k
-// indices. Fast for large k and/or many rows.
+// indices. Fast for large k and/or many rows. The picks come out in ascending index order,
+// ties at the k-th value filled lowest index first, so a row gives the same bytes every run.
 static void ggml_metal_op_top_k_radix(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -5701,8 +5702,9 @@ static void ggml_metal_op_top_k_radix(ggml_metal_op_t ctx, int idx) {
 
     auto pipeline = ggml_metal_library_get_pipeline_top_k_radix(lib, op);
 
-    // one workgroup per row; radix-select the k-th largest value
-    const int nth = std::min(1024, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+    // one workgroup per row; radix-select the k-th largest value. Whole simdgroups: the
+    // compaction's prefix sum takes each simdgroup's total from its last lane
+    const int nth = std::min(1024, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline))/32*32;
 
     ggml_metal_kargs_top_k args = {
         /*.ne00  =*/ ne00,
@@ -5715,11 +5717,12 @@ static void ggml_metal_op_top_k_radix(ggml_metal_op_t ctx, int idx) {
         /*.top_k =*/ (int32_t) op->ne[0],
     };
 
-    // shared memory: 256-entry histogram + bucket/above scalars + output counter
+    // shared memory: 256-entry histogram + bucket/above scalars + the compaction's prefix sum
+    // (one entry per simdgroup, at most 1024/32, and the tile's total)
     const size_t smem_histo  = GGML_PAD(256*sizeof(uint32_t), 16);
     const size_t smem_bucket = GGML_PAD(    sizeof(uint32_t), 16);
     const size_t smem_above  = GGML_PAD(    sizeof(uint32_t), 16);
-    const size_t smem_out    = GGML_PAD(    sizeof(uint32_t), 16);
+    const size_t smem_scan   = GGML_PAD((32 + 1)*sizeof(uint32_t), 16);
 
     ggml_metal_encoder_set_pipeline(enc, pipeline);
     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
@@ -5729,7 +5732,7 @@ static void ggml_metal_op_top_k_radix(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem_histo,  0);
     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem_bucket, 1);
     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem_above,  2);
-    ggml_metal_encoder_set_threadgroup_memory_size(enc, smem_out,    3);
+    ggml_metal_encoder_set_threadgroup_memory_size(enc, smem_scan,   3);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne02, ne03, nth, 1, 1);
 }
