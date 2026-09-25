@@ -5174,7 +5174,10 @@ struct test_mul_mat_id : public test_case {
 // [set 0 | set 1 | ...] with 256-aligned sets and 256 spare bytes, so nb[2] (the record stride) exceeds
 // a set's own ne[1]*nb[1] even for one set. Each (slot, token) pair is owned by one set picked at
 // random, and every other link sees -1 there, so the chain writes each row of the result once.
-// skip_last: the last set owns no pair and its link is all -1.
+// skip_last: the last set owns no pair and its link is all -1. n_rec0: the first set's record count,
+// smaller than the others' the way a desk can hold fewer books than a belt part: the first link's
+// allocation carries every link's Metal scratch, so a reserve sized by the first link's own count
+// would let a later link's id mapping run past it.
 struct test_mul_mat_id_into : public test_case {
     const ggml_type type_a;
     const int n_sets;
@@ -5182,6 +5185,7 @@ struct test_mul_mat_id_into : public test_case {
     const bool b; // broadcast b matrix
     const int64_t n;
     const bool skip_last;
+    const int n_rec0;
 
     static constexpr int64_t m     = 64;
     static constexpr int64_t k     = 256;
@@ -5192,16 +5196,21 @@ struct test_mul_mat_id_into : public test_case {
     size_t stride = 0;
 
     std::string vars() override {
-        return VARS_TO_STR6(type_a, n_sets, n_used, b, n, skip_last);
+        return VARS_TO_STR7(type_a, n_sets, n_used, b, n, skip_last, n_rec0);
     }
 
     double max_nmse_err() override {
         return 5e-4;
     }
 
-    test_mul_mat_id_into(ggml_type type_a, int n_sets, int n_used, bool b, int64_t n, bool skip_last = false)
-        : type_a(type_a), n_sets(n_sets), n_used(n_used), b(b), n(n), skip_last(skip_last) {
-        GGML_ASSERT(n_used <= (n_sets - skip_last) * n_rec);
+    int n_rec_of(int s) const {
+        return s == 0 ? n_rec0 : n_rec;
+    }
+
+    test_mul_mat_id_into(ggml_type type_a, int n_sets, int n_used, bool b, int64_t n, bool skip_last = false, int n_rec0 = n_rec)
+        : type_a(type_a), n_sets(n_sets), n_used(n_used), b(b), n(n), skip_last(skip_last), n_rec0(n_rec0) {
+        GGML_ASSERT(n_rec0 <= n_rec);
+        GGML_ASSERT(n_used <= n_rec0 + (n_sets - 1 - skip_last) * n_rec);
     }
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
@@ -5219,7 +5228,7 @@ struct test_mul_mat_id_into : public test_case {
         ids.clear();
         ggml_tensor * out = nullptr;
         for (int s = 0; s < n_sets; s++) {
-            sets.push_back(ggml_view_3d(ctx, records, k, m, n_rec, ggml_row_size(type_a, k), stride, s * set_bytes));
+            sets.push_back(ggml_view_3d(ctx, records, k, m, n_rec_of(s), ggml_row_size(type_a, k), stride, s * set_bytes));
             ids.push_back(ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n));
             out = ggml_mul_mat_id_into(ctx, sets[s], b, ids[s], out);
         }
@@ -5242,24 +5251,28 @@ struct test_mul_mat_id_into : public test_case {
         std::uniform_real_distribution<float> u(-1.0f, 1.0f);
         std::vector<float>   f(k * m);
         std::vector<uint8_t> q(ggml_row_size(type_a, k) * m);
-        for (ggml_tensor * set : sets) {
-            for (int r = 0; r < n_rec; r++) {
+        for (int s = 0; s < n_sets; s++) {
+            for (int r = 0; r < n_rec_of(s); r++) {
                 for (float & x : f) {
                     x = u(rng);
                 }
                 ggml_quantize_chunk(type_a, f.data(), q.data(), 0, m, k, nullptr);
-                ggml_backend_tensor_set(set, q.data(), r * stride, q.size());
+                ggml_backend_tensor_set(sets[s], q.data(), r * stride, q.size());
             }
         }
 
         // per token, n_used distinct experts from the sets that own pairs; the owner gets the index
-        std::vector<int> pool((n_sets - skip_last) * n_rec);
-        std::iota(pool.begin(), pool.end(), 0);
+        std::vector<std::pair<int, int>> pool; // (set, record)
+        for (int s = 0; s < n_sets - skip_last; s++) {
+            for (int r = 0; r < n_rec_of(s); r++) {
+                pool.emplace_back(s, r);
+            }
+        }
         std::vector<std::vector<int32_t>> planes(n_sets, std::vector<int32_t>(n_used * n, -1));
         for (int64_t t = 0; t < n; t++) {
             std::shuffle(pool.begin(), pool.end(), rng);
             for (int e = 0; e < n_used; e++) {
-                planes[pool[e] / n_rec][t * n_used + e] = pool[e] % n_rec;
+                planes[pool[e].first][t * n_used + e] = pool[e].second;
             }
         }
         for (int s = 0; s < n_sets; s++) {
@@ -10220,6 +10233,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         for (int n : {7, 33}) {
             test_cases.emplace_back(new test_mul_mat_id_into(type_a, 2, 10, false, n, /*skip_last =*/ true));
             test_cases.emplace_back(new test_mul_mat_id_into(type_a, 3, 10, false, n, /*skip_last =*/ true));
+        }
+        // a first set of 4 records before sets of 12, on the matrix path, whose scratch the first link reserves
+        for (int n : {33, 257}) {
+            test_cases.emplace_back(new test_mul_mat_id_into(type_a, 2, 8, false, n, false, /*n_rec0 =*/ 4));
+            test_cases.emplace_back(new test_mul_mat_id_into(type_a, 3, 8, true,  n, false, /*n_rec0 =*/ 4));
         }
     }
 
