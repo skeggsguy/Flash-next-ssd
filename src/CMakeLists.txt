@@ -38,6 +38,7 @@ set(LLAMA_CORE_SOURCES
     llama-model-saver.cpp
     llama-model.cpp
     llama-moe-stream.cpp
+    llama-moe-stream-trace.cpp
     llama-quant.cpp
     llama-sampler.cpp
     llama-vocab.cpp
