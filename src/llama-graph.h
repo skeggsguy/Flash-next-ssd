@@ -1007,6 +1007,23 @@ struct llm_graph_qkv {
     ggml_tensor * v; // [n_embd_head, n_head_kv, n_tokens]
 };
 
+// the expert weights one MoE layer's GEMMs read, for build_moe_expert_gemms (llama-graph-moe-gemms.cpp)
+struct llm_moe_gemms {
+    ggml_tensor * up_exps;
+    ggml_tensor * up_exps_b;
+    ggml_tensor * gate_exps;
+    ggml_tensor * gate_exps_b;
+    ggml_tensor * down_exps;
+    ggml_tensor * down_exps_b;
+    ggml_tensor * gate_up_exps;
+    ggml_tensor * gate_up_exps_b;
+    ggml_tensor * up_exps_s;
+    ggml_tensor * gate_exps_s;
+    ggml_tensor * down_exps_s;
+    llm_ffn_op_type type_op;
+    int             il;
+};
+
 struct llm_graph_context {
     const llm_arch arch;
 
@@ -1186,6 +1203,13 @@ struct llm_graph_context {
              ggml_tensor * gate_exps_s = nullptr,
              ggml_tensor * down_exps_s = nullptr,
              ggml_tensor * selected_experts_in = nullptr) const;
+
+    // build_moe_ffn's expert GEMMs, up/gate through down (llama-graph-moe-gemms.cpp); sel_exp indexes
+    // the biases and per-expert scales, ids_gemm the weights
+    ggml_tensor * build_moe_expert_gemms(const llm_moe_gemms & g,
+             ggml_tensor * cur,
+             ggml_tensor * ids_gemm,
+             ggml_tensor * sel_exp) const;
 
     //
     // inputs
