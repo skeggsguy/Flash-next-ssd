@@ -256,19 +256,23 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
     endforeach()
 
-    # The reading room against no streaming, byte for byte, on the GPU and on the CPU (-ngl 0).
+    # The reading room against no streaming, byte for byte, on the GPU and on the CPU (-ngl 0); -paths
+    # is the study's own I/O path (direct reads, two runners) and the apprentice's graph builds.
     llama_build(test-moe-room-model.cpp)
-    foreach (E64_ARCH qwen4exp qwen3moe)
-        foreach (E64_NGL 99 0)
-            llama_test(
-                test-moe-room-model
-                NAME test-moe-room-model-${E64_ARCH}-ngl${E64_NGL}
-                LABEL main
-                ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" -ngl ${E64_NGL}
-            )
-            set_tests_properties(test-moe-room-model-${E64_ARCH}-ngl${E64_NGL} PROPERTIES
-                FIXTURES_REQUIRED generate-models-e64
-            )
+    llama_build(test-moe-room-model-paths.cpp)
+    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths)
+        foreach (E64_ARCH qwen4exp qwen3moe)
+            foreach (E64_NGL 99 0)
+                llama_test(
+                    ${E64_TEST}
+                    NAME ${E64_TEST}-${E64_ARCH}-ngl${E64_NGL}
+                    LABEL main
+                    ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" -ngl ${E64_NGL}
+                )
+                set_tests_properties(${E64_TEST}-${E64_ARCH}-ngl${E64_NGL} PROPERTIES
+                    FIXTURES_REQUIRED generate-models-e64
+                )
+            endforeach()
         endforeach()
     endforeach()
 
