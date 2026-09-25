@@ -2,9 +2,13 @@
 // every book resident (the harness and the promise: test-moe-room-model.h; the study's I/O path and the
 // apprentice: test-moe-room-model-paths.cpp).
 //
-// Scenarios, each with the room's groups counted so a test that silently fell back to waves fails:
+// Scenarios, each with the room's groups counted so a test that silently fell back to waves fails. They
+// run at the old threshold of 35 tokens (the harness sets LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS; setup says why)
+// except "default", which unsets it:
 //   long      300 tokens read in at -ub 128 (128, 128, 44) then 8 written, parts 4 and parts 1
 //   t_min     105 tokens at -ub 35, the smallest ubatch the room takes
+//   default   the fixtures' own threshold, 160 (20 slips per book): 320 tokens at -ub 160 take the room,
+//             159 tokens take waves
 //   last row  B asking for its last row only, as a server does: the last floor takes waves beside the room
 //   empty     a desk of 62 of 64 books, so two of the four parts hold nothing (all-skip links)
 //   desks     prompt B after A and after C on two fresh models: different desks, the same bytes
@@ -29,12 +33,15 @@ int main(int argc, char ** argv) {
     const segment E = { random_tokens(rng, 20, n_vocab), 0, false };
     const segment S = { random_tokens(rng, 20, n_vocab), 4, true };
     const segment T = { random_tokens(rng, 105, n_vocab), 4, true };
+    const segment G = { random_tokens(rng, 320, n_vocab), 4, true };
+    const segment H = { random_tokens(rng, 159, n_vocab), 0, true };
     segment L = B; // B asking for its last row only: a floor that keeps only output rows (qwen3moe's last) takes waves
     L.all = false;
 
-    outputs ref_b, ref_s, ref_t, ref_l;
+    outputs ref_b, ref_s, ref_t, ref_l, ref_g, ref_h;
     bool ok = run(ref_model, 128, { B }, ref_b, true) && run(ref_model, 128, { S }, ref_s, true) &&
-              run(ref_model, 35, { T }, ref_t, true) && run(ref_model, 128, { L }, ref_l, true);
+              run(ref_model, 35, { T }, ref_t, true) && run(ref_model, 128, { L }, ref_l, true) &&
+              run(ref_model, 160, { G }, ref_g, true) && run(ref_model, 160, { H }, ref_h, true);
     llama_model_free(ref_model);
     if (!ok) {
         fprintf(stderr, "the reference run failed\n");
@@ -55,6 +62,17 @@ int main(int argc, char ** argv) {
     scenario("long, parts 1", room1, 128, { B }, ref_b, 3);
     scenario("long, waves",   waves, 128, { B }, ref_b, 0);
     scenario("t_min: -ub 35", room4, 35, { T }, ref_t, 3);
+    {
+        // the default threshold, 20 slips per book: 160 tokens take the room, 159 do not
+        unsetenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS");
+        llama_model * model = load(room4);
+        check(model != nullptr && model->moe_stream()->room_layout.sweep_min_tokens == 160,
+                "default: the fixtures' threshold is 160 tokens");
+        llama_model_free(model);
+        scenario("default: 320 tokens at -ub 160", room4, 160, { G }, ref_g, 2);
+        scenario("default: 159 tokens take waves", room4, 160, { H }, ref_h, 0);
+        setenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS", G_SWEEP_MIN_TOKENS, 1);
+    }
     {
         // the last row only: the last floor works on the output rows alone, under the threshold, so it
         // takes waves in the same ubatch where every other floor takes the room
@@ -98,6 +116,10 @@ int main(int argc, char ** argv) {
         check(ran && run(m1, 128, { B }, o1, true) && run(m2, 128, { B }, o2, true), "desks: B ran on both");
         check(same(o1.logits, o2.logits) && same(o1.moe, o2.moe), "desks: B after A == B after C, byte for byte");
         check(same(ref_b.logits, o1.logits) && same(ref_b.moe, o1.moe), "desks: and == no streaming");
+        // A or C then B read in through the room, three ubatches each; D, E and the written words take waves
+        const int64_t want = ran ? 6*n_streamed_floors(m1)*(1 + room4.parts) : -1;
+        check(ran && room_of(m1)->stats.n_groups == want && room_of(m2)->stats.n_groups == want,
+                "desks: room groups ran " + std::to_string(want) + " on both");
         llama_model_free(m1);
         llama_model_free(m2);
     }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 static const double GIB = 1024.0*1024.0*1024.0;
 static const double MIB = 1024.0*1024.0;
@@ -24,9 +25,16 @@ uint32_t llama_moe_room_sweep_min_tokens(uint32_t n_expert, uint32_t n_expert_us
     if (n_expert_used == 0 || n_expert_used >= n_expert) {
         return 1; // every word reads every book: any read-in is a sweep
     }
-    // a book goes unread by t words with probability (1 - k/n)^t if every book is equally likely
-    const double t = std::log(0.01)/std::log(1.0 - (double) n_expert_used/n_expert);
-    return (uint32_t) std::ceil(t);
+    // t tokens hand each book t x k / n slips on average: the smallest t that reaches the target
+    const uint64_t slips = (uint64_t) LLAMA_MOE_ROOM_SLIPS_PER_BOOK*n_expert;
+    return (uint32_t) ((slips + n_expert_used - 1)/n_expert_used);
+}
+
+uint32_t llama_moe_room_sweep_min_tokens_env(const char * env_value, uint32_t n_expert, uint32_t n_expert_used) {
+    if (env_value != nullptr) {
+        return (uint32_t) std::max(1, atoi(env_value));
+    }
+    return llama_moe_room_sweep_min_tokens(n_expert, n_expert_used);
 }
 
 // the room's bytes for `floors` floors of look-ahead when the desk has `desk` slots per floor: that

@@ -54,11 +54,28 @@ int main(int argc, char ** argv) {
     }
 
     t.test("sweep threshold", [](testing & t) {
-        // ceil(ln 0.01 / ln(1 - k/n)): 233.5 -> 234 for the library, 34.5 -> 35 for the 64-book fixtures
-        t.assert_equal("10 of 512", 234u, llama_moe_room_sweep_min_tokens(512, 10));
-        t.assert_equal("8 of 64", 35u, llama_moe_room_sweep_min_tokens(64, 8));
-        t.assert_equal("8 of 256", 146u, llama_moe_room_sweep_min_tokens(256, 8));
+        // ceil(20 slips per book x n / k): RR-room's 1,024 tokens for the library, 160 for the 64-book fixtures
+        t.assert_equal("10 of 512", 1024u, llama_moe_room_sweep_min_tokens(512, 10));
+        t.assert_equal("8 of 64", 160u, llama_moe_room_sweep_min_tokens(64, 8));
+        t.assert_equal("8 of 256", 640u, llama_moe_room_sweep_min_tokens(256, 8));
+        t.assert_equal("7 of 64 rounds up", 183u, llama_moe_room_sweep_min_tokens(64, 7)); // 182.9 slips' worth
         t.assert_equal("every book read", 1u, llama_moe_room_sweep_min_tokens(8, 8));
+        t.assert_equal("no slips", 1u, llama_moe_room_sweep_min_tokens(8, 0));
+        // it scales with the model: twice the books, twice the tokens for the same slips per book
+        t.assert_equal("scales with n", 2*llama_moe_room_sweep_min_tokens(512, 10), llama_moe_room_sweep_min_tokens(1024, 10));
+    });
+
+    t.test("sweep threshold from the environment", [](testing & t) {
+        // LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS wins whatever the model's shape; unset (null) is the default
+        t.assert_equal("unset", 1024u, llama_moe_room_sweep_min_tokens_env(nullptr, 512, 10));
+        t.assert_equal("set", 234u, llama_moe_room_sweep_min_tokens_env("234", 512, 10));
+        t.assert_equal("set, fixtures", 35u, llama_moe_room_sweep_min_tokens_env("35", 64, 8));
+        t.assert_equal("above the default", 4096u, llama_moe_room_sweep_min_tokens_env("4096", 64, 8));
+        // at least 1: a read-in of 0 tokens is no read-in, and garbage reads as 0
+        t.assert_equal("0", 1u, llama_moe_room_sweep_min_tokens_env("0", 512, 10));
+        t.assert_equal("negative", 1u, llama_moe_room_sweep_min_tokens_env("-5", 512, 10));
+        t.assert_equal("not a number", 1u, llama_moe_room_sweep_min_tokens_env("abc", 512, 10));
+        t.assert_equal("empty", 1u, llama_moe_room_sweep_min_tokens_env("", 512, 10));
     });
 
     t.test("record stride", [](testing & t) {
@@ -89,7 +106,7 @@ int main(int argc, char ** argv) {
         t.assert_equal("records", 128u, lay.n_records_max);
         t.assert_true("less than a floor warns", contains(lay.warning, "0.58 floors of look-ahead, less than one"));
         t.assert_equal("startup line", std::string("reading room: 0.25 GiB = 0.58 floors of look-ahead, each floor in "
-                "4 parts (up to 110 MiB); desk 0.1 GiB (36 slots per floor); reading in of 146+ tokens uses the room, "
+                "4 parts (up to 110 MiB); desk 0.1 GiB (36 slots per floor); reading in of 640+ tokens uses the room, "
                 "shorter uses waves"), llama_moe_room_describe(lay));
     });
 
@@ -133,7 +150,7 @@ int main(int argc, char ** argv) {
         t.assert_true("room is 1.25 of the floor that desk leaves", lay.room_bytes >= want && lay.room_bytes < want + 256);
         t.assert_true("desk and room within the budget", lay.desk_bytes + lay.room_bytes <= b.budget);
         t.assert_true("about 1.1 GiB", lay.room_bytes > 1100*MiB && lay.room_bytes < 1150*MiB);
-        t.assert_true("234+ tokens", contains(llama_moe_room_describe(lay), "reading in of 234+ tokens uses the room"));
+        t.assert_true("1024+ tokens", contains(llama_moe_room_describe(lay), "reading in of 1024+ tokens uses the room"));
     });
 
     t.test("refusals", [](testing & t) {

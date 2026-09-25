@@ -56,6 +56,10 @@ int main(int argc, char ** argv) {
         outputs got;
         check(model != nullptr && run(model, 128, { F, F }, got, true, apprentice_build), "apprentice between batches: ran");
         check(g_n_reused >= 1, "apprentice between batches: the second batch reused the graph (" + std::to_string(g_n_reused) + ")");
+        // both batches read in through the room, or the reused graph's desk ops were never tested
+        const int64_t want = model ? 2*n_streamed_floors(model)*(1 + room4.parts) : -1;
+        check(model != nullptr && room_of(model)->stats.n_groups == want,
+                "apprentice between batches: room groups ran " + std::to_string(want));
         // each batch is B's first ubatch: its logits are ref_b's first 128 rows, its MoE outputs the other batch's
         const size_t n1 = (size_t) 128*n_vocab, m1 = got.moe.size()/2;
         check(got.logits.size() == 2*n1 && m1 > 0 &&

@@ -44,11 +44,9 @@ llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & param
     books.n_expert      = hparams.n_expert;
     books.n_expert_used = hparams.n_expert_used_max();
 
-    // the default comes from the arithmetic; the rung may move it (llama-moe-room-size.h says why)
-    books.sweep_min_tokens = llama_moe_room_sweep_min_tokens(books.n_expert, books.n_expert_used);
-    if (const char * s = std::getenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS")) {
-        books.sweep_min_tokens = (uint32_t) std::max(1, atoi(s));
-    }
+    // the default is ~20 slips per book, from RR-room; the rung may move it (llama-moe-room-size.h says why)
+    books.sweep_min_tokens = llama_moe_room_sweep_min_tokens_env(std::getenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS"),
+            books.n_expert, books.n_expert_used);
 
     // one book's bytes on each floor, weight by weight: the desk keeps each weight in its own slot
     // tensor, the belt keeps a book's weights together as one record

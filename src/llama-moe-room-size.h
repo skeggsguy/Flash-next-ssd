@@ -22,6 +22,19 @@ static const int32_t  LLAMA_MOE_ROOM_PARTS_MAX     = 16;
 static const uint32_t LLAMA_MOE_ROOM_RECORDS_MAX   = 1024; // Metal's book index map (map0) holds at most 1024 books
 static const size_t   LLAMA_MOE_ROOM_SLAB_ALIGN    = 256;
 
+// The room takes a reading-in batch once the batch's slips name each book about this many times on
+// average. The room fetches every book a floor's desk lacks whether or not a slip asks for it, while
+// waves fetch only the books the slips name, so the room only pays once few books go unasked.
+// Measured on Flash-Next (RR-room, 2026-09-26: 12 real papers, room vs waves at desk 30, two runners):
+// read-ins of 300-1,000 tokens (6-20 slips per book) were 16% slower with the room, 1,000-2,000 (20-40)
+// level, 2,000 and up 21-29% faster, and replaying those steps with the room from 1,024 tokens gave the
+// best total (-22.4% pen to paper, level with 1,536; 512 gave -21.8%). It is counted in slips per
+// book, not tokens, because how many books go unasked follows the slips each book gets, t x k / n
+// (t tokens, k books a word reads, n books a floor), not t alone: under even routing the unasked share
+// is about e^-(t k / n) on any shape. So the same 20 carries to a model with more or fewer books,
+// assuming its real routing is skewed alike.
+static const uint32_t LLAMA_MOE_ROOM_SLIPS_PER_BOOK = 20;
+
 // what was asked for: llama_model_params' moe_stream_room_mode / _value / _parts
 struct llama_moe_room_request {
     int32_t mode  = LLAMA_MOE_ROOM_OFF; // enum llama_moe_room_mode
@@ -59,13 +72,17 @@ struct llama_moe_room_layout {
 // a book's belt record: its weights one after another, each starting 256-aligned
 size_t llama_moe_room_record_stride(const size_t * nb_weight, size_t n_weight);
 
-// Read-ins of at least this many tokens sweep the room rather than run waves on the desk. The default
-// is the size at which, if every book were equally likely, fewer than 1% of a floor's books would go
-// unread: ceil(ln 0.01 / ln(1 - k/n)), 234 at 10 of 512 and 35 at 8 of 64. Real routing is skewed, so
-// more books than that go unread; what makes the sweep worth it is cost (a whole sweep at 12.3 GB/s
-// against today's waves at 300-2,500 tokens), which is why the rung may move it with
-// LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS (read by the manager, not here).
+// Read-ins of at least this many tokens sweep the room rather than run waves on the desk:
+// ceil(LLAMA_MOE_ROOM_SLIPS_PER_BOOK x n / k) for n books a floor and k a word reads, 1,024 at 10 of 512
+// (Flash-Next) and 160 at 8 of 64 (the test fixtures); 1 when every word reads every book, because then
+// waves fetch every book too. The threshold is per reading-in batch (ubatch): a read-in cut into
+// batches takes the room for each batch that reaches it.
 uint32_t llama_moe_room_sweep_min_tokens(uint32_t n_expert, uint32_t n_expert_used);
+
+// The threshold the room runs with. env_value is LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS's value (the manager
+// reads the environment, not this file): when it is set it wins, as a whole number of at least 1, so a
+// rung can move the threshold without a rebuild; null gives the default above.
+uint32_t llama_moe_room_sweep_min_tokens_env(const char * env_value, uint32_t n_expert, uint32_t n_expert_used);
 
 // the layout the request makes of these books, or the plain-words reason it cannot
 llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req, const llama_moe_room_books & books);

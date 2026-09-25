@@ -49,6 +49,8 @@ struct outputs {
     std::vector<float> moe;    // every ffn_moe_out, in compute order
 };
 
+const char * const G_SWEEP_MIN_TOKENS = "35"; // the threshold the scenarios run at (setup says why)
+
 int g_ngl = 99;
 std::string g_summary; // the last "reading room =" line print_stats wrote
 std::string g_path;
@@ -263,6 +265,12 @@ llama_model * setup(int argc, char ** argv) {
         }
     }, nullptr);
     ggml_backend_load_all();
+
+    // The fixtures' own threshold is 160 tokens (20 slips per book at 8 of 64), but these scenarios want
+    // several small room batches in a 1,024-token context, the smallest batch the room takes (-ub 35) and
+    // a floor under the threshold beside room floors, so they run at the old 35 through the rung's own
+    // override, read at each model load; test-moe-room-model.cpp's "default threshold" unsets it.
+    setenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS", G_SWEEP_MIN_TOKENS, 1);
 
     config ref_cfg;
     ref_cfg.stream = false;
