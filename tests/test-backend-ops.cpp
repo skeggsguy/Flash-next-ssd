@@ -5169,6 +5169,108 @@ struct test_mul_mat_id : public test_case {
     }
 };
 
+// GGML_OP_MUL_MAT_ID_INTO: one chain of ggml_mul_mat_id_into over n_sets weight sets that are strided
+// views of one record tensor, the way expert streaming's belt holds books: each of n_rec records is
+// [set 0 | set 1 | ...] with 256-aligned sets and 256 spare bytes, so nb[2] (the record stride) exceeds
+// a set's own ne[1]*nb[1] even for one set. Each (slot, token) pair is owned by one set picked at
+// random, and every other link sees -1 there, so the chain writes each row of the result once.
+// skip_last: the last set owns no pair and its link is all -1.
+struct test_mul_mat_id_into : public test_case {
+    const ggml_type type_a;
+    const int n_sets;
+    const int n_used;
+    const bool b; // broadcast b matrix
+    const int64_t n;
+    const bool skip_last;
+
+    static constexpr int64_t m     = 64;
+    static constexpr int64_t k     = 256;
+    static constexpr int     n_rec = 12;
+
+    std::vector<ggml_tensor *> sets;
+    std::vector<ggml_tensor *> ids; // one per set, drawn together
+    size_t stride = 0;
+
+    std::string vars() override {
+        return VARS_TO_STR6(type_a, n_sets, n_used, b, n, skip_last);
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    test_mul_mat_id_into(ggml_type type_a, int n_sets, int n_used, bool b, int64_t n, bool skip_last = false)
+        : type_a(type_a), n_sets(n_sets), n_used(n_used), b(b), n(n), skip_last(skip_last) {
+        GGML_ASSERT(n_used <= (n_sets - skip_last) * n_rec);
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const size_t set_bytes = GGML_PAD(ggml_row_size(type_a, k) * m, 256);
+        stride = set_bytes * n_sets + 256;
+
+        const int64_t n_blocks = (n_rec * stride + ggml_type_size(type_a) - 1) / ggml_type_size(type_a);
+        ggml_tensor * records = ggml_new_tensor_1d(ctx, type_a, n_blocks * ggml_blck_size(type_a));
+        ggml_set_name(records, "records");
+
+        ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, this->b ? 1 : n_used, n);
+        ggml_set_name(b, "b");
+
+        sets.clear();
+        ids.clear();
+        ggml_tensor * out = nullptr;
+        for (int s = 0; s < n_sets; s++) {
+            sets.push_back(ggml_view_3d(ctx, records, k, m, n_rec, ggml_row_size(type_a, k), stride, s * set_bytes));
+            ids.push_back(ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n));
+            out = ggml_mul_mat_id_into(ctx, sets[s], b, ids[s], out);
+        }
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->type == GGML_TYPE_F32 && t->view_src == NULL && t->op == GGML_OP_NONE) {
+                init_tensor_uniform(t);
+            }
+        }
+
+        std::random_device rd;
+        std::default_random_engine rng(rd());
+
+        // each record of each set gets whole quantized rows (the padding stays unwritten, never read)
+        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+        std::vector<float>   f(k * m);
+        std::vector<uint8_t> q(ggml_row_size(type_a, k) * m);
+        for (ggml_tensor * set : sets) {
+            for (int r = 0; r < n_rec; r++) {
+                for (float & x : f) {
+                    x = u(rng);
+                }
+                ggml_quantize_chunk(type_a, f.data(), q.data(), 0, m, k, nullptr);
+                ggml_backend_tensor_set(set, q.data(), r * stride, q.size());
+            }
+        }
+
+        // per token, n_used distinct experts from the sets that own pairs; the owner gets the index
+        std::vector<int> pool((n_sets - skip_last) * n_rec);
+        std::iota(pool.begin(), pool.end(), 0);
+        std::vector<std::vector<int32_t>> planes(n_sets, std::vector<int32_t>(n_used * n, -1));
+        for (int64_t t = 0; t < n; t++) {
+            std::shuffle(pool.begin(), pool.end(), rng);
+            for (int e = 0; e < n_used; e++) {
+                planes[pool[e] / n_rec][t * n_used + e] = pool[e] % n_rec;
+            }
+        }
+        for (int s = 0; s < n_sets; s++) {
+            ggml_backend_tensor_set(ids[s], planes[s].data(), 0, ggml_nbytes(ids[s]));
+        }
+    }
+
+    // links before the last leave rows undefined, so only the whole chain's result is compared
+    bool run_whole_graph() override { return true; }
+};
+
 // GGML_OP_MUL_MAT_ID + GGML_OP_ADD or GGML_OP_MUL
 struct test_mul_mat_id_fusion : public test_case {
     const ggml_type type_a;
@@ -10102,6 +10204,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, 16, 16, 256, {2, 3}, {1, 1}, {0, 2, 1, 3}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, 16, 16, 256, {2, 3}, {1, 1}, {0, 1, 3, 2}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, 16, 16, 256, {2, 3}, {1, 1}, {0, 3, 2, 1}));
+
+    // the book types of expert streaming's editions; fewer than 32 tokens take Metal's mat-vec id
+    // kernel, 32 and more the matrix one
+    for (ggml_type type_a : {GGML_TYPE_F16, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q8_0}) {
+        for (int n_used : {8, 10}) {
+            for (int n : {1, 7, 31, 33, 257}) {
+                for (bool b : {false, true}) {
+                    for (int n_sets : {1, 2, 3}) {
+                        test_cases.emplace_back(new test_mul_mat_id_into(type_a, n_sets, n_used, b, n));
+                    }
+                }
+            }
+        }
+        for (int n : {7, 33}) {
+            test_cases.emplace_back(new test_mul_mat_id_into(type_a, 2, 10, false, n, /*skip_last =*/ true));
+            test_cases.emplace_back(new test_mul_mat_id_into(type_a, 3, 10, false, n, /*skip_last =*/ true));
+        }
+    }
 
     // token-tile boundary coverage. With n_used == n_mats every token routes to every expert, so
     // each expert receives exactly n rows, with no dependence on the random draw. mul_mm_id is used
