@@ -44,6 +44,9 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-remap.cpp
     llama-moe-stream-stats.cpp
     llama-moe-stream-trace.cpp
+    llama-moe-stream-wave-ops.cpp
+    llama-moe-stream-wave-plan.cpp
+    llama-moe-stream-wave-stage.cpp
     llama-quant.cpp
     llama-sampler.cpp
     llama-vocab.cpp
