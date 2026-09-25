@@ -196,7 +196,9 @@ struct llama_moe_stream_work {
     llama_moe_stream_layer * sl = nullptr;
 
     int32_t  expert = -1;
-    int32_t  slot   = -1;
+    int32_t  slot   = -1; // -1: a read onto the reading room's belt, not into a desk slot
     int32_t  widx   = -1; // which weight slab of the expert; one work item per slab
-    uint64_t gen    = 0;  // stale unless it matches slot_gen[slot]
+    uint64_t gen    = 0;  // stale unless it matches slot_gen[slot] (belt: the part's seq, still filling)
+
+    size_t   ring_offs = 0; // belt only: where on the belt this slab goes
 };

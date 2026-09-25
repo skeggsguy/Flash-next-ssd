@@ -70,6 +70,12 @@ struct llama_moe_stream_stats {
     int64_t n_bytes_file = 0;
     int64_t n_bytes_alt  = 0;
 
+    // Time each runner had at least one read in flight. Against the window it is how busy the drive
+    // was; against its bytes, how fast it went while busy. The reading room is meant to keep both
+    // runners busy through a read-in, and this is where that shows.
+    int64_t t_busy_file_us = 0;
+    int64_t t_busy_alt_us  = 0;
+
     // read latency distribution; see MOE_STREAM_READ_BUCKET_US
     int64_t n_read_bucket[MOE_STREAM_READ_BUCKETS] = {0};
 };

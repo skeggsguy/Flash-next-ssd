@@ -41,6 +41,8 @@ bool moe_stream_partition();
 // note: multiple contexts decoding the same streamed model concurrently are not supported -
 // one context can evict slots referenced by the other's in-flight graph.
 
+struct llama_moe_room;
+
 struct llama_moe_stream {
     uint32_t n_slots      = 0; // expert cache slots per streamed layer
     int32_t  n_io_threads = 0;
@@ -142,6 +144,12 @@ struct llama_moe_stream {
     // width cost bandwidth (of which the drive has ~6x spare) instead of demand latency.
     std::deque<llama_moe_stream_work> q_spec;
 
+    // The reading room's reads (llama-moe-room.h): the belt's parts and a cold desk's first books, in
+    // the order the GPU will need them. Between the two: writing's trips (q_demand) always go first,
+    // and a prefetch guess waits until the sweep's books are in.
+    std::deque<llama_moe_stream_work> q_room;
+    std::unique_ptr<llama_moe_room>   room; // null unless room_layout.on
+
     // cap the speculative backlog: a prefetch that is still queued when its layer arrives has done
     // nothing but reserve a slot and burn bandwidth
     size_t q_spec_max = 0;
@@ -179,6 +187,13 @@ struct llama_moe_stream {
     int64_t                stats_t_last_us  = 0;
     llama_moe_stream_stats stats_prev;
     void maybe_dump_stats_locked();
+
+    // each runner's busy time for the drives line (llama-moe-stream-io.cpp); [0] file, [1] alt
+    int32_t busy_n[2]  = { 0, 0 };
+    int64_t busy_t0[2] = { 0, 0 };
+    void busy_begin_locked(bool alt);
+    void busy_end_locked(bool alt);
+    void busy_flush_locked(int64_t now); // count a read still in flight up to now
 
     // Per-expert selection counts, to answer "is expert usage skewed enough to be worth exploiting?"
     // (e.g. giving rarely-routed experts fewer bits). Off unless LLAMA_MOE_STREAM_HOTNESS is set;

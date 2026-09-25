@@ -1,5 +1,6 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
+#include "llama-moe-room.h"
 
 #include "llama-impl.h"
 
@@ -97,6 +98,7 @@ llama_moe_stream::~llama_moe_stream() {
         std::lock_guard<std::mutex> lock(mtx);
         shutting_down = true;
         q_demand.clear();
+        q_room.clear();
         q_spec.clear();
     }
     cv_work.notify_all();
@@ -272,6 +274,12 @@ void llama_moe_stream::alloc_bufs(bool no_alloc) {
 
         LLAMA_LOG_INFO("%s: %12s expert cache size = %8.2f MiB (%u slots per layer)\n",
                 __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0, n_slots);
+    }
+
+    // the reading room's belt, one more buffer after the desk's (llama-moe-room.cpp)
+    if (room_layout.on) {
+        room = std::make_unique<llama_moe_room>(*this, room_layout);
+        room->alloc(no_alloc);
     }
 }
 

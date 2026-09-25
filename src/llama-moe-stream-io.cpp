@@ -1,5 +1,6 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
+#include "llama-moe-room.h"
 
 #include "ggml-backend.h"
 
@@ -112,30 +113,44 @@ void llama_moe_stream::worker_loop() {
 
     std::unique_lock<std::mutex> lk(mtx);
     while (true) {
-        cv_work.wait(lk, [&]{ return shutting_down || !q_demand.empty() || !q_spec.empty(); });
+        cv_work.wait(lk, [&]{ return shutting_down || !q_demand.empty() || !q_room.empty() || !q_spec.empty(); });
         if (shutting_down) {
             break;
         }
 
-        // demand first, always: a layer is blocked on those, nothing is blocked on a prefetch
+        // demand first, always: a layer is blocked on those, nothing is blocked on a prefetch. The reading
+        // room's sweep comes between: the GPU will need those books, but writing's trips go first.
         llama_moe_stream_work w;
         if (!q_demand.empty()) {
             w = q_demand.front();
             q_demand.pop_front();
+        } else if (!q_room.empty()) {
+            w = q_room.front();
+            q_room.pop_front();
         } else {
             w = q_spec.front();
             q_spec.pop_front();
         }
 
         auto & sl = *w.sl;
+        // a belt read: stale once its part is gone or cancelled (checked again when it lands)
+        const bool ring = w.slot < 0;
+        if (ring && !room->worker_begin_locked(w)) {
+            continue;
+        }
         // no per-slot exclusion: several workers legitimately hold different slabs of the SAME slot
         // at once, which is the entire point. Staleness is still checked per slot.
-        if (w.gen != sl.slot_gen[w.slot] ||
+        if (!ring && (w.gen != sl.slot_gen[w.slot] ||
             sl.slot_state[w.slot] != LLAMA_MOE_STREAM_SLOT_LOADING ||
             sl.slot_expert[w.slot] != w.expert ||
-            w.widx < 0 || (size_t) w.widx >= sl.weights.size()) {
+            w.widx < 0 || (size_t) w.widx >= sl.weights.size())) {
             continue; // stale item
         }
+
+        // two runners: low expert ids from the model's own shards, high ids from the alt copy.
+        // The offset is the same in both, because the alt shards are byte-identical copies.
+        const bool alt = use_alt(w.expert, sl.n_expert);
+        busy_begin_locked(alt);
 
         lk.unlock();
 
@@ -154,13 +169,13 @@ void llama_moe_stream::worker_loop() {
         const auto & wt = sl.weights[w.widx];
         uint8_t * dst = nullptr;
         if (!use_direct_io && !no_zerocopy) {
-            auto * host = (uint8_t *) ggml_backend_tensor_get_host_ptr(wt.cache);
-            dst = host ? host + (size_t) w.slot*wt.nb_expert : nullptr;
+            if (ring) {
+                dst = room->host ? room->host + w.ring_offs : nullptr;
+            } else {
+                auto * host = (uint8_t *) ggml_backend_tensor_get_host_ptr(wt.cache);
+                dst = host ? host + (size_t) w.slot*wt.nb_expert : nullptr;
+            }
         }
-
-        // two runners: low expert ids from the model's own shards, high ids from the alt copy.
-        // The offset is the same in both, because the alt shards are byte-identical copies.
-        const bool alt = use_alt(w.expert, sl.n_expert);
 
         const int64_t t0 = ggml_time_us();
         const uint8_t * data = llama_moe_stream_pread(*(alt ? files_alt : files)[wt.file_idx], dst ? dst : staging,
@@ -168,11 +183,16 @@ void llama_moe_stream::worker_loop() {
         const int64_t t1 = ggml_time_us();
         const bool ok = data != nullptr;
         if (ok && dst == nullptr) {
-            ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
+            if (ring) {
+                ggml_backend_tensor_set(room->whole, data, w.ring_offs, wt.nb_expert);
+            } else {
+                ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
+            }
         }
         const int64_t t2 = ggml_time_us();
 
         lk.lock();
+        busy_end_locked(alt);
 
         stats.t_io_read_us   += t1 - t0;
         stats.t_io_upload_us += ok ? t2 - t1 : 0;
@@ -190,7 +210,11 @@ void llama_moe_stream::worker_loop() {
             stats.n_read_bucket[b]++;
         }
 
-        if (!ok) {
+        if (ring) {
+            // never READY on a failed read; the room's ops abort on load_failed
+            load_failed = load_failed || !ok;
+            room->worker_end_locked(w, ok);
+        } else if (!ok) {
             load_failed = true;
             sl.slot_pending[w.slot] = 0;
         } else if (w.gen == sl.slot_gen[w.slot] && sl.slot_pending[w.slot] > 0) {
@@ -205,4 +229,27 @@ void llama_moe_stream::worker_loop() {
     lk.unlock();
 
     moe_aligned_free(staging);
+}
+
+// Each runner's busy time: from its first read in flight to its last, however many overlap. The reads'
+// own durations overlap across threads and cannot say how busy a drive is; this can.
+void llama_moe_stream::busy_begin_locked(bool alt) {
+    if (busy_n[alt]++ == 0) {
+        busy_t0[alt] = ggml_time_us();
+    }
+}
+
+void llama_moe_stream::busy_end_locked(bool alt) {
+    if (--busy_n[alt] == 0) {
+        (alt ? stats.t_busy_alt_us : stats.t_busy_file_us) += ggml_time_us() - busy_t0[alt];
+    }
+}
+
+void llama_moe_stream::busy_flush_locked(int64_t now) {
+    for (int alt = 0; alt < 2; alt++) {
+        if (busy_n[alt] > 0) {
+            (alt ? stats.t_busy_alt_us : stats.t_busy_file_us) += now - busy_t0[alt];
+            busy_t0[alt] = now;
+        }
+    }
 }
