@@ -14,6 +14,11 @@
 // residual stream and the logits would not move even if every book came from the wrong slot. Each
 // floor's MoE output (ffn_moe_out) is therefore captured with the eval callback and compared too.
 //
+// What this comparison cannot see: both runs share build_moe_expert_gemms (the expert GEMMs, their
+// biases and per-expert scales), so a wiring error there moves the reference exactly as it moves the
+// streamed run - swapping the up and gate scales stayed green here. That wiring is what the old/new
+// comparison below checks (--no-ref --dump against a snapshot of an earlier build), not this test.
+//
 // Also the old/new gate tool for the book manager split (patch R): --no-ref skips the reference
 // model so a GGML_SCHED_DEBUG=2 listing holds the streamed graphs only, and --dump FILE writes the
 // streamed logits and then the captured MoE outputs as raw floats, for a byte comparison of two builds.
