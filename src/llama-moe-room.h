@@ -129,6 +129,10 @@ struct llama_moe_room {
     bool worker_begin_locked(const llama_moe_stream_work & w); // false: the read is stale, skip it
     void worker_end_locked(const llama_moe_stream_work & w, bool ok);
 
+    // the stats lines (llama-moe-room-stats.cpp): a window's `moe stream: room` line, and the run's total
+    void dump_stats_locked(int64_t dt_us);
+    void print_stats_locked() const;
+
     // the ops (llama-moe-room-ops.cpp), under mgr.mtx: each writes its group's id plane
     void desk_locked(std::unique_lock<std::mutex> & lk, llama_moe_room_floor & F, const int32_t * ids, int64_t n, int32_t * out);
     void part_locked(std::unique_lock<std::mutex> & lk, llama_moe_room_floor & F, int32_t g, const int32_t * ids, int64_t n, int32_t * out);

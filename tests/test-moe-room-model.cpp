@@ -52,6 +52,7 @@ struct outputs {
 };
 
 int g_ngl = 99;
+std::string g_summary; // the last "reading room =" line print_stats wrote
 std::string g_path;
 
 bool capture_moe_out(ggml_tensor * t, bool ask, void * user_data) {
@@ -210,6 +211,12 @@ void scenario(const std::string & name, const config & c, uint32_t n_ubatch, con
     const int64_t groups  = room ? room->stats.n_groups : 0;
     const int64_t want    = room_ubatches*n_streamed_floors(model)*(1 + c.parts);
     check(groups == want, name + ": room groups ran " + std::to_string(groups) + " of " + std::to_string(want));
+    if (room != nullptr) {
+        g_summary.clear();
+        llama_moe_stream_print_stats(model);
+        check(g_summary.find(" " + std::to_string(groups) + " groups,") != std::string::npos,
+                name + ": the run's summary counts them");
+    }
     if (room_ubatches == 0) {
         printf("  %-72s nmse logits %.3e moe %.3e\n", (name + ": waves vs reference (printed)").c_str(),
                 nmse(ref.logits, got.logits), nmse(ref.moe, got.moe));
@@ -237,7 +244,12 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "usage: %s -m model.gguf [-ngl N]\n", argv[0]);
         return 1;
     }
-    llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
+    // silent, except that the run's room summary (print_stats) is caught to check it is written
+    llama_log_set([](ggml_log_level, const char * text, void *) {
+        if (strstr(text, "moe stream: reading room = ") != nullptr) {
+            g_summary = text;
+        }
+    }, nullptr);
     ggml_backend_load_all();
 
     config ref_cfg;

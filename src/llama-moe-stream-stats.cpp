@@ -1,4 +1,5 @@
 #include "llama-moe-stream.h"
+#include "llama-moe-room.h"
 
 #include "llama-impl.h"
 
@@ -33,6 +34,7 @@ void llama_moe_stream::maybe_dump_stats_locked() {
     if (dt < stats_dump_us) {
         return;
     }
+    busy_flush_locked(now);
 
     const int64_t d_calls   = stats.n_calls          - stats_prev.n_calls;
     const int64_t d_hit     = stats.n_hit            - stats_prev.n_hit;
@@ -100,6 +102,17 @@ void llama_moe_stream::maybe_dump_stats_locked() {
                     __func__, d_bf/1048576.0, d_ba/1048576.0,
                     d_bt > 0 ? 100.0*d_bf/d_bt : 0.0,
                     d_bt > 0 ? 100.0*d_ba/d_bt : 0.0);
+
+            // how busy each runner was, and how fast it read while busy
+            const int64_t d_tf = stats.t_busy_file_us - stats_prev.t_busy_file_us;
+            const int64_t d_ta = stats.t_busy_alt_us  - stats_prev.t_busy_alt_us;
+            LLAMA_LOG_WARN("%s: moe stream: drives busy file/alt = %5.1f%%/%5.1f%% | %5.2f/%5.2f GB/s\n",
+                    __func__, dt > 0 ? 100.0*d_tf/dt : 0.0, dt > 0 ? 100.0*d_ta/dt : 0.0,
+                    d_tf > 0 ? d_bf/1e3/d_tf : 0.0, d_ta > 0 ? d_ba/1e3/d_ta : 0.0);
+        }
+
+        if (room) {
+            room->dump_stats_locked(dt);
         }
 
         if (n_slot_chk > 0) {
@@ -276,6 +289,9 @@ void llama_moe_stream::print_stats() {
     if (n_slot_chk > 0) {
         LLAMA_LOG_WARN("%s: moe stream: gpu slot resolve = %" PRId64 " calls verified, %" PRId64 " mismatches\n",
                 __func__, n_slot_chk, n_slot_bad);
+    }
+    if (room) {
+        room->print_stats_locked();
     }
     {
         const int64_t n_bytes = stats.n_bytes_file + stats.n_bytes_alt;
