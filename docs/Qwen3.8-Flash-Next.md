@@ -599,8 +599,9 @@ Upstream never tuned this shape. Code plus tuning generation. Unscoped.
   deliberately — do not lose it by accident.
 - **Re-baseline the pre-M5-Pro half of this log, or mark it historical.** Figures older than
   2026-09-03 are M1 Max, several on a checkpoint that no longer exists.
-- **Decide whether to keep `LLAMA_MOE_STREAM_PLE_DIRECT`.** Correct, off by default, buys nothing
-  measurable. The alternative is deleting it.
+- ~~**Decide whether to keep `LLAMA_MOE_STREAM_PLE_DIRECT`.**~~ Deleted 2026-09-25 with the whole PLE
+  row streaming (patch R1, `0eb1ad728`): at `67eb49ef3` nothing called `register_ple`, so the table
+  was never registered and the knob did nothing.
 - `~/models/qwen38-flash-next-v2` (97 GiB) is superseded by v3 and can be deleted.
 - The PLE buffer-overflow fix in `src/llama-moe-stream.cpp` is still uncommitted.
 
@@ -758,7 +759,7 @@ Four things differ from the M1 Max command at the top of this log:
 - **`-c 98304`, not 131072.** 131072 with cache 36 and MTP hits a GPU OOM. Above ~98k, drop to
   cache 32 and the full 131072 works.
 - **Do not set `LLAMA_MOE_STREAM_PLE_DIRECT`.** Measured level with the buffered default, so it
-  buys nothing.
+  buys nothing. (Historical: the knob and the PLE row streaming were deleted 2026-09-25, patch R1.)
 - **`--spec-max-prompt 0` (off), not 32768.** The flag counts the whole prompt and ignores the
   prompt cache, so in a running chat it disables MTP permanently once history crosses the limit -
   measured on live traffic, that cost 52 seconds on a single request. Only set a limit for one-shot
@@ -963,7 +964,10 @@ multiple GiB to serve nothing. Now 512.
 
 **Verdict: keep buffered. Uncached reads make no measurable difference.**
 
-`LLAMA_MOE_STREAM_PLE_DIRECT` opens the PLE file with `F_NOCACHE` and reads uncached. Two
+(Historical. The knob and the PLE row streaming were deleted 2026-09-25, patch R1 `0eb1ad728`: at
+`67eb49ef3` `register_ple` had no caller, so the PLE path was already dead there.)
+
+`LLAMA_MOE_STREAM_PLE_DIRECT` opened the PLE file with `F_NOCACHE` and reads uncached. Two
 interleaved pairs on a fixed build, order reversed for the second pair, 11196-token prefill with
 `cache_prompt` off, 256 tokens decoded, first request of each arm discarded as cold:
 

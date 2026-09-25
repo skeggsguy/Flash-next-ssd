@@ -111,7 +111,8 @@ FreeToken's merged #311 streams the PLE table with `O_DIRECT` and states *"No RA
 A/B showed zero decode difference."* This tree deliberately went the other way, and
 `llama-moe-stream.h` recorded "tiny PLE rows benefit from the page cache".
 
-`LLAMA_MOE_STREAM_PLE_DIRECT` now toggles it. **Measured on a correct build, the two are level**,
+`LLAMA_MOE_STREAM_PLE_DIRECT` toggled it (deleted 2026-09-25 with the PLE row streaming, patch R1:
+at `67eb49ef3` `register_ple` had no caller). **Measured on a correct build, the two are level**,
 which matches FreeToken's own "zero decode difference" more closely than it matches any win:
 
 | arm | order | pp t/s | tg t/s |
