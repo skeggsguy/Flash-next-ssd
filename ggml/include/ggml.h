@@ -604,6 +604,7 @@ extern "C" {
         GGML_OP_MOE_SLOT_RESOLVE,
         GGML_OP_UNION_BUILD,
         GGML_OP_FLASH_ATTN_UNION,
+        GGML_OP_MUL_MAT_ID_INTO,
 
         GGML_OP_COUNT,
     };
@@ -2473,6 +2474,24 @@ extern "C" {
             int                   n_slots,
             int                   layer,
             int                   mode);
+
+    // ggml_mul_mat_id whose pairs may be skipped, for one expert GEMM whose experts live in several
+    // tensors (expert streaming's reading room: some books on the desk, the rest on the belt). Build a
+    // chain: the first call takes into == NULL, each later one takes the previous result as into, and
+    // every (expert slot, token) pair gets a valid id in exactly one link and -1 in the others. Each
+    // output row is then written exactly once, by the same kernel an unsplit ggml_mul_mat_id would run.
+    //
+    // ids may hold -1: that pair is not computed and its row is not written. into == NULL: new tensor,
+    // skipped rows undefined. into != NULL: result is a view of into; skipped rows keep into's values.
+    // into must itself be a ggml_mul_mat_id_into result: the chain's first link reserves the scratch
+    // every later link's kernel uses (Metal), and a view of it keeps it alive in the graph allocator.
+    // A new op rather than a flag, so a backend that cannot skip refuses it in supports_op.
+    GGML_API struct ggml_tensor * ggml_mul_mat_id_into(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * as,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids,
+            struct ggml_tensor  * into);
 
     // union-8 support: dedup the top-k selections of a BLOCK of queries into one shared list.
     // sel is I32 [n_sel, n_tokens]; the result is I32 [max_union + 1, n_blocks] where each entry

@@ -1103,9 +1103,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "MOE_SLOT_RESOLVE",
     "UNION_BUILD",
     "FLASH_ATTN_UNION",
+    "MUL_MAT_ID_INTO",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1222,9 +1223,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "moe_slot_resolve(ids, state, ref)",
     "union_build(x)",
     "flash_attn_union(x)",
+    "mul_mat_id_into(as,b,ids,into)",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3419,6 +3421,53 @@ struct ggml_tensor * ggml_mul_mat_id(
     result->src[0] = as;
     result->src[1] = b;
     result->src[2] = ids;
+
+    return result;
+}
+
+// ggml_mul_mat_id_into (see ggml.h): one link of a chain that writes one ggml_mul_mat_id's rows from
+// several expert tensors. A link after the first is a view of the first link's tensor, the way an
+// *_inplace op is a view of its input: the graph allocator then keeps that tensor alive until the
+// last view's consumers have run, and places nothing else in it meanwhile. src[3] = into orders the
+// links (a view's view_src is not a graph edge) and shows backends the read-modify-write.
+struct ggml_tensor * ggml_mul_mat_id_into(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * as,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids,
+        struct ggml_tensor  * into) {
+    // ggml_mul_mat_id's own checks
+    GGML_ASSERT(!ggml_is_transposed(as));
+    GGML_ASSERT(ids->type == GGML_TYPE_I32);
+
+    GGML_ASSERT(as->ne[3] == 1);
+    GGML_ASSERT(b->ne[3] == 1);
+    GGML_ASSERT(ids->ne[2] == 1 && ids->ne[3] == 1);
+    GGML_ASSERT(ids->ne[1] == b->ne[2]);
+    GGML_ASSERT(as->ne[0] == b->ne[0]);
+    GGML_ASSERT(ids->ne[0] % b->ne[1] == 0);
+
+    const int64_t ne[4] = { as->ne[1], ids->ne[0], b->ne[2], 1 };
+
+    struct ggml_tensor * result;
+
+    if (into == NULL) {
+        result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+    } else {
+        // only a chain's own tensor carries the scratch a link needs on Metal (ggml-metal.cpp
+        // get_alloc_size); a link writing into any other tensor would put that scratch past its end
+        GGML_ASSERT(into->op == GGML_OP_MUL_MAT_ID_INTO);
+        GGML_ASSERT(into->type == GGML_TYPE_F32 && ggml_is_contiguous(into));
+        GGML_ASSERT(into->ne[0] == ne[0] && into->ne[1] == ne[1] && into->ne[2] == ne[2] && into->ne[3] == ne[3]);
+
+        result = ggml_view_tensor(ctx, into);
+    }
+
+    result->op     = GGML_OP_MUL_MAT_ID_INTO;
+    result->src[0] = as;
+    result->src[1] = b;
+    result->src[2] = ids;
+    result->src[3] = into;
 
     return result;
 }

@@ -1646,6 +1646,11 @@ static void ggml_compute_forward_mul_mat_id(
             for (int id = 0; id < n_ids; ++id) {
                 const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
 
+                // MUL_MAT_ID_INTO: another link of the chain owns this pair, so its row is left as it is
+                if (i02 < 0 && dst->op == GGML_OP_MUL_MAT_ID_INTO) {
+                    continue;
+                }
+
                 assert(i02 >= 0 && i02 < n_as);
 
                 MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = (struct mmid_row_mapping) {id, iid1};
@@ -1863,6 +1868,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_compute_forward_mul_mat(params, tensor);
             } break;
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_ID_INTO:
             {
                 ggml_compute_forward_mul_mat_id(params, tensor);
             } break;
@@ -2375,6 +2381,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_ID_INTO:
         case GGML_OP_OUT_PROD:
             {
                 n_tasks = n_threads;
@@ -2910,6 +2917,7 @@ struct ggml_cplan ggml_graph_plan(
                         }
                     } break;
                 case GGML_OP_MUL_MAT_ID:
+                case GGML_OP_MUL_MAT_ID_INTO:
                     {
                         cur = 0;
                         const struct ggml_tensor * src0 = node->src[0];
