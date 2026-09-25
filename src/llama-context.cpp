@@ -2426,15 +2426,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
         res += (n_sampling_outputs_max - 1) * n_sampling_nodes_max;
     }
 
-    if (const auto * mstream = model.moe_stream()) {
-        // multi-pass streamed prefill adds a bounded number of extra nodes per wave per streamed layer
-        const uint32_t n_eu = model.hparams.n_expert_used_max();
-        uint32_t cap = mstream->n_slots > n_eu ? (mstream->n_slots - n_eu)/2 : 0;
-        cap = std::max<uint32_t>(cap, 1);
-        const uint32_t n_touch_max = std::min<uint32_t>(model.hparams.n_expert, n_tokens*n_eu);
-        const uint32_t n_waves = (n_touch_max + cap - 1)/cap;
-        res += 24u*n_waves*(uint32_t) mstream->layers.size();
-    }
+    // --moe-stream's waves (llama-graph-moe-stream.cpp)
+    res += llama_moe_stream_graph_nodes_max(model, n_tokens);
+
     return res;
 }
 

@@ -1024,6 +1024,23 @@ struct llm_moe_gemms {
     int             il;
 };
 
+// how build_moe_ffn runs one ubatch's expert GEMMs under --moe-stream (llama-graph-moe-stream.cpp)
+struct llm_moe_stream_shape {
+    uint32_t n_waves   = 1;     // 1: one pass over the remapped slot ids
+    uint32_t cap       = 0;     // experts per wave
+    bool     partition = false; // each wave gathers its own pairs instead of masking the others'
+};
+
+struct llama_model;
+struct llama_moe_stream_layer;
+
+// the wave shape of a ubatch of n_tokens on a streamed layer (msl null: not streamed, one pass)
+llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * msl,
+        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens);
+
+// graph nodes the waves may add to a ubatch of n_tokens, for llama_context::graph_max_nodes
+uint32_t llama_moe_stream_graph_nodes_max(const llama_model & model, uint32_t n_tokens);
+
 struct llm_graph_context {
     const llm_arch arch;
 
@@ -1210,6 +1227,21 @@ struct llm_graph_context {
              ggml_tensor * cur,
              ggml_tensor * ids_gemm,
              ggml_tensor * sel_exp) const;
+
+    // --moe-stream in build_moe_ffn (llama-graph-moe-stream.cpp, llama-graph-moe-waves.cpp): the ids
+    // a one-wave ubatch's GEMMs read, then the expert GEMMs in one pass or in waves; msl null = the
+    // layer is not streamed, and both fall through to what build_moe_ffn does without streaming
+    ggml_tensor * build_moe_stream_ids(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
+            ggml_tensor * cur, ggml_tensor * selected_experts, int il) const;
+    ggml_tensor * build_moe_stream_experts(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
+            const llm_moe_gemms & gemms, ggml_tensor * cur, ggml_tensor * ids_gemm, ggml_tensor * selected_experts,
+            int64_t n_expert_used, bool weight_before_ffn) const;
+    ggml_tensor * build_moe_stream_partition(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
+            const llm_moe_gemms & gemms, ggml_tensor * cur, ggml_tensor * selected_experts,
+            int64_t n_expert_used, bool weight_before_ffn) const;
+    ggml_tensor * build_moe_stream_masked(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
+            const llm_moe_gemms & gemms, ggml_tensor * cur, ggml_tensor * selected_experts,
+            int64_t n_expert_used) const;
 
     //
     // inputs

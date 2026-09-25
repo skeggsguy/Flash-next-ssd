@@ -302,7 +302,7 @@ void llama_moe_stream::plan_pairs_locked(llama_moe_stream_layer & sl, const int3
             // Report which constraint bound, because the two have different fixes: no pair room
             // means the chunk itself is too small (raise LLAMA_MOE_STREAM_PAIR_SLACK), no slot room
             // means the wave count is too low for the expert count (the cap-1 sizing in
-            // llama-graph.cpp did not apply, e.g. the pairs-per-wave floor blocked it).
+            // llama-graph-moe-stream.cpp did not apply, e.g. the pairs-per-wave floor blocked it).
             size_t free_pairs = 0, free_slots = 0;
             for (uint32_t v = 0; v < n_waves; v++) {
                 free_pairs += sl.plan_pair[v].size()   < chunk            ? 1 : 0;
