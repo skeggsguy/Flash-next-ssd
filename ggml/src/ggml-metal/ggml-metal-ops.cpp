@@ -411,6 +411,7 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
                 n_fuse = ggml_metal_op_mul_mat(ctx, idx);
             } break;
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_ID_INTO:
             {
                 n_fuse = ggml_metal_op_mul_mat_id(ctx, idx);
             } break;
@@ -2719,25 +2720,35 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
-size_t ggml_metal_op_mul_mat_id_extra_tpe(const ggml_tensor * op) {
-    assert(op->op == GGML_OP_MUL_MAT_ID);
+// MUL_MAT_ID_INTO: a chain's later links are views of its first link's tensor, so the scratch below
+// (placed at bid_dst + ggml_nbytes(op)) is the first link's for every link, and the graph allocator
+// sizes it once, from the first link alone. Every link therefore lays its scratch out for the most
+// experts any link may have on the mm path - map0 runs one thread per expert, at most 1024 in a
+// threadgroup - not for its own count (the desk and each belt part differ). All links share n_tokens,
+// and the data dependency through src[3] keeps two links of a chain from ever running at once.
+#define GGML_METAL_MUL_MAT_ID_INTO_MAX_EXPERTS 1024
 
-    const int64_t ne02 = op->src[0]->ne[2]; // n_expert
+static int64_t ggml_metal_op_mul_mat_id_scratch_experts(const ggml_tensor * op) {
+    assert(op->op == GGML_OP_MUL_MAT_ID || op->op == GGML_OP_MUL_MAT_ID_INTO);
+
+    return op->op == GGML_OP_MUL_MAT_ID_INTO ? GGML_METAL_MUL_MAT_ID_INTO_MAX_EXPERTS : op->src[0]->ne[2]; // n_expert
+}
+
+size_t ggml_metal_op_mul_mat_id_extra_tpe(const ggml_tensor * op) {
+    const int64_t ne02 = ggml_metal_op_mul_mat_id_scratch_experts(op);
 
     return ggml_type_size(GGML_TYPE_I32)*ne02;
 }
 
 size_t ggml_metal_op_mul_mat_id_extra_ids(const ggml_tensor * op) {
-    assert(op->op == GGML_OP_MUL_MAT_ID);
-
-    const int64_t ne02 = op->src[0]->ne[2]; // n_expert
+    const int64_t ne02 = ggml_metal_op_mul_mat_id_scratch_experts(op);
     const int64_t ne21 = op->src[2]->ne[1]; // n_token
 
     return ggml_type_size(GGML_TYPE_I32)*ne02*ne21;
 }
 
 size_t ggml_metal_op_mul_mat_id_extra_amax(const ggml_tensor * op) {
-    assert(op->op == GGML_OP_MUL_MAT_ID);
+    assert(op->op == GGML_OP_MUL_MAT_ID || op->op == GGML_OP_MUL_MAT_ID_INTO);
 
     GGML_UNUSED(op);
 
@@ -2788,6 +2799,9 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         //    case GGML_TYPE_BF16: GGML_ASSERT(nb01 % 8  == 0); break;
         //    default: break;
         //}
+
+        // a MUL_MAT_ID_INTO link's scratch is its chain's, reserved for this many experts at most
+        GGML_ASSERT(op->op != GGML_OP_MUL_MAT_ID_INTO || ne02 <= GGML_METAL_MUL_MAT_ID_INTO_MAX_EXPERTS);
 
         // extra buffers for intermediate id mapping
         ggml_metal_buffer_id bid_tpe = bid_dst;

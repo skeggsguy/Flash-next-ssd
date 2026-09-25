@@ -313,6 +313,7 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
         switch (op) {
             case GGML_OP_MUL_MAT:
             case GGML_OP_MUL_MAT_ID:
+            case GGML_OP_MUL_MAT_ID_INTO: // src[3] and a dst in its chain's tensor cover what a link touches
             case GGML_OP_ROPE:
             case GGML_OP_NORM:
             case GGML_OP_RMS_NORM:

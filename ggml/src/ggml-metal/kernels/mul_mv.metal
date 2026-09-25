@@ -3322,6 +3322,12 @@ kernel void kernel_mul_mv_id(
 
     const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
 
+    // MUL_MAT_ID_INTO: another link computes this pair and its row is not ours to write. The whole
+    // threadgroup holds one pair, so the return is uniform. (MUL_MAT_ID's ids are never negative.)
+    if (i02 < 0) {
+        return;
+    }
+
     const int64_t i11 = idx % args.ne11;
     const int64_t i12 = iid1;
 
