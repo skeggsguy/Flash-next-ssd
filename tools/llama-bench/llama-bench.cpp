@@ -555,6 +555,14 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     params.progress             = cmd_params_defaults.progress;
     params.no_warmup            = cmd_params_defaults.no_warmup;
     params.offline              = cmd_params_defaults.offline;
+    // the streaming scalars have no list form to fall back on, so they start from their defaults
+    // here; left out, --moe-stream-room without --moe-stream-room-parts read stack garbage (479)
+    params.moe_stream            = cmd_params_defaults.moe_stream;
+    params.moe_stream_cache_gib  = cmd_params_defaults.moe_stream_cache_gib;
+    params.moe_stream_io_threads = cmd_params_defaults.moe_stream_io_threads;
+    params.moe_stream_room_mode  = cmd_params_defaults.moe_stream_room_mode;
+    params.moe_stream_room_value = cmd_params_defaults.moe_stream_room_value;
+    params.moe_stream_room_parts = cmd_params_defaults.moe_stream_room_parts;
 
     if (const char * env = getenv("HF_TOKEN")) {
         params.hf_token = env;
