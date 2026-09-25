@@ -3021,11 +3021,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn),
         // and on qwen4exp's decode-time sparse gather (get_rows dequantizes to F32).
-        // LLAMA_FA_KEEP_F32=1 hands F32 K/V to flash attention as they are (Metal has F32 kernels),
-        // skipping a permuted copy of every gathered cell per layer per token.
+        // F32 K/V go to flash attention as they are (Metal has F32 kernels), skipping a permuted
+        // copy of every gathered cell per layer per token. On by default since F3-switches
+        // (2026-09-25); LLAMA_FA_KEEP_F32=0 restores the F16 cast.
         static const bool keep_f32 = [] {
             const char * e = getenv("LLAMA_FA_KEEP_F32");
-            return e && atoi(e) > 0;
+            return !e || atoi(e) > 0;
         }();
         if (k->type == GGML_TYPE_F32 && !(keep_f32 && v->type == GGML_TYPE_F32)) {
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);

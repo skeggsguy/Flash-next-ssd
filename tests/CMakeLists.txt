@@ -271,6 +271,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-qwen4exp test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
+    set_tests_properties(test-recurrent-state-rollback-qwen4exp PROPERTIES
+        ENVIRONMENT "LLAMA_QSA_KEEP=0"
+    )
     set_tests_properties(test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
         ENVIRONMENT "LLAMA_QSA_KEEP=1"
     )
@@ -292,7 +295,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # the CPU, and with each switch that changes how the summaries are pooled or read
     llama_build(test-qsa-keep.cpp)
 
-    foreach (QSA_KEEP_ENV "" "QWEN4EXP_QSA_GATHER=0" "LLAMA_QSA_POOL_VIEWS=1" "LLAMA_QWEN4EXP_BLOCK_TOPK=0" "LLAMA_QSA_GATHER=0")
+    foreach (QSA_KEEP_ENV "" "QWEN4EXP_QSA_GATHER=0" "LLAMA_QSA_POOL_VIEWS=0" "LLAMA_QWEN4EXP_BLOCK_TOPK=0" "LLAMA_QSA_GATHER=0")
         set(QSA_KEEP_NAME test-qsa-keep)
         if (QSA_KEEP_ENV)
             string(REGEX REPLACE "=.*" "" QSA_KEEP_SUFFIX "${QSA_KEEP_ENV}")

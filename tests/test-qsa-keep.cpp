@@ -1,6 +1,6 @@
 // patch 4i: LLAMA_QSA_KEEP=1 keeps the qwen4exp indexer's finished block summaries instead of pooling
 // every block again each ubatch. The output must not change by a single bit, so every scenario runs
-// three contexts on one model - the reference (switches unset), keep, and keep with
+// three contexts on one model - the reference (LLAMA_QSA_KEEP=0), keep, and keep with
 // LLAMA_QSA_KEEP_CHECK=1 (which also rebuilds every summary and sums |kept - rebuilt|) - applies the
 // same operations to all three, and compares every logit with memcmp. The plan counts show which
 // path ran, so a planner that always falls back to the full rebuild cannot pass.
@@ -79,11 +79,9 @@ struct ctx_cfg {
 
 static llama_context * make_ctx(const common_params & params, llama_model * model, const ctx_cfg & cfg, variant v, observer * obs) {
     // the memory reads the switches when it is made, so each context gets its own
-    unsetenv("LLAMA_QSA_KEEP");
+    // the keep switch is on by default, so the reference turns it off explicitly
     unsetenv("LLAMA_QSA_KEEP_CHECK");
-    if (v != VARIANT_REF) {
-        setenv("LLAMA_QSA_KEEP", "1", 1);
-    }
+    setenv("LLAMA_QSA_KEEP", v == VARIANT_REF ? "0" : "1", 1);
     if (v == VARIANT_CHECK) {
         setenv("LLAMA_QSA_KEEP_CHECK", "1", 1);
     }

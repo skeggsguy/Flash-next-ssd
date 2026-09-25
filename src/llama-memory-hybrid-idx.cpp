@@ -17,9 +17,11 @@
 #include <stdexcept>
 
 // patch 4i switches, read when the memory is made
-static bool llama_qsa_keep_env(const char * name) {
+// unset means the default: LLAMA_QSA_KEEP is on unless set to 0 (Tom, 2026-09-25, after F1-summaries);
+// the CHECK and DEBUG switches stay off unless set
+static bool llama_qsa_keep_env(const char * name, bool def = false) {
     const char * value = std::getenv(name);
-    return value != nullptr && std::atoi(value) > 0;
+    return value == nullptr ? def : std::atoi(value) > 0;
 }
 
 static const char * llama_qsa_keep_mode_name(llama_qsa_keep_mode mode) {
@@ -887,7 +889,7 @@ void llama_memory_hybrid_idx::set_input_qsa(
 }
 
 void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch) {
-    keep.enabled  = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_KEEP");
+    keep.enabled  = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_KEEP", true);
     keep.check    = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_CHECK");
     keep.debug    = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_DEBUG");
     keep.n_ubatch = n_ubatch;

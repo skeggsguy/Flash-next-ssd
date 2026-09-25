@@ -1109,11 +1109,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     k_all = ggml_view_3d(ctx0, k_all, idx_dim, n_kv, n_stream, k_all->nb[2], k_all->nb[3], 0);
 
     // mean over the block members; r is small, so summing slices beats a transpose plus sum_rows.
-    // LLAMA_QSA_POOL_VIEWS=1 adds the strided slices directly (the binary ops take strided
-    // sources), which drops the r copies - r extra jobs over every block, per layer, per token.
+    // Pooling adds the strided slices directly (the binary ops take strided sources), which drops
+    // the r copies - r extra jobs over every block, per layer, per token. On by default since
+    // F3-switches (2026-09-25); LLAMA_QSA_POOL_VIEWS=0 restores the copies.
     static const bool pool_views = [] {
         const char * e = getenv("LLAMA_QSA_POOL_VIEWS");
-        return e && atoi(e) > 0;
+        return !e || atoi(e) > 0;
     }();
 
     // one block summary per row: gather its r member keys, mean, norm, rope at the block's first
