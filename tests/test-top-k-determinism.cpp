@@ -191,8 +191,11 @@ int main(int argc, char ** argv) {
     ggml_backend_load_all();
 
     // k = 2048 and k = 128 with one row and many; the indexer's and the writing path's real shapes;
-    // a small k over many long rows (the radix path's second rule); and one value everywhere, with
-    // more ties to place than the kernel's first tile of the row holds (4 per thread, 1024 threads)
+    // a small k over many long rows (the radix path's second rule); one value everywhere, with
+    // more ties to place than the kernel's first tile of the row holds (4 per thread, 1024 threads);
+    // and ragged rows: the indexer has ceil(n_kv/4) blocks, any count at all, so a row need not
+    // fill its last thread's 4 elements nor its last tile (2563 blocks is a 10,250-cell context;
+    // 4099 leaves 3 elements in a second tile)
     const std::vector<topk_case> cases = {
         { "k 2048 of 8192, 1 row, groups of 7",     8192,   1, 2048, FILL_GROUPS,  7 },
         { "k 2048 of 8192, 64 rows, groups of 7",   8192,  64, 2048, FILL_GROUPS,  7 },
@@ -202,6 +205,8 @@ int main(int argc, char ** argv) {
         { "indexer: k 513 of 4096 blocks, 256 rows", 4096, 256,  513, FILL_INDEXER, 0 },
         { "writing: k 2304 of 9216 cells, 1 row",   9216,   1, 2304, FILL_CELLS,   0 },
         { "one value: k 6000 of 12288, 4 rows",    12288,   4, 6000, FILL_EQUAL,   0 },
+        { "ragged indexer: k 513 of 2563 blocks, 64 rows", 2563, 64, 513, FILL_INDEXER, 0 },
+        { "ragged tile: k 2048 of 4099, 8 rows, groups of 6", 4099, 8, 2048, FILL_GROUPS, 6 },
     };
 
     bool found = false;
