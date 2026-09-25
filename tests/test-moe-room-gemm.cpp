@@ -10,9 +10,13 @@
 // depend on which books happen to be on the desk - rests on that being exact, so this test compares
 // with memcmp, not a tolerance, on every CPU and GPU backend it finds.
 //
-// Magnitudes are O(1) on purpose. With the generated models' N(0, 0.01) weights the down GEMM's input
-// rounds to zero in F16 on Metal and a wrong-book bug compares equal (the e64 fixtures' --unit-scales
-// exist for this), so every compared tensor is also checked to be almost all nonzero.
+// Every case runs in two graph shapes. ids as inputs: the whole chain is one GPU split, so the backend's
+// reorder pass sees every link. ids from part ops: each source's ids come from a CPU op placed before its
+// links (Phase B's part op, ordered after the previous group's down link), so the scheduler splits the
+// chain across backends between links and the allocator must keep the first link's tensor alive across them.
+//
+// Magnitudes are O(1) on purpose: with the generated models' N(0, 0.01) weights the down GEMM's input rounds
+// to zero in F16 on Metal and a wrong-book bug compares equal, so every compared tensor is checked nonzero.
 
 #include "testing.h"
 
@@ -53,9 +57,7 @@ struct book_weight {
         : type(type), ne0(ne0), ne1(ne1), book_bytes(ggml_row_size(type, ne0) * ne1) {
         std::uniform_real_distribution<float> u(-0.1f, 0.1f);
         std::vector<float> f(ne0 * ne1 * N_EXPERT);
-        for (float & x : f) {
-            x = u(rng);
-        }
+        std::generate(f.begin(), f.end(), [&] { return u(rng); });
         data.resize(book_bytes * N_EXPERT);
         ggml_quantize_chunk(type, f.data(), data.data(), 0, ne1 * N_EXPERT, ne0, nullptr);
     }
@@ -108,12 +110,21 @@ struct room_case {
     ggml_type type_down;
     int       n_used;
     int       n_tokens;
+    bool      part_ops; // each source's ids from a CPU op between the links, or all ids as inputs
 
     std::string name() const {
         return std::string(ggml_type_name(type_gu)) + "_" + ggml_type_name(type_down) +
-               "_used" + std::to_string(n_used) + "_tokens" + std::to_string(n_tokens);
+               "_used" + std::to_string(n_used) + "_tokens" + std::to_string(n_tokens) +
+               (part_ops ? "_partops" : "_ids");
     }
 };
+
+// Phase B's part op, reduced to its output: the ids of one source, kept host-side in userdata
+void emit_ids(ggml_tensor * dst, int ith, int /*nth*/, void * userdata) {
+    if (ith == 0) {
+        memcpy(dst->data, ((const std::vector<int32_t> *) userdata)->data(), ggml_nbytes(dst));
+    }
+}
 
 // every context and buffer a case makes, freed when the case ends
 struct owned {
@@ -159,19 +170,13 @@ ggml_tensor * belt_weight(ggml_context * ctx, ggml_backend_buffer_t buf, const b
     return t;
 }
 
-// the chain: the desk's books, then each belt part's; the first link's tensor holds every link's rows
-ggml_tensor * chain(ggml_context * ctx, const std::vector<ggml_tensor *> & as, ggml_tensor * b,
-                    const std::vector<ggml_tensor *> & ids) {
-    ggml_tensor * out = nullptr;
-    for (size_t i = 0; i < as.size(); i++) {
-        out = ggml_mul_mat_id_into(ctx, as[i], b, ids[i], out);
-        if (i == 0) {
-            // later links are views of this one, and an output flag on a view does not keep its
-            // view_src from being freed and reused once the graph moves on
-            ggml_set_output(out);
-        }
+// one link of a chain: the first link's tensor holds every link's rows, so it is the tensor to keep
+// (an output flag on a later link, a view, does not keep its view_src from being freed and reused)
+ggml_tensor * link(ggml_context * ctx, ggml_tensor * as, ggml_tensor * b, ggml_tensor * ids, ggml_tensor * into) {
+    ggml_tensor * out = ggml_mul_mat_id_into(ctx, as, b, ids, into);
+    if (into == nullptr) {
+        ggml_set_output(out);
     }
-    ggml_set_output(out);
     return out;
 }
 
@@ -197,7 +202,7 @@ void expect_same(testing & t, const std::string & what, const ggml_tensor * ref,
                   std::to_string(n) + ")", nonzero * 100 >= n * 99);
 }
 
-void run_case(testing & t, ggml_backend_t backend, ggml_backend_sched_t sched, const room_case & rc) {
+void run_case(testing & t, ggml_backend_t backend, ggml_backend_t cpu, ggml_backend_sched_t sched, const room_case & rc) {
     std::mt19937 rng(1234 + rc.n_tokens * 16 + rc.n_used + (int) rc.type_gu * 64 + (int) rc.type_down * 4096);
 
     const book_weight gu  (rc.type_gu,   N_EMBD, 2 * N_FF, rng);
@@ -244,27 +249,26 @@ void run_case(testing & t, ggml_backend_t backend, ggml_backend_sched_t sched, c
     ggml_context * ctx_in = own.ctx(8);
     ggml_tensor * cur     = ggml_new_tensor_3d(ctx_in, GGML_TYPE_F32, N_EMBD, 1, rc.n_tokens);
     ggml_tensor * ids_all = ggml_new_tensor_2d(ctx_in, GGML_TYPE_I32, rc.n_used, rc.n_tokens);
-    std::vector<ggml_tensor *> ids_src;
+    std::vector<ggml_tensor *> ids_in; // the ids shape's inputs, one per source (unused with part ops)
     for (int s = 0; s < lay.n_sources(); s++) {
-        ids_src.push_back(ggml_new_tensor_2d(ctx_in, GGML_TYPE_I32, rc.n_used, rc.n_tokens));
+        ids_in.push_back(ggml_new_tensor_2d(ctx_in, GGML_TYPE_I32, rc.n_used, rc.n_tokens));
     }
     own.alloc(ctx_in, backend);
 
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<float> x(N_EMBD * rc.n_tokens);
-    for (float & v : x) {
-        v = nd(rng);
-    }
+    std::generate(x.begin(), x.end(), [&] { return nd(rng); });
     ggml_backend_tensor_set(cur, x.data(), 0, ggml_nbytes(cur));
     ggml_backend_tensor_set(ids_all, ids.data(), 0, ggml_nbytes(ids_all));
 
+    std::vector<std::vector<int32_t>> planes;
     std::vector<int> owners(ids.size(), 0);
     for (int s = 0; s < lay.n_sources(); s++) {
-        const std::vector<int32_t> r = lay.remap(ids, s);
-        for (size_t i = 0; i < r.size(); i++) {
-            owners[i] += r[i] >= 0;
+        planes.push_back(lay.remap(ids, s));
+        for (size_t i = 0; i < ids.size(); i++) {
+            owners[i] += planes[s][i] >= 0;
         }
-        ggml_backend_tensor_set(ids_src[s], r.data(), 0, ggml_nbytes(ids_src[s]));
+        ggml_backend_tensor_set(ids_in[s], planes[s].data(), 0, ggml_nbytes(ids_in[s]));
     }
     t.assert_true("every pair has exactly one source", std::all_of(owners.begin(), owners.end(), [](int n) { return n == 1; }));
 
@@ -279,14 +283,28 @@ void run_case(testing & t, ggml_backend_t backend, ggml_backend_sched_t sched, c
                                         down_rec->nb[1], stride, first * stride));
     }
 
-    // build_moe_ffn's shape: gate_up, SwiGLU, down; the chains then read back the same ids
+    // build_moe_ffn's shape: gate_up, SwiGLU, down
     ggml_tensor * up_ref   = ggml_mul_mat_id(ctx_g, gu_all, cur, ids_all);
     ggml_tensor * down_ref = ggml_mul_mat_id(ctx_g, down_all, ggml_swiglu(ctx_g, up_ref), ids_all);
     ggml_set_output(up_ref);
     ggml_set_output(down_ref);
 
-    ggml_tensor * up_room   = chain(ctx_g, gu_src, cur, ids_src);
-    ggml_tensor * down_room = chain(ctx_g, down_src, ggml_swiglu(ctx_g, up_room), ids_src);
+    // the room's shape: per source, its ids (a part op ordered after the previous group's down link, or
+    // an input), then gate_up, SwiGLU over the whole chain tensor, and down, each link writing its rows
+    std::vector<ggml_tensor *> part_ops;
+    ggml_tensor * up_room   = nullptr;
+    ggml_tensor * down_room = nullptr;
+    for (int s = 0; s < lay.n_sources(); s++) {
+        ggml_tensor * ids_s = ids_in[s];
+        if (rc.part_ops) {
+            ggml_tensor * args[2] = { ids_all, down_room };
+            ids_s = ggml_custom_4d(ctx_g, GGML_TYPE_I32, rc.n_used, rc.n_tokens, 1, 1, args, s == 0 ? 1 : 2,
+                                   emit_ids, 1, &planes[s]);
+            part_ops.push_back(ids_s);
+        }
+        up_room   = link(ctx_g, gu_src[s],   cur,                              ids_s, up_room);
+        down_room = link(ctx_g, down_src[s], ggml_swiglu(ctx_g, up_room), ids_s, down_room);
+    }
 
     // the reference's gate_up output is computed, and so placed, right after the chain's first link, so
     // a later link whose scratch overran that link's reservation would write into a kept output
@@ -305,6 +323,11 @@ void run_case(testing & t, ggml_backend_t backend, ggml_backend_sched_t sched, c
                           ggml_backend_sched_get_tensor_backend(sched, const_cast<ggml_tensor *>(node)) == backend);
         }
     }
+    for (ggml_tensor * op : part_ops) {
+        t.assert_true("part op ran on the CPU", ggml_backend_sched_get_tensor_backend(sched, op) == cpu);
+    }
+    t.assert_true("the chain was split across backends between links",
+                  backend == cpu || !rc.part_ops || ggml_backend_sched_get_n_splits(sched) >= 2 * lay.n_sources());
 
     expect_same(t, "gate_up", up_ref, up_room);
     expect_same(t, "down", down_ref, down_room);
@@ -331,7 +354,9 @@ int main(int argc, char ** argv) {
                         std::make_pair(GGML_TYPE_Q4_K, GGML_TYPE_Q5_K) }) {
         for (int n_used : { 8, 10 }) {
             for (int n_tokens : { 1, 7, 33, 257 }) {
-                cases.push_back({ types.first, types.second, n_used, n_tokens });
+                for (bool part_ops : { false, true }) {
+                    cases.push_back({ types.first, types.second, n_used, n_tokens, part_ops });
+                }
             }
         }
     }
@@ -359,7 +384,7 @@ int main(int argc, char ** argv) {
 
         t.test(ggml_backend_dev_name(dev), [&](testing & t) {
             for (const room_case & rc : cases) {
-                t.test(rc.name(), [&](testing & t) { run_case(t, backend, sched, rc); });
+                t.test(rc.name(), [&](testing & t) { run_case(t, backend, cpu, sched, rc); });
             }
         });
 
