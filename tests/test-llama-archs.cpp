@@ -40,6 +40,12 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
     return mse_a_b / mse_a_0;
 }
 
+// --unit-scales: a weight's dequant scale ("<weight>.scale") is drawn around 1, as in a real
+// checkpoint, instead of around 0. At N(0, 0.01) an expert FFN with gate, up and down scales (qwen3moe)
+// shrinks its activations to ~1e-9 before the down GEMM, and the Metal matrix kernels' F16 input
+// rounds that to exactly zero - every expert then reads in as nothing and no expert bug can show.
+static bool g_unit_scales = false;
+
 static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     size_t seed = *(const size_t *) userdata;
     std::hash<std::string> hasher;
@@ -47,17 +53,21 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     std::mt19937 gen(seed);
     std::normal_distribution<float> dis(0.0f, 1.0e-2f);
 
+    const size_t name_len = strlen(tensor->name);
+    const bool   unit     = g_unit_scales && name_len >= 6 && strcmp(tensor->name + name_len - 6, ".scale") == 0;
+    const float  mean     = unit ? 1.0f : 0.0f;
+
     const int64_t ne = ggml_nelements(tensor);
     if (tensor->type == GGML_TYPE_F32) {
         std::vector<float> tmp(ne);
         for (int64_t i = 0; i < ne; i++) {
-            tmp[i] = dis(gen);
+            tmp[i] = mean + dis(gen);
         }
         ggml_backend_tensor_set(tensor, tmp.data(), 0, ggml_nbytes(tensor));
     } else if (tensor->type == GGML_TYPE_F16) {
         std::vector<ggml_fp16_t> tmp(ne);
         for (int64_t i = 0; i < ne; i++) {
-            tmp[i] = ggml_fp32_to_fp16(dis(gen));
+            tmp[i] = ggml_fp32_to_fp16(mean + dis(gen));
         }
         ggml_backend_tensor_set(tensor, tmp.data(), 0, ggml_nbytes(tensor));
     } else {
@@ -67,6 +77,8 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
 
 static void usage(char ** argv) {
     printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-o/--out dir] [-v N] [-h/--help]\n", argv[0]);
+    printf("       [--n-expert N] [--n-expert-used N] [--suffix S] [--unit-scales]   (with -o: MoE shape,\n");
+    printf("       file name suffix, weight scales around 1 instead of 0)\n");
     printf("       %s --layer-input-order\n", argv[0]);
 }
 
@@ -81,7 +93,10 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
     return ret;
 }
 
-static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+// n_expert/n_expert_used default to the tiny 2-of-2 shape every arch test uses; the expert streaming
+// tests need more experts than a cache of 3*n_expert_used slots holds, so their fixture asks for 64.
+static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe,
+        const uint32_t n_expert = 2, const uint32_t n_expert_used = 2) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
     const uint32_t n_ctx = 256;
@@ -349,8 +364,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, n_ff / 2);  // distinct from n_ff so a saver key-clobber surfaces on reload
         ms.add_kv(LLM_KV_EXPERT_LATENT_LENGTH,       n_ff);
         ms.add_kv(LLM_KV_INTERLEAVE_MOE_LAYER_STEP,  uint32_t(2));
-        ms.add_kv(LLM_KV_EXPERT_COUNT,               uint32_t(2));
-        ms.add_kv(LLM_KV_EXPERT_USED_COUNT,          uint32_t(2));
+        ms.add_kv(LLM_KV_EXPERT_COUNT,               n_expert);
+        ms.add_kv(LLM_KV_EXPERT_USED_COUNT,          n_expert_used);
         ms.add_kv(LLM_KV_EXPERT_SHARED_COUNT,        uint32_t(1));
         ms.add_kv(LLM_KV_EXPERT_GATING_FUNC,         arch == LLM_ARCH_DEEPSEEK4 ? uint32_t(4) : uint32_t(2)); // sqrtsoftplus : sigmoid
         ms.add_kv(LLM_KV_EXPERT_GROUP_SCALE,         1.0f);
@@ -722,7 +737,8 @@ static bool arch_supported(const llm_arch arch) {
     return true;
 }
 
-static int save_models(const llm_arch target_arch, const size_t seed, const int verbosity, const std::string & dir) {
+static int save_models(const llm_arch target_arch, const size_t seed, const int verbosity, const std::string & dir,
+        const uint32_t n_expert, const uint32_t n_expert_used, const std::string & suffix) {
     struct user_data_t {
         struct {
             ggml_log_callback callback;
@@ -769,9 +785,9 @@ static int save_models(const llm_arch target_arch, const size_t seed, const int 
                 LOG_INF("%s: %s model (%s) is unsupported, skipping\n", __func__, llm_arch_name(arch), moe ? "MoE" : "dense");
                 continue;
             }
-            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
+            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe, n_expert, n_expert_used);
             auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {});
-            const std::string path = dir + "/" + llm_arch_name(arch) + (moe ? "-moe.gguf" : "-dense.gguf");
+            const std::string path = dir + "/" + llm_arch_name(arch) + (moe ? "-moe" : "-dense") + suffix + ".gguf";
             LOG_INF("%s: Saving %s model (%s) to %s...\n", __func__, llm_arch_name(arch), moe ? "MoE" : "dense", path.c_str());
             llama_model_save_to_file(model_and_ctx.first.get(), path.c_str());
         }
@@ -961,6 +977,9 @@ int main(int argc, char ** argv) {
     llm_arch arch = LLM_ARCH_UNKNOWN;
     size_t seed = rd();
     std::string out;
+    uint32_t    n_expert      = 2;
+    uint32_t    n_expert_used = 2;
+    std::string suffix;
 
     bool layer_input_order = false;
 
@@ -1011,6 +1030,30 @@ int main(int argc, char ** argv) {
                 return 1;
             }
         }
+        if (strcmp(argv[i], "--n-expert") == 0 || strcmp(argv[i], "--n-expert-used") == 0) {
+            if (i + 1 < argc) {
+                const bool used = strcmp(argv[i], "--n-expert-used") == 0;
+                (used ? n_expert_used : n_expert) = (uint32_t) std::stoul(argv[++i]);
+            } else {
+                usage(argv);
+                return 1;
+            }
+        }
+        if (strcmp(argv[i], "--unit-scales") == 0) {
+            g_unit_scales = true;
+        }
+        if (strcmp(argv[i], "--suffix") == 0) {
+            if (i + 1 < argc) {
+                suffix = argv[++i];
+            } else {
+                usage(argv);
+                return 1;
+            }
+        }
+    }
+    if (n_expert_used < 1 || n_expert_used > n_expert) {
+        LOG_ERR("%s: need 1 <= --n-expert-used (%u) <= --n-expert (%u)\n", __func__, n_expert_used, n_expert);
+        return 1;
     }
     printf("%s: using seed %zu\n", __func__, seed);
 
@@ -1019,7 +1062,7 @@ int main(int argc, char ** argv) {
             return test_layer_input_order();
         }
         if (!out.empty()) {
-            return save_models(arch, seed, verbosity, out);
+            return save_models(arch, seed, verbosity, out, n_expert, n_expert_used, suffix);
         }
         return test_backends(arch, seed, verbosity);
     } catch (const std::exception & err) {

@@ -210,6 +210,48 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         FIXTURES_SETUP generate-models
     )
 
+    # Expert streaming needs more books per floor than a desk of 3*n_expert_used slots holds, so it
+    # gets fixtures of its own with 64 experts, 8 used: qwen4exp has a fused gate_up weight, qwen3moe
+    # separate gate/up/down. The seed is fixed so an old and a new build read the same weights, and the
+    # weight scales sit around 1 so qwen3moe's three scaled GEMMs do not read in as zero on Metal.
+    foreach (E64_ARCH qwen4exp qwen3moe)
+        llama_test(
+            test-llama-archs
+            NAME test-generate-models-${E64_ARCH}-e64
+            LABEL main
+            ARGS -a ${E64_ARCH} --n-expert 64 --n-expert-used 8 --suffix -e64 --unit-scales -s 42 -o "${MODEL_DIR}"
+        )
+        set_tests_properties(test-generate-models-${E64_ARCH}-e64 PROPERTIES
+            FIXTURES_SETUP generate-models-e64
+        )
+    endforeach()
+
+    # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
+    # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
+    # Not 24 slots (3*n_expert_used): the partition path's spare-wave sizing then makes 10 waves of
+    # 6-7 books, fewer than n_expert_used, and stage_wave_locked has no parking slots to borrow on
+    # wave 0 - an abort a real desk (~100 books a wave) cannot reach.
+    llama_build(test-moe-stream-waves.cpp)
+    foreach (E64_ARCH qwen4exp qwen3moe)
+        foreach (E64_PATH masked partition)
+            if (E64_PATH STREQUAL "masked")
+                set(E64_UB 256)
+            else()
+                set(E64_UB 1024)
+            endif()
+            llama_test(
+                test-moe-stream-waves
+                NAME test-moe-stream-waves-${E64_ARCH}-${E64_PATH}
+                LABEL main
+                ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" --moe-stream-cache 40s
+                     -b 1024 -ub ${E64_UB} -n 8 --expect ${E64_PATH}
+            )
+            set_tests_properties(test-moe-stream-waves-${E64_ARCH}-${E64_PATH} PROPERTIES
+                FIXTURES_REQUIRED generate-models-e64
+            )
+        endforeach()
+    endforeach()
+
     llama_test(
         test-recurrent-state-rollback
         LABEL main
