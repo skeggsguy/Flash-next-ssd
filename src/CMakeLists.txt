@@ -19,6 +19,7 @@ set(LLAMA_CORE_SOURCES
     llama-grammar.cpp
     llama-graph.cpp
     llama-graph-moe-gemms.cpp
+    llama-graph-moe-room.cpp
     llama-graph-moe-stream.cpp
     llama-graph-moe-waves.cpp
     llama-hparams.cpp

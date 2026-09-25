@@ -256,6 +256,22 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
     endforeach()
 
+    # The reading room against no streaming, byte for byte, on the GPU and on the CPU (-ngl 0).
+    llama_build(test-moe-room-model.cpp)
+    foreach (E64_ARCH qwen4exp qwen3moe)
+        foreach (E64_NGL 99 0)
+            llama_test(
+                test-moe-room-model
+                NAME test-moe-room-model-${E64_ARCH}-ngl${E64_NGL}
+                LABEL main
+                ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" -ngl ${E64_NGL}
+            )
+            set_tests_properties(test-moe-room-model-${E64_ARCH}-ngl${E64_NGL} PROPERTIES
+                FIXTURES_REQUIRED generate-models-e64
+            )
+        endforeach()
+    endforeach()
+
     llama_test(
         test-recurrent-state-rollback
         LABEL main

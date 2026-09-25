@@ -1,4 +1,5 @@
-// Mirrors upstream build_moe_ffn's expert pipeline (llama-graph.cpp); keep in sync on rebase.
+// Mirrors upstream build_moe_ffn's expert pipeline (llama-graph.cpp); keep in sync on rebase. Split in
+// two at the down GEMM (act, down) so the reading room can chain its down links (llama-graph-moe-room.cpp).
 //
 // The fork runs these GEMMs from three places - once as upstream does, once per wave on the masked
 // path, once per wave over a gathered pair list on the partition path - so upstream's lambda lives
@@ -15,26 +16,51 @@
 // every shape follows from cur and ids_gemm.
 ggml_tensor * llm_graph_context::build_moe_expert_gemms(const llm_moe_gemms & g,
         ggml_tensor * cur, ggml_tensor * ids_gemm, ggml_tensor * sel_exp) const {
+    return build_moe_expert_down(g, build_moe_expert_act(g, cur, ids_gemm, sel_exp, false), ids_gemm, sel_exp);
+}
+
+// The fork's one change to upstream's pipeline: under the reading room (room = true) each GEMM group
+// computes only the pairs its source holds (ids of the others are -1) through ggml_mul_mat_id_into, with
+// a per-expert scale applied exactly as build_lora_mm_id applies it (keep the two in sync). LoRA adapters
+// on the book weights are refused before this runs (build_moe_room_experts).
+ggml_tensor * llm_graph_context::build_moe_mm_id(ggml_tensor * w, ggml_tensor * cur, ggml_tensor * ids,
+        ggml_tensor * w_s, ggml_tensor * sel_exp, bool room) const {
+    if (!room) {
+        return build_lora_mm_id(w, cur, ids, w_s, sel_exp);
+    }
+    ggml_tensor * res = ggml_mul_mat_id_into(ctx0, w, cur, ids, nullptr);
+    return w_s ? build_moe_expert_scale(res, w_s, sel_exp, cur->ne[2]) : res;
+}
+
+// build_lora_mm_id's per-expert scale: w_s covers all experts, so it is indexed by the original ids
+ggml_tensor * llm_graph_context::build_moe_expert_scale(ggml_tensor * res, ggml_tensor * w_s,
+        ggml_tensor * sel_exp, int64_t n_tokens) const {
+    const int64_t n_expert = w_s->ne[0];
+    ggml_tensor * s = ggml_reshape_3d(ctx0, w_s, 1, n_expert, 1);
+    s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
+    s = ggml_get_rows(ctx0, s, sel_exp);
+    return ggml_mul(ctx0, res, s);
+}
+
+// up/gate through the activation, upstream's lambda up to its down GEMM
+ggml_tensor * llm_graph_context::build_moe_expert_act(const llm_moe_gemms & g,
+        ggml_tensor * cur, ggml_tensor * ids_gemm, ggml_tensor * sel_exp, bool room) const {
     ggml_tensor * up_exps        = g.up_exps;
     ggml_tensor * up_exps_b      = g.up_exps_b;
     ggml_tensor * gate_exps      = g.gate_exps;
     ggml_tensor * gate_exps_b    = g.gate_exps_b;
-    ggml_tensor * down_exps      = g.down_exps;
-    ggml_tensor * down_exps_b    = g.down_exps_b;
     ggml_tensor * gate_up_exps   = g.gate_up_exps;
     ggml_tensor * gate_up_exps_b = g.gate_up_exps_b;
     ggml_tensor * up_exps_s      = g.up_exps_s;
     ggml_tensor * gate_exps_s    = g.gate_exps_s;
-    ggml_tensor * down_exps_s    = g.down_exps_s;
     const llm_ffn_op_type type_op = g.type_op;
     const int             il      = g.il;
 
     ggml_tensor * up = nullptr;
-    ggml_tensor * experts = nullptr;
 
     if (gate_up_exps) {
         // merged gate_up path: one mul_mat_id, then split into gate and up views
-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_gemm, up_exps_s, sel_exp); // [n_ff*2, n_expert_used, n_tok]
+        ggml_tensor * gate_up = build_moe_mm_id(gate_up_exps, cur, ids_gemm, up_exps_s, sel_exp, room); // [n_ff*2, n_expert_used, n_tok]
         cb(gate_up, "ffn_moe_gate_up", il);
 
         if (up_exps_s) {
@@ -53,7 +79,7 @@ ggml_tensor * llm_graph_context::build_moe_expert_gemms(const llm_moe_gemms & g,
         cb(up, "ffn_moe_up", il);
     } else {
         // separate gate and up path
-        up = build_lora_mm_id(up_exps, cur, ids_gemm, up_exps_s, sel_exp); // [n_ff, n_expert_used, n_tok]
+        up = build_moe_mm_id(up_exps, cur, ids_gemm, up_exps_s, sel_exp, room); // [n_ff, n_expert_used, n_tok]
         cb(up, "ffn_moe_up", il);
 
         if (up_exps_s) {
@@ -66,7 +92,7 @@ ggml_tensor * llm_graph_context::build_moe_expert_gemms(const llm_moe_gemms & g,
         }
 
         if (gate_exps) {
-            cur = build_lora_mm_id(gate_exps, cur, ids_gemm, gate_exps_s, sel_exp); // [n_ff, n_expert_used, n_tok]
+            cur = build_moe_mm_id(gate_exps, cur, ids_gemm, gate_exps_s, sel_exp, room); // [n_ff, n_expert_used, n_tok]
             cb(cur, "ffn_moe_gate", il);
         } else {
             cur = up;
@@ -167,7 +193,18 @@ ggml_tensor * llm_graph_context::build_moe_expert_gemms(const llm_moe_gemms & g,
             GGML_ABORT("fatal error");
     }
 
-    experts = build_lora_mm_id(down_exps, cur, ids_gemm, down_exps_s, sel_exp); // [n_embd, n_expert_used, n_tok]
+    return cur;
+}
+
+// the down GEMM and its scale and bias, the rest of upstream's lambda
+ggml_tensor * llm_graph_context::build_moe_expert_down(const llm_moe_gemms & g,
+        ggml_tensor * cur, ggml_tensor * ids_gemm, ggml_tensor * sel_exp) const {
+    ggml_tensor * down_exps      = g.down_exps;
+    ggml_tensor * down_exps_b    = g.down_exps_b;
+    ggml_tensor * down_exps_s    = g.down_exps_s;
+    const int     il             = g.il;
+
+    ggml_tensor * experts = build_lora_mm_id(down_exps, cur, ids_gemm, down_exps_s, sel_exp); // [n_embd, n_expert_used, n_tok]
     if (arch == LLM_ARCH_MISTRAL4) {
         // src1 can exceed F16 range
         ggml_prec_set_src(experts, GGML_PREC_F32, 1);

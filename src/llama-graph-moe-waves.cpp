@@ -16,6 +16,10 @@ ggml_tensor * llm_graph_context::build_moe_stream_experts(llama_moe_stream_layer
     const uint32_t n_stream_waves = shape.n_waves;
     const bool     use_partition  = shape.partition;
 
+    if (msl && shape.room) {
+        GGML_ASSERT(!weight_before_ffn); // refused at load (llama_moe_room_size_model)
+        return build_moe_room_experts(msl, gemms, cur, selected_experts);
+    }
     if (msl && n_stream_waves > 1 && use_partition) {
         return build_moe_stream_partition(msl, shape, gemms, cur, selected_experts, n_expert_used, weight_before_ffn);
     }

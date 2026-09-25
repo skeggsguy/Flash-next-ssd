@@ -7,6 +7,7 @@
 
 #include "llama-impl.h"
 #include "llama-model.h"
+#include "llama-moe-room.h"
 #include "llama-moe-stream.h"
 
 #include <algorithm>
@@ -14,7 +15,22 @@
 
 // the wave shape of one ubatch; the two log lines keep build_moe_ffn's name, where they were written
 llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * msl,
-        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens) {
+        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed) {
+    // A read-in long enough to read nearly every book takes the reading room instead of waves: a mode
+    // for the whole floor, so neither the remap nor the waves run beside it (llama-graph-moe-room.cpp).
+    // Asked on every streamed floor, so a floor that falls back is recorded as not taking it.
+    if (msl && msl->mgr->room && msl->mgr->room->take(msl->il, n_tokens, room_allowed)) {
+        static int64_t last_logged_tok = 0;
+        if (n_tokens != last_logged_tok) {
+            last_logged_tok = n_tokens;
+            LLAMA_LOG_WARN("%s: moe stream: n_tokens = %5d -> reading room, %d parts per floor\n",
+                    "build_moe_ffn", (int) n_tokens, msl->mgr->room->lay.parts);
+        }
+        llm_moe_stream_shape shape;
+        shape.room = true;
+        return shape;
+    }
+
     // a ubatch can touch more distinct experts than the cache holds; the expert GEMMs then run in
     //   waves of at most stream_wave_cap experts, the pairs of the other waves masked to zero and the
     //   wave outputs summed. n_touch_max caps at n_expert, so each expert is loaded at most once per
@@ -169,7 +185,7 @@ ggml_tensor * llm_graph_context::build_moe_stream_ids(llama_moe_stream_layer * m
     const uint32_t n_stream_waves = shape.n_waves;
 
     ggml_tensor * ids_gemm = selected_experts;
-    if (msl && n_stream_waves == 1) {
+    if (msl && n_stream_waves == 1 && !shape.room) {
         // ggml_top_k() is contiguous, while a caller-provided selection can still be a view.
         ggml_tensor * ids_cont = ggml_is_contiguous(selected_experts)
             ? selected_experts : ggml_cont(ctx0, selected_experts);
@@ -224,7 +240,10 @@ uint32_t llama_moe_stream_graph_nodes_max(const llama_model & model, uint32_t n_
         uint32_t cap = mstream->n_slots > n_eu ? (mstream->n_slots - n_eu)/2 : 0;
         cap = std::max<uint32_t>(cap, 1);
         const uint32_t n_touch_max = std::min<uint32_t>(model.hparams.n_expert, n_tokens*n_eu);
-        const uint32_t n_waves = (n_touch_max + cap - 1)/cap;
+        uint32_t n_waves = (n_touch_max + cap - 1)/cap;
+        if (mstream->room) {
+            n_waves = std::max<uint32_t>(n_waves, 1 + (uint32_t) mstream->room->lay.parts); // desk + parts
+        }
         res += 24u*n_waves*(uint32_t) mstream->layers.size();
     }
 

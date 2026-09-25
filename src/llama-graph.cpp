@@ -2209,7 +2209,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     // how many waves this ubatch's expert GEMMs run in, and the slot ids a single wave reads
     //   (llama-graph-moe-stream.cpp)
-    const llm_moe_stream_shape stream_shape = llm_moe_stream_graph_shape(msl, n_expert, n_expert_used, n_tokens);
+    // (the reading room is the target's: an MTP draft context never takes it)
+    const llm_moe_stream_shape stream_shape = llm_moe_stream_graph_shape(msl, n_expert, n_expert_used, n_tokens,
+            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP);
     ggml_tensor * ids_gemm = build_moe_stream_ids(msl, stream_shape, cur, selected_experts, il);
 
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
