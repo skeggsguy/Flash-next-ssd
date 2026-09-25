@@ -41,6 +41,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-files.cpp
     llama-moe-stream-gpu-slot.cpp
     llama-moe-stream-io.cpp
+    llama-moe-stream-remap.cpp
     llama-moe-stream-stats.cpp
     llama-moe-stream-trace.cpp
     llama-quant.cpp
