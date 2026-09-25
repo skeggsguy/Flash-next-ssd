@@ -76,7 +76,10 @@ size_t llama_moe_room_record_stride(const size_t * nb_weight, size_t n_weight);
 // ceil(LLAMA_MOE_ROOM_SLIPS_PER_BOOK x n / k) for n books a floor and k a word reads, 1,024 at 10 of 512
 // (Flash-Next) and 160 at 8 of 64 (the test fixtures); 1 when every word reads every book, because then
 // waves fetch every book too. The threshold is per reading-in batch (ubatch): a read-in cut into
-// batches takes the room for each batch that reaches it.
+// batches takes the room for each batch that reaches it, so a long read-in's last, shorter batch
+// (a 17K paper at -ub 4096 ends with a few hundred tokens) takes waves - meant, not a gap: RR-room
+// measured a batch that size as faster with waves, and the room's batches before it never evict from
+// the desk it then uses.
 uint32_t llama_moe_room_sweep_min_tokens(uint32_t n_expert, uint32_t n_expert_used);
 
 // The threshold the room runs with. env_value is LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS's value (the manager

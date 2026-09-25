@@ -3,7 +3,8 @@
 // The reading room's plan for one floor, and the ids each of its GEMM groups reads: pure, no manager,
 // no ggml, unit-tested in tests/test-moe-room-plan.cpp.
 //
-// A read-in of sweep_min_tokens or more reads essentially every book of every floor, so a floor's
+// A read-in the room takes (sweep_min_tokens or more, ~20 slips per book: llama-moe-room-size.h) asks
+// for enough of every floor's books that fetching them all without waiting for a slip pays, so a floor's
 // missing books are simply the books not on its desk, known before its router runs. The runners fetch
 // them in the order the plan gives, floor after floor, without waiting for any slip: first into EMPTY
 // desk slots (a cold desk, never evicting a book), the rest onto the belt in `parts` parts.

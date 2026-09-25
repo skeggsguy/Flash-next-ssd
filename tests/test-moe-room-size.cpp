@@ -10,6 +10,7 @@
 #include "../src/llama-moe-room-size.h"
 
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 namespace {
@@ -63,6 +64,10 @@ int main(int argc, char ** argv) {
         t.assert_equal("no slips", 1u, llama_moe_room_sweep_min_tokens(8, 0));
         // it scales with the model: twice the books, twice the tokens for the same slips per book
         t.assert_equal("scales with n", 2*llama_moe_room_sweep_min_tokens(512, 10), llama_moe_room_sweep_min_tokens(1024, 10));
+        // the most books llama loads (LLAMA_MAX_EXPERTS) reading one a word is the largest reachable value
+        t.assert_equal("1 of 1024", 20480u, llama_moe_room_sweep_min_tokens(1024, 1));
+        // a shape past uint32 saturates (never takes the room) rather than wrapping to a small number or 0
+        t.assert_equal("past uint32 never takes the room", UINT32_MAX, llama_moe_room_sweep_min_tokens(1u << 31, 1));
     });
 
     t.test("sweep threshold from the environment", [](testing & t) {

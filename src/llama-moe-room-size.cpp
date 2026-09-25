@@ -25,9 +25,11 @@ uint32_t llama_moe_room_sweep_min_tokens(uint32_t n_expert, uint32_t n_expert_us
     if (n_expert_used == 0 || n_expert_used >= n_expert) {
         return 1; // every word reads every book: any read-in is a sweep
     }
-    // t tokens hand each book t x k / n slips on average: the smallest t that reaches the target
+    // t tokens hand each book t x k / n slips on average: the smallest t that reaches the target. It is
+    // at most 20 x 1024 (LLAMA_MAX_EXPERTS) for any model llama loads; a shape past uint32 saturates, so
+    // the room is never taken, rather than wrapping to a small number that would take every word.
     const uint64_t slips = (uint64_t) LLAMA_MOE_ROOM_SLIPS_PER_BOOK*n_expert;
-    return (uint32_t) ((slips + n_expert_used - 1)/n_expert_used);
+    return (uint32_t) std::min<uint64_t>((slips + n_expert_used - 1)/n_expert_used, UINT32_MAX);
 }
 
 uint32_t llama_moe_room_sweep_min_tokens_env(const char * env_value, uint32_t n_expert, uint32_t n_expert_used) {
