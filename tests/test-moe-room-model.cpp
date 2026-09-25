@@ -7,6 +7,7 @@
 // Scenarios, each with the room's groups counted so a test that silently fell back to waves fails:
 //   long      300 tokens read in at -ub 128 (128, 128, 44) then 8 written, parts 4 and parts 1
 //   t_min     105 tokens at -ub 35, the smallest ubatch the room takes
+//   last row  B asking for its last row only, as a server does: the last floor takes waves beside the room
 //   empty     a desk of 62 of 64 books, so two of the four parts hold nothing (all-skip links)
 //   desks     prompt B after A and after C on two fresh models: different desks, the same bytes
 //   short     20 tokens, under the threshold: waves, not the room (printed against the reference)
@@ -44,6 +45,7 @@ struct segment {
     std::vector<llama_token> prompt;
     int  n_write = 0;
     bool keep    = true; // outputs of this segment are compared
+    bool all     = true; // logits for every prompt position, or only the last (as a server asks)
 };
 
 struct outputs {
@@ -107,12 +109,12 @@ bool run(llama_model * model, uint32_t n_ubatch, const std::vector<segment> & se
         std::vector<float> logits;
         common_batch_clear(batch);
         for (size_t i = 0; i < s.prompt.size(); i++) {
-            common_batch_add(batch, s.prompt[i], (llama_pos) i, { 0 }, true);
+            common_batch_add(batch, s.prompt[i], (llama_pos) i, { 0 }, s.all || i + 1 == s.prompt.size());
         }
         ok = ok && llama_decode(ctx, batch) == 0;
         if (ok) {
-            const float * l = llama_get_logits(ctx);
-            logits.assign(l, l + s.prompt.size()*n_vocab);
+            const float * l = s.all ? llama_get_logits(ctx) : llama_get_logits_ith(ctx, -1);
+            logits.assign(l, l + (s.all ? s.prompt.size() : 1)*n_vocab);
         }
         for (int i = 0; ok && i < s.n_write; i++) {
             const float * row = logits.data() + logits.size() - n_vocab;
@@ -268,10 +270,12 @@ int main(int argc, char ** argv) {
     const segment E = { random_tokens(rng, 20, n_vocab), 0, false };
     const segment S = { random_tokens(rng, 20, n_vocab), 4, true };
     const segment T = { random_tokens(rng, 105, n_vocab), 4, true };
+    segment L = B; // B asking for its last row only: a floor that keeps only output rows (qwen3moe's last) takes waves
+    L.all = false;
 
-    outputs ref_b, ref_s, ref_t;
+    outputs ref_b, ref_s, ref_t, ref_l;
     bool ok = run(ref_model, 128, { B }, ref_b, true) && run(ref_model, 128, { S }, ref_s, true) &&
-              run(ref_model, 35, { T }, ref_t, true);
+              run(ref_model, 35, { T }, ref_t, true) && run(ref_model, 128, { L }, ref_l, true);
     llama_model_free(ref_model);
     if (!ok) {
         fprintf(stderr, "the reference run failed\n");
@@ -292,6 +296,18 @@ int main(int argc, char ** argv) {
     scenario("long, parts 1", room1, 128, { B }, ref_b, 3);
     scenario("long, waves",   waves, 128, { B }, ref_b, 0);
     scenario("t_min: -ub 35", room4, 35, { T }, ref_t, 3);
+    {
+        // the last row only: the last floor works on the output rows alone, under the threshold, so it
+        // takes waves in the same ubatch where every other floor takes the room
+        llama_model * model = load(room4);
+        outputs got;
+        check(model != nullptr && run(model, 128, { L }, got, true), "last row only: ran");
+        const int64_t groups = room_of(model)->stats.n_groups;
+        const int64_t want   = 3*(n_streamed_floors(model) - 1)*(1 + room4.parts);
+        check(groups == want, "last row only: room groups ran " + std::to_string(groups) + " of " + std::to_string(want));
+        check(same(ref_l.logits, got.logits) && same(ref_l.moe, got.moe), "last row only: byte-identical");
+        llama_model_free(model);
+    }
     scenario("short: 20 tokens take waves", room4, 128, { S }, ref_s, 0);
     {
         llama_model * model = load(empty);
