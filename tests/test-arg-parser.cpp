@@ -277,6 +277,39 @@ static void test(void) {
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), moe_params, LLAMA_EXAMPLE_COMMON));
     }
 
+    {
+        // the reading room: off by default, and every way of sizing it. A GiB value that parsed as
+        // floors (or the reverse) would still load and quietly carve a different room out of the desk.
+        common_params room_params;
+        assert(room_params.moe_stream_room_mode == LLAMA_MOE_ROOM_OFF);
+        assert(room_params.moe_stream_room_parts == 4);
+        struct room_case { const char * arg; int32_t mode; float value; };
+        for (const room_case & rc : std::vector<room_case>{
+                { "auto",  LLAMA_MOE_ROOM_AUTO,   0.0f  },
+                { "0",     LLAMA_MOE_ROOM_OFF,    0.0f  },
+                { "1.1",   LLAMA_MOE_ROOM_GIB,    1.1f  },
+                { "1.1G",  LLAMA_MOE_ROOM_GIB,    1.1f  },
+                { "2gib",  LLAMA_MOE_ROOM_GIB,    2.0f  },
+                { "1.25f", LLAMA_MOE_ROOM_FLOORS, 1.25f } }) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "--moe-stream-room", rc.arg, "--moe-stream-room-parts", "3"};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.moe_stream_room_mode == rc.mode);
+            assert(p.moe_stream_room_value == rc.value);
+            assert(p.moe_stream_room_parts == 3);
+        }
+        for (const char * bad : {"x", "-1", "1q", "", "f", "nan", "inf", ".", "1.1ff"}) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "--moe-stream-room", bad};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+        }
+        for (const char * bad : {"0", "17", "-1"}) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "--moe-stream-room-parts", bad};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+        }
+    }
+
     // --draft cannot be used outside llama-speculative
     argv = {"binary_name", "--spec-draft-n-max", "123"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SPECULATIVE));
@@ -386,6 +419,17 @@ static void test(void) {
     argv = {"binary_name"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
     assert(params.load_mode == LLAMA_LOAD_MODE_DIRECT_IO);
+
+    // the rung's arms set the reading room by env, not by flag
+    setenv("LLAMA_ARG_MOE_STREAM_ROOM", "1.5f", true);
+    setenv("LLAMA_ARG_MOE_STREAM_ROOM_PARTS", "6", true);
+    argv = {"binary_name"};
+    assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+    assert(params.moe_stream_room_mode == LLAMA_MOE_ROOM_FLOORS);
+    assert(params.moe_stream_room_value == 1.5f);
+    assert(params.moe_stream_room_parts == 6);
+    unsetenv("LLAMA_ARG_MOE_STREAM_ROOM");
+    unsetenv("LLAMA_ARG_MOE_STREAM_ROOM_PARTS");
 
     printf("test-arg-parser: test negated environment variables\n\n");
 

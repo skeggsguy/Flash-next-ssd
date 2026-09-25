@@ -286,6 +286,14 @@ llama_context::llama_context(
         LLAMA_LOG_INFO("%s: MoE expert streaming with %u cache slots, n_ubatch = %u\n",
                 __func__, model.moe_stream()->n_slots, cparams.n_ubatch);
 
+        // the reading room only takes read-ins of sweep_min_tokens and up, and a read-in is cut into
+        // ubatches first: below that the room is carved out of the desk and never used
+        const llama_moe_room_layout & room = model.moe_stream()->room_layout;
+        if (room.on && cparams.n_ubatch < room.sweep_min_tokens && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+            LLAMA_LOG_WARN("%s: reading room: -ub %u is below the %u tokens the room takes, so it will never be "
+                           "used; raise -ub or set --moe-stream-room 0\n", __func__, cparams.n_ubatch, room.sweep_min_tokens);
+        }
+
         // op offload snapshots host weights to the device per graph split, which assumes they do
         // not change during the graph - streamed caches are rewritten between waves
         bool cache_on_host = false;

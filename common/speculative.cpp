@@ -2679,6 +2679,10 @@ common_speculative_init_result::common_speculative_init_result(
     // path only; inheriting the target's alt path fails the twin-size check at load.
     mparams.moe_stream_alt_path = nullptr;
 
+    // The reading room is for the target's long read-ins; the draft (the apprentice) reads a few
+    // tokens at a time, and its manager must never carve a belt out of its own small desk.
+    mparams.moe_stream_room_mode = LLAMA_MOE_ROOM_OFF;
+
     // The draft inherits the target's expert-cache budget. For a small MoE drafter that can
     // accidentally cover every expert, disable streaming, and consume memory needed by the target.
     // Zero keeps the inherited setting.

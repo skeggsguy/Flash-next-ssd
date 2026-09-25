@@ -3,6 +3,7 @@
 #include "llama-mmap.h"
 
 #include "ggml-cpp.h"
+#include "llama-moe-room-size.h"
 #include "llama-moe-stream-layer.h"
 #include "llama-moe-stream-stats.h"
 
@@ -93,6 +94,9 @@ struct llama_moe_stream {
     llama_files files_alt;
     std::string alt_path;         // the alt copy's FIRST shard; empty = one runner
     int32_t     alt_split = 100;  // percent of expert ids served from `files`
+
+    // The reading room's size, settled at load (llama_moe_room_size_model); off unless asked for.
+    llama_moe_room_layout room_layout;
 
     // which of the two sets serves expert `expert` of a layer that has `n_expert` experts
     bool use_alt(int32_t expert, uint32_t n_expert) const {

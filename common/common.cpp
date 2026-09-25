@@ -1310,6 +1310,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
         auto mparams_dft = common_model_params_to_llama(params_dft);
         mparams_dft.moe_stream_alt_path = nullptr; // the draft has no copy on the other drive
+        mparams_dft.moe_stream_room_mode = LLAMA_MOE_ROOM_OFF; // the draft's books never use the reading room
         auto cparams_dft = common_context_params_to_llama(params_dft);
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
@@ -1712,6 +1713,9 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.moe_stream_io_threads = params.moe_stream_io_threads;
     mparams.moe_stream_alt_path   = params.moe_stream_alt_path.empty() ? nullptr : params.moe_stream_alt_path.c_str();
     mparams.moe_stream_alt_split  = params.moe_stream_alt_split;
+    mparams.moe_stream_room_mode  = params.moe_stream_room_mode;
+    mparams.moe_stream_room_value = params.moe_stream_room_value;
+    mparams.moe_stream_room_parts = params.moe_stream_room_parts;
     mparams.moe_stream_direct     = params.moe_stream_direct;
 
     if (params.kv_overrides.empty()) {

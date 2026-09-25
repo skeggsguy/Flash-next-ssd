@@ -2855,6 +2855,42 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.moe_stream_direct = true;
         }
     ).set_env("LLAMA_ARG_MOE_STREAM_DIRECT"));
+    add_opt(common_arg(
+        {"--moe-stream-room"}, "auto|0|<GiB>|<N>f",
+        "the reading room for --moe-stream: a belt of books for long read-ins, carved out of --moe-stream-cache, "
+        "so reading in never evicts the desk. auto = 1.25 floors of look-ahead, <N>f = N floors, <GiB> (e.g. 1.1 "
+        "or 1.1G) = that size, 0 = off (default: 0)",
+        [](common_params & params, const std::string & value) {
+            std::string v = value;
+            for (auto & c : v) {
+                c = (char) std::tolower((unsigned char) c);
+            }
+            if (v == "auto") {
+                params.moe_stream_room_mode = LLAMA_MOE_ROOM_AUTO;
+                return;
+            }
+            char * end = nullptr;
+            const double x = v.empty() || !(std::isdigit((unsigned char) v[0]) || v[0] == '.') ? -1.0 : std::strtod(v.c_str(), &end);
+            const std::string suffix = end ? std::string(end) : std::string();
+            const bool floors = suffix == "f";
+            if (!(x >= 0.0) || !std::isfinite(x) || !(floors || suffix.empty() || suffix == "g" || suffix == "gb" || suffix == "gib")) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.moe_stream_room_mode  = x == 0.0 ? LLAMA_MOE_ROOM_OFF : floors ? LLAMA_MOE_ROOM_FLOORS : LLAMA_MOE_ROOM_GIB;
+            params.moe_stream_room_value = (float) x;
+        }
+    ).set_env("LLAMA_ARG_MOE_STREAM_ROOM"));
+    add_opt(common_arg(
+        {"--moe-stream-room-parts"}, "N",
+        string_format("how many parts each floor's books on the reading room's belt are cut into, 1 to 16; a part "
+                      "is handed back as soon as the GPU is done with it (default: %d)", params.moe_stream_room_parts),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 16) {
+                throw std::invalid_argument("--moe-stream-room-parts must be between 1 and 16");
+            }
+            params.moe_stream_room_parts = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_STREAM_ROOM_PARTS"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

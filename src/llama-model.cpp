@@ -9,6 +9,7 @@
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
 #include "llama-moe-stream.h"
+#include "llama-moe-room.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -1626,7 +1627,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     pimpl->dev_output = get_layer_buft_list(n_layer_all);
 
     if (params.moe_stream) {
-        const uint32_t n_slots = llama_moe_stream_resolve_slots(params, hparams, ml);
+        uint32_t n_slots = llama_moe_stream_resolve_slots(params, hparams, ml);
+        // the reading room comes out of the desk's budget (llama-moe-room.cpp); off keeps n_slots
+        const llama_moe_room_layout room = n_slots > 0
+            ? llama_moe_room_size_model(params, arch, hparams, ml, n_slots) : llama_moe_room_layout();
+        n_slots = n_slots > 0 ? room.desk_slots : 0;
         if (n_slots > 0) {
             if (pimpl->has_tensor_overrides) {
                 LLAMA_LOG_WARN("%s: tensor buffer overrides (-ot/--cpu-moe) do not apply to SSD-streamed expert tensors\n", __func__);
@@ -1636,6 +1641,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             // count: the graph's warmup pass runs with n_expert_used = n_expert, and those calls
             // are a sweep of the whole pool rather than routing.
             pimpl->moe_stream->n_expert_used = hparams.n_expert_used_max();
+            pimpl->moe_stream->room_layout   = room;
             // two runners: the byte-identical copy on the other drive, and the share of expert
             // ids that stays on the model's own path
             if (params.moe_stream_alt_path && *params.moe_stream_alt_path) {
@@ -3041,6 +3047,9 @@ llama_model_params llama_model_default_params() {
         /*.moe_stream_io_threads       =*/ 0,
         /*.moe_stream_alt_path         =*/ nullptr,
         /*.moe_stream_alt_split        =*/ 53,
+        /*.moe_stream_room_mode        =*/ LLAMA_MOE_ROOM_OFF,
+        /*.moe_stream_room_value       =*/ 0.0f,
+        /*.moe_stream_room_parts       =*/ 4,
         /*.moe_stream_direct           =*/ false,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,
