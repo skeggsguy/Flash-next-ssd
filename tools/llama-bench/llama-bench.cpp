@@ -380,6 +380,9 @@ struct cmd_params {
     bool                             moe_stream;
     int                              moe_stream_cache_gib;
     int                              moe_stream_io_threads;
+    int32_t                          moe_stream_room_mode;
+    float                            moe_stream_room_value;
+    int32_t                          moe_stream_room_parts;
 };
 
 static const cmd_params cmd_params_defaults = {
@@ -428,6 +431,9 @@ static const cmd_params cmd_params_defaults = {
     /* moe_stream           */ false,
     /* moe_stream_cache_gib */ 0,
     /* moe_stream_io_threads*/ 0,
+    /* moe_stream_room_mode */ LLAMA_MOE_ROOM_OFF,
+    /* moe_stream_room_value*/ 0.0f,
+    /* moe_stream_room_parts*/ 4,
 };
 
 static void print_usage(int /* argc */, char ** argv) {
@@ -479,6 +485,8 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("        --moe-stream                                stream MoE routed experts from disk\n");
     printf("        --moe-stream-cache <GiB>                    expert cache budget (implies --moe-stream)\n");
     printf("        --moe-stream-io-threads <n>                 expert load I/O threads\n");
+    printf("        --moe-stream-room <auto|0|GiB|Nf>           reading room, carved out of the cache (default: 0)\n");
+    printf("        --moe-stream-room-parts <n>                 parts per floor on the room's belt, 1-16 (default: 4)\n");
     printf("  -ngl, --n-gpu-layers <n>                          (default: %s)\n", join(cmd_params_defaults.n_gpu_layers, ",").c_str());
     printf("  -ncmoe, --n-cpu-moe <n>                           (default: %s)\n", join(cmd_params_defaults.n_cpu_moe, ",").c_str());
     printf("  -sm, --split-mode <none|layer|row|tensor>         (default: %s)\n", join(transform_to_str(cmd_params_defaults.split_mode, split_mode_str), ",").c_str());
@@ -927,6 +935,29 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                     break;
                 }
                 params.moe_stream_io_threads = std::stoi(argv[i]);
+            } else if (arg == "--moe-stream-room") {
+                // as the common flag takes it: auto, 0 (off), <GiB> with an optional g, or <N>f floors
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                const std::string v = argv[i];
+                char * end = nullptr;
+                const double x = v == "auto" ? 0.0 : std::strtod(v.c_str(), &end);
+                const std::string suffix = end ? std::string(end) : std::string();
+                if (v != "auto" && (end == v.c_str() || !(x >= 0.0) || !(suffix.empty() || suffix == "g" || suffix == "G" || suffix == "f"))) {
+                    invalid_param = true;
+                    break;
+                }
+                params.moe_stream_room_mode  = v == "auto" ? LLAMA_MOE_ROOM_AUTO : x == 0.0 ? LLAMA_MOE_ROOM_OFF
+                                             : suffix == "f" ? LLAMA_MOE_ROOM_FLOORS : LLAMA_MOE_ROOM_GIB;
+                params.moe_stream_room_value = (float) x;
+            } else if (arg == "--moe-stream-room-parts") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                params.moe_stream_room_parts = std::stoi(argv[i]);
             } else if (arg == "--no-host") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -1255,6 +1286,9 @@ struct cmd_params_instance {
     bool               moe_stream;
     int                moe_stream_cache_gib;
     int                moe_stream_io_threads;
+    int32_t            moe_stream_room_mode;
+    float              moe_stream_room_value;
+    int32_t            moe_stream_room_parts;
 
     llama_model_params to_llama_mparams() const {
         llama_model_params mparams = llama_model_default_params();
@@ -1276,6 +1310,9 @@ struct cmd_params_instance {
         if (moe_stream) {
             mparams.moe_stream_budget     = (uint64_t) moe_stream_cache_gib * 1024ull*1024ull*1024ull;
             mparams.moe_stream_io_threads = moe_stream_io_threads;
+            mparams.moe_stream_room_mode  = moe_stream_room_mode;
+            mparams.moe_stream_room_value = moe_stream_room_value;
+            mparams.moe_stream_room_parts = moe_stream_room_parts;
         }
 
         if (n_cpu_moe <= 0) {
@@ -1411,6 +1448,9 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .moe_stream            = */ params.moe_stream,
                 /* .moe_stream_cache_gib  = */ params.moe_stream_cache_gib,
                 /* .moe_stream_io_threads = */ params.moe_stream_io_threads,
+                /* .moe_stream_room_mode  = */ params.moe_stream_room_mode,
+                /* .moe_stream_room_value = */ params.moe_stream_room_value,
+                /* .moe_stream_room_parts = */ params.moe_stream_room_parts,
             };
             instances.push_back(instance);
         }
@@ -1451,6 +1491,9 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .moe_stream            = */ params.moe_stream,
                 /* .moe_stream_cache_gib  = */ params.moe_stream_cache_gib,
                 /* .moe_stream_io_threads = */ params.moe_stream_io_threads,
+                /* .moe_stream_room_mode  = */ params.moe_stream_room_mode,
+                /* .moe_stream_room_value = */ params.moe_stream_room_value,
+                /* .moe_stream_room_parts = */ params.moe_stream_room_parts,
             };
             instances.push_back(instance);
         }
@@ -1491,6 +1534,9 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
                 /* .moe_stream            = */ params.moe_stream,
                 /* .moe_stream_cache_gib  = */ params.moe_stream_cache_gib,
                 /* .moe_stream_io_threads = */ params.moe_stream_io_threads,
+                /* .moe_stream_room_mode  = */ params.moe_stream_room_mode,
+                /* .moe_stream_room_value = */ params.moe_stream_room_value,
+                /* .moe_stream_room_parts = */ params.moe_stream_room_parts,
             };
             instances.push_back(instance);
         }
