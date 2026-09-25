@@ -81,6 +81,8 @@ int main(int argc, char ** argv) {
         t.assert_equal("negative", 1u, llama_moe_room_sweep_min_tokens_env("-5", 512, 10));
         t.assert_equal("not a number", 1u, llama_moe_room_sweep_min_tokens_env("abc", 512, 10));
         t.assert_equal("empty", 1u, llama_moe_room_sweep_min_tokens_env("", 512, 10));
+        // read the way the manager always read it (atoi): leading blanks skipped, trailing junk ignored
+        t.assert_equal("as atoi reads it", 42u, llama_moe_room_sweep_min_tokens_env(" 42x", 512, 10));
     });
 
     t.test("record stride", [](testing & t) {
