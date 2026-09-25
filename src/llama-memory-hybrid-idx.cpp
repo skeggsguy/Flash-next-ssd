@@ -62,6 +62,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
                  uint32_t   n_rs_seq,
                      bool   offload,
                      bool   unified,
+                 uint32_t   n_ubatch,
                             /* layer filters */
     const layer_filter_cb & filter_attn,
     const layer_filter_cb & filter_recr,
@@ -103,7 +104,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             kv_size, n_seq_max, n_pad, n_swa, swa_type,
             nullptr, filter_idx, nullptr, nullptr, "idx_");
     }()) {
-    qsa_keep_init(model, offload);
+    qsa_keep_init(model, offload, n_ubatch);
 }
 
 llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
@@ -215,12 +216,7 @@ bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_po
     // write, which pools it afresh in that ubatch: so no kept row goes stale here (the MTP trim and the
     // checkpoint cuts cost nothing). a removal can take a repeated position away, though
     qsa_keep_settle();
-
-    for (uint32_t s = 0; s < keep.dup.size(); ++s) {
-        if (keep.dup[s] == QSA_DUP_PRESENT && (seq_id < 0 || mem_idx->seq_stream(seq_id) == s)) {
-            keep.dup[s] = QSA_DUP_UNKNOWN;
-        }
-    }
+    qsa_keep_dup_unknown(seq_id);
 
     // same order as llama_memory_hybrid::seq_rm: the recurrent cache can refuse, so try it first
     if (!get_mem_recr()->seq_rm(seq_id, p0, p1)) {
@@ -365,6 +361,9 @@ void llama_memory_hybrid_idx::state_drop(llama_seq_id seq_id) {
     if (mem_idx) {
         mem_idx->seq_rm(seq_id, -1, -1);
     }
+
+    // as in seq_rm: the cells that went may have held the stream's repeated position
+    qsa_keep_dup_unknown(seq_id);
 }
 
 llama_kv_cache * llama_memory_hybrid_idx::get_mem_idx() const {
@@ -434,10 +433,9 @@ void llama_memory_hybrid_idx::set_input_qsa(
     int32_t * dst_blk_pos   = blk_pos   == nullptr ? blk_pos_buf.data()   : (int32_t *) blk_pos->data;
     float   * dst_bias      = (float   *) bias->data;
 
-    // FULL and INCR: the store's rows, and the rows INCR pools
-    const int64_t n_rows     = keep_full || keep_incr ? qsa_keep_n_rows(ratio) : 0;
-    const int32_t row_dead   = (int32_t) n_rows - 2;
-    const int32_t row_filler = (int32_t) n_rows - 1;
+    // FULL and INCR: the store's rows (the position buckets, then the spares), and the rows INCR pools
+    const int64_t n_buckets = keep_full || keep_incr ? qsa_keep_n_buckets(ratio) : 0;
+    const int64_t n_rows    = keep_full || keep_incr ? qsa_keep_n_rows(ratio)    : 0;
 
     const int64_t n_slots = keep_incr ? keep.plan->n_slots : 0;
     const int64_t n_fresh = keep_incr ? n_slots + 2 : 0;
@@ -447,15 +445,35 @@ void llama_memory_hybrid_idx::set_input_qsa(
         GGML_ASSERT(keep.fresh_pos->ne[0]   == 4*n_fresh*n_ns);
         GGML_ASSERT(keep.fresh_dst->ne[0]   == n_fresh && keep.fresh_dst->ne[1] == n_ns);
         GGML_ASSERT(keep.blk_src->ne[0]     == n_blocks && keep.blk_src->ne[1] == n_ns);
+        GGML_ASSERT(n_fresh <= n_rows - n_buckets && "qsa keep: more pooled rows than spares");
     }
     if (keep_full) {
         GGML_ASSERT(keep.blk_dst->ne[0] == n_blocks && keep.blk_dst->ne[1] == n_ns);
     }
     if (keep_full || keep_incr) {
-        GGML_ASSERT(keep.plan->ns == n_ns);
+        GGML_ASSERT(keep.plan->ns == n_ns && n_blocks <= n_buckets);
     }
 
     std::vector<int32_t> fresh;
+
+    // ggml_set_rows leaves two rows written to one destination undefined, so every row of a write
+    // gets a destination of its own: checked here, where a slip would otherwise stay silent
+    std::vector<uint8_t> row_used;
+
+    const auto rows_distinct = [&](const int64_t * dst, int64_t n) {
+        row_used.assign(n_rows, 0);
+
+        for (int64_t k = 0; k < n; ++k) {
+            GGML_ASSERT(dst[k] >= 0 && dst[k] < n_rows);
+
+            if (row_used[dst[k]]) {
+                return false;
+            }
+            row_used[dst[k]] = 1;
+        }
+
+        return true;
+    };
 
     // a block is keyed on (sequence set, index bucket): a unified cache counts every sequence
     // from zero, so the bucket alone would pool two sequences into one block
@@ -692,30 +710,39 @@ void llama_memory_hybrid_idx::set_input_qsa(
             GGML_ASSERT(one_seq && !dup && !oor && !ranked && "qsa keep: the plan disagrees with the cells");
             GGML_ASSERT(get_mem_idx()->seq_stream(seq_of_stream) == keep.plan->s0 + s);
 
-            // a full block's store row is its position bucket; the unused rows keep today's values
-            // (the dead block's own members, cell 0 at position 0 for the rest), and are pooled afresh
-            const auto row_of = [&](int64_t b) -> int32_t {
-                if (b < n_bid) {
-                    return bid_idx[b]/(int32_t) r;
+            // a full block's store row is its position bucket. the unused rows keep today's values
+            // (the dead block's own members, cell 0 at position 0 for the rest) and are pooled afresh,
+            // each into a spare row of its own: the spares past the buckets first, then the buckets
+            // of no full block, of which a FULL write of every block id can need more than the spares
+            int64_t spare_next = n_buckets;
+            int64_t spare_pb   = 0;
+
+            const auto spare_row = [&]() -> int32_t {
+                if (spare_next < n_rows) {
+                    return (int32_t) spare_next++;
                 }
-                return have_dead && b == dead_bid ? row_dead : row_filler;
+
+                // one sequence in the stream: at most one group per bucket, full or not
+                while (spare_pb < n_blocks && grp_head[spare_pb] >= 0 && grp_bid[grp_head[spare_pb]] >= 0) {
+                    spare_pb++;
+                }
+
+                GGML_ASSERT(spare_pb < n_buckets && "qsa keep: out of spare rows");
+
+                return (int32_t) spare_pb++;
             };
 
             if (keep_full) {
                 int64_t * cur_blk_dst = (int64_t *) keep.blk_dst->data + s*n_blocks;
 
                 for (int64_t b = 0; b < n_blocks; ++b) {
-                    cur_blk_dst[b] = row_of(b);
+                    cur_blk_dst[b] = b < n_bid ? bid_idx[b]/(int32_t) r : spare_row();
                 }
+
+                GGML_ASSERT(rows_distinct(cur_blk_dst, n_blocks) && "qsa keep: two blocks written to one row");
             }
 
             if (keep_incr) {
-                int32_t * cur_blk_src = (int32_t *) keep.blk_src->data + s*n_blocks;
-
-                for (int64_t b = 0; b < n_blocks; ++b) {
-                    cur_blk_src[b] = row_of(b);
-                }
-
                 // the full blocks this ubatch wrote a key into; the rest are in the store already
                 fresh.clear();
 
@@ -741,14 +768,14 @@ void llama_memory_hybrid_idx::set_input_qsa(
                 // row n_slots + 1 a filler; each copies today's members and positions of its block
                 for (int64_t k = 0; k < n_fresh; ++k) {
                     int64_t b   = -1;
-                    int32_t dst = row_filler;
+                    int32_t dst = -1;
 
                     if (k < (int64_t) fresh.size()) {
                         b   = fresh[k];
-                        dst = row_of(b);
-                    } else if (k == n_slots) {
-                        b   = have_dead ? dead_bid : -1;
-                        dst = row_dead;
+                        dst = bid_idx[b]/(int32_t) r;
+                    } else {
+                        b   = k == n_slots && have_dead ? dead_bid : -1;
+                        dst = spare_row();
                     }
 
                     for (int64_t i = 0; i < r; ++i) {
@@ -761,6 +788,23 @@ void llama_memory_hybrid_idx::set_input_qsa(
                     }
 
                     cur_fresh_dst[k] = dst;
+                }
+
+                GGML_ASSERT(rows_distinct(cur_fresh_dst, n_fresh) && "qsa keep: two pooled rows written to one row");
+
+                // every block reads its row back: a full block its bucket, the dead block the row
+                // just pooled for it, the unused ids the filler pooled last (they all hold that value)
+                const int32_t row_dead   = (int32_t) cur_fresh_dst[n_slots];
+                const int32_t row_filler = (int32_t) cur_fresh_dst[n_slots + 1];
+
+                int32_t * cur_blk_src = (int32_t *) keep.blk_src->data + s*n_blocks;
+
+                for (int64_t b = 0; b < n_blocks; ++b) {
+                    if (b < n_bid) {
+                        cur_blk_src[b] = bid_idx[b]/(int32_t) r;
+                    } else {
+                        cur_blk_src[b] = have_dead && b == dead_bid ? row_dead : row_filler;
+                    }
                 }
             }
         }
@@ -842,14 +886,17 @@ void llama_memory_hybrid_idx::set_input_qsa(
     }
 }
 
-void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offload) {
-    keep.enabled = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_KEEP");
-    keep.check   = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_CHECK");
-    keep.debug   = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_DEBUG");
+void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch) {
+    keep.enabled  = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_KEEP");
+    keep.check    = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_CHECK");
+    keep.debug    = keep.enabled && llama_qsa_keep_env("LLAMA_QSA_KEEP_DEBUG");
+    keep.n_ubatch = n_ubatch;
 
     if (!keep.enabled) {
         return;
     }
+
+    GGML_ASSERT(n_ubatch > 0);
 
     const auto & hparams = model.hparams;
 
@@ -957,11 +1004,24 @@ ggml_tensor * llama_memory_hybrid_idx::qsa_keep_sum(int32_t il) const {
     return it->second.sum;
 }
 
-uint32_t llama_memory_hybrid_idx::qsa_keep_n_rows(uint32_t ratio) const {
+uint32_t llama_memory_hybrid_idx::qsa_keep_n_buckets(uint32_t ratio) const {
     GGML_ASSERT(ratio > 0 && mem_idx != nullptr);
 
-    // every position bucket a cell can reach, then the dead block's row and the filler's
-    return (mem_idx->get_size() + ratio - 1)/ratio + 2;
+    // every cache path keeps a cell's position below the cell count
+    return (mem_idx->get_size() + ratio - 1)/ratio;
+}
+
+uint32_t llama_memory_hybrid_idx::qsa_keep_n_spare(uint32_t ratio) const {
+    GGML_ASSERT(ratio > 0 && keep.n_ubatch > 0);
+
+    // the rows INCR pools when every one of the largest ubatch's tokens fills a block (its n_slots,
+    // see qsa_keep_plan), plus the dead block's and the filler's: one spare each, so that no two
+    // rows of one write share a destination
+    return (keep.n_ubatch + ratio - 2)/ratio + 1 + 2;
+}
+
+uint32_t llama_memory_hybrid_idx::qsa_keep_n_rows(uint32_t ratio) const {
+    return qsa_keep_n_buckets(ratio) + qsa_keep_n_spare(ratio);
 }
 
 // true if two cells of the stream share a position; the caller knows the stream holds one sequence
@@ -1062,8 +1122,10 @@ std::vector<llama_qsa_keep_plan> llama_memory_hybrid_idx::qsa_keep_plan(
         plan.s0    = s0;
         plan.ns    = ns;
 
-        // blocks n_tps positions in a row can reach
+        // blocks n_tps positions in a row can reach; the spares were sized for the largest ubatch
         const int64_t n_slots = std::min<int64_t>(n_blocks, (n_tps + r - 2)/r + 1);
+
+        GGML_ASSERT(n_slots + 2 <= (int64_t) qsa_keep_n_spare(r) && "qsa keep: a ubatch larger than the spares were sized for");
 
         bool eligible = true;
         bool synced   = true;
@@ -1185,6 +1247,20 @@ void llama_memory_hybrid_idx::qsa_keep_unsync(llama_seq_id seq_id) {
         }
 
         keep.dup[s] = QSA_DUP_UNKNOWN;
+    }
+}
+
+void llama_memory_hybrid_idx::qsa_keep_dup_unknown(llama_seq_id seq_id) {
+    if (!keep.enabled) {
+        return;
+    }
+
+    const uint32_t st = seq_id < 0 ? 0 : mem_idx->seq_stream(seq_id);
+
+    for (uint32_t s = 0; s < keep.dup.size(); ++s) {
+        if (keep.dup[s] == QSA_DUP_PRESENT && (seq_id < 0 || st == s)) {
+            keep.dup[s] = QSA_DUP_UNKNOWN;
+        }
     }
 }
 

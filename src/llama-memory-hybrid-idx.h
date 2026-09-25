@@ -14,7 +14,10 @@
 // A full block's summary (its r raw keys pooled, normed and roped at the block's first position)
 // changes only when one of its keys is written, so the summaries are kept in a store, one row per
 // position bucket pb = pos/r: block ids are compacted and renumber, and cells move on a restore, but
-// pb does not. Each ubatch picks how the summaries are made before its graph is built:
+// pb does not. The rows past the buckets are spares for the rows a graph pools but never keeps (the
+// unpooled tail's "dead" block and the fillers of the unused block ids): each such row is written to
+// a spare of its own, since ggml_set_rows leaves two rows written to one destination undefined.
+// Each ubatch picks how the summaries are made before its graph is built:
 //   LEGACY - today's graph; the store is not kept up to date (switch off, more than one sequence in a
 //            stream, a repeated position, a position past the cell window)
 //   FULL   - today's graph, plus every row written into the store: the rebuild after anything that
@@ -87,6 +90,8 @@ public:
                  uint32_t   n_rs_seq,
                      bool   offload,
                      bool   unified,
+                            /* the largest ubatch: bounds the rows one INCR ubatch pools (patch 4i) */
+                 uint32_t   n_ubatch,
                             /* layer filters */
     const layer_filter_cb & filter_attn,
     const layer_filter_cb & filter_recr,
@@ -146,12 +151,14 @@ public:
     bool qsa_keep()       const { return keep.enabled; }
     bool qsa_keep_check() const { return keep.check; }
 
-    // F32 [indexer_head_size, qsa_keep_n_rows(ratio), n_stream]; the last two rows of a stream are
-    // the dead block's and the filler's, which INCR pools afresh every ubatch
+    // F32 [indexer_head_size, qsa_keep_n_rows(ratio), n_stream]: a stream's rows are its position
+    // buckets, then the spares that the rows pooled afresh every ubatch are written to
     ggml_tensor * qsa_keep_rows(int32_t il) const;
     ggml_tensor * qsa_keep_sum (int32_t il) const; // F32 [1], LLAMA_QSA_KEEP_CHECK only
 
-    uint32_t qsa_keep_n_rows(uint32_t ratio) const;
+    uint32_t qsa_keep_n_buckets(uint32_t ratio) const; // every bucket a cell's position can fall in
+    uint32_t qsa_keep_n_spare  (uint32_t ratio) const; // the most rows one INCR ubatch pools
+    uint32_t qsa_keep_n_rows   (uint32_t ratio) const; // buckets + spares
 
     // plans the ubatch just applied (one per ratio) and holds them in flight until qsa_keep_commit
     //   pos_max_prev: per stream of the ubatch, its sequence's last position before the ubatch was applied
@@ -198,6 +205,8 @@ private:
         bool check   = false;
         bool debug   = false;
 
+        uint32_t n_ubatch = 0; // no ubatch is larger, so no INCR ubatch pools more rows than the spares
+
         std::vector<uint32_t> ratios; // distinct ratios of the QSA layers
 
         std::unordered_map<int32_t, qsa_keep_layer> layers;
@@ -218,13 +227,16 @@ private:
         std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
     } keep;
 
-    void qsa_keep_init(const llama_model & model, bool offload);
+    void qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch);
 
     // a plan in flight never finished its compute: whatever it wrote into the store cannot be trusted
     void qsa_keep_settle();
 
     // seq_id's stream (every stream if seq_id < 0) needs a FULL rebuild before INCR can resume
     void qsa_keep_unsync(llama_seq_id seq_id);
+
+    // cells left seq_id's stream (every stream if seq_id < 0): a repeated position may have gone with them
+    void qsa_keep_dup_unknown(llama_seq_id seq_id);
 };
 
 class llama_memory_hybrid_idx_context : public llama_memory_hybrid_context {
