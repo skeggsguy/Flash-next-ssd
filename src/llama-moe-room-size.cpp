@@ -51,10 +51,20 @@ llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req,
     }
     const bool by_floors = req.mode == LLAMA_MOE_ROOM_AUTO || req.mode == LLAMA_MOE_ROOM_FLOORS;
     const double floors  = req.mode == LLAMA_MOE_ROOM_AUTO ? LLAMA_MOE_ROOM_AUTO_FLOORS : req.value;
-    if ((req.mode != LLAMA_MOE_ROOM_AUTO && !(req.value > 0.0)) ||
-        (!by_floors && req.mode != LLAMA_MOE_ROOM_GIB) || b.book_bytes == 0 || b.stride_min == 0 ||
-        b.desk_slots >= b.n_expert) {
-        lay.error = format("--moe-stream-room: cannot make a reading room of mode %d, size %g", req.mode, req.value);
+    if ((req.mode != LLAMA_MOE_ROOM_AUTO && !(req.value > 0.0)) || (!by_floors && req.mode != LLAMA_MOE_ROOM_GIB)) {
+        lay.error = format("--moe-stream-room: cannot make a reading room of mode %d, size %g: give auto, a size in "
+                           "GiB, or a number of floors like 1.25f", req.mode, req.value);
+        return lay;
+    }
+    if (b.book_bytes == 0 || b.stride_min == 0) {
+        lay.error = "--moe-stream-room: this model has no streamed books (no floor with expert weights), so there is "
+                    "nothing for a reading room to hold";
+        return lay;
+    }
+    if (b.desk_slots >= b.n_expert) {
+        lay.error = format("--moe-stream-room: the desk already holds every book (%u slots per floor for %u books), so "
+                           "reading in never fetches and a reading room would only shrink it; run with --moe-stream-room 0",
+                           b.desk_slots, b.n_expert);
         return lay;
     }
 

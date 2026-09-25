@@ -152,6 +152,14 @@ int main(int argc, char ** argv) {
         t.assert_true("part bigger than the room", contains(error(request(LLAMA_MOE_ROOM_GIB, 0.25, 1)), "up to 440 MiB, bigger than the whole reading room (256 MiB)"));
         t.assert_true("no size", contains(error(request(LLAMA_MOE_ROOM_GIB, 0.0)), "cannot make a reading room"));
         t.assert_true("unknown mode", contains(error(request(7, 1.0)), "cannot make a reading room"));
+        llama_moe_room_books whole = b; // a budget that seats every book: nothing to sweep, so no room
+        whole.desk_slots = whole.n_expert;
+        t.assert_true("desk holds every book", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0), whole).error,
+                "the desk already holds every book (256 slots per floor for 256 books)"));
+        llama_moe_room_books none = b;
+        none.book_bytes = 0;
+        t.assert_true("no streamed books", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0), none).error,
+                "no streamed books"));
 
         llama_moe_room_books tiny = b; // 64 KiB books on some floor: 4096 of them fit in 256 MiB
         tiny.stride_min = 64*1024;

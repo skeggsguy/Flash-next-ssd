@@ -945,7 +945,8 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 char * end = nullptr;
                 const double x = v == "auto" ? 0.0 : std::strtod(v.c_str(), &end);
                 const std::string suffix = end ? std::string(end) : std::string();
-                if (v != "auto" && (end == v.c_str() || !(x >= 0.0) || !(suffix.empty() || suffix == "g" || suffix == "G" || suffix == "f"))) {
+                if (v != "auto" && (end == v.c_str() || !(x >= 0.0) || !std::isfinite(x) ||
+                                    !(suffix.empty() || suffix == "g" || suffix == "G" || suffix == "f"))) {
                     invalid_param = true;
                     break;
                 }
