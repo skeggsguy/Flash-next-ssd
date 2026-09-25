@@ -222,7 +222,14 @@ bool llama_moe_room::take(int32_t il, int64_t n_tokens, bool allowed) {
     if (F == nullptr) {
         return false;
     }
-    F->in_graph = allowed && n_tokens >= (int64_t) lay.sweep_min_tokens;
+    // in_graph records the target's last-built graph, the one its context reuses when the next batch
+    // has the same shape. A build that may not take the room - the apprentice's (MTP) context on the
+    // same model, run between two of the target's batches - must leave it alone, or the reused graph's
+    // desk ops find no floor to begin the ubatch and abort "ran out of order".
+    if (!allowed) {
+        return false;
+    }
+    F->in_graph = n_tokens >= (int64_t) lay.sweep_min_tokens;
     return F->in_graph;
 }
 

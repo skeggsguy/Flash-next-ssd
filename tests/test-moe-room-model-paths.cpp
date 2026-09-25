@@ -2,6 +2,9 @@
 // harness and the promise: test-moe-room-model.h):
 //   direct     --moe-stream-direct (a staging read, then tensor_set onto the belt) with two runners on a
 //              byte-identical copy of the fixture, both asserted on; every group ran; byte-identical
+//   apprentice the MTP context shares the manager and builds its graph, room disallowed, between two of
+//              the target's batches; a same-shape batch then reuses the target's graph, whose desk ops
+//              must still find the floors that begin the ubatch (graph reuse asserted via n_reused)
 
 #include "test-moe-room-model.h"
 
@@ -38,6 +41,29 @@ int main(int argc, char ** argv) {
             check(ms->stats.n_bytes_file > 0 && ms->stats.n_bytes_alt > 0, "direct I/O, two runners: both runners read");
         });
         std::filesystem::remove(prod.alt);
+    }
+    {
+        // the apprentice's (MTP) context shares the manager and builds its graph, room disallowed, between
+        // two of the target's batches; a same-shape batch then reuses the target's graph, whose desk ops
+        // must still find the floors that begin the ubatch
+        llama_model * model = load(room4);
+        const segment F = { std::vector<llama_token>(B.prompt.begin(), B.prompt.begin() + 128), 0, true };
+        const auto apprentice_build = [&] {
+            for (const auto & fl : room_of(model)->floors) {
+                if (fl.sl) { room_of(model)->take(fl.sl->il, 128, false); }
+            }
+        };
+        outputs got;
+        check(model != nullptr && run(model, 128, { F, F }, got, true, apprentice_build), "apprentice between batches: ran");
+        check(g_n_reused >= 1, "apprentice between batches: the second batch reused the graph (" + std::to_string(g_n_reused) + ")");
+        // each batch is B's first ubatch: its logits are ref_b's first 128 rows, its MoE outputs the other batch's
+        const size_t n1 = (size_t) 128*n_vocab, m1 = got.moe.size()/2;
+        check(got.logits.size() == 2*n1 && m1 > 0 &&
+              memcmp(got.logits.data(), ref_b.logits.data(), n1*sizeof(float)) == 0 &&
+              memcmp(got.logits.data() + n1, ref_b.logits.data(), n1*sizeof(float)) == 0 &&
+              memcmp(got.moe.data(), got.moe.data() + m1, m1*sizeof(float)) == 0,
+              "apprentice between batches: both batches byte-identical to no streaming");
+        llama_model_free(model);
     }
     return finish();
 }
