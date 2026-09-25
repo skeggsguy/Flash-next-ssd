@@ -240,24 +240,6 @@ struct llama_moe_stream_work {
     uint64_t gen    = 0;  // stale unless it matches slot_gen[slot]
 };
 
-// Qwen3.8's PLE table is much larger than RAM but each ubatch touches only a compact set of rows.
-// Unlike an expert tensor it needs no persistent slot cache: raw quantized rows are read directly
-// into one compact graph input, then the normal get_rows op dequantizes them.
-struct llama_moe_stream_ple {
-    bool      registered = false;
-    ggml_type type       = GGML_TYPE_COUNT;
-    uint16_t  file_idx   = 0;
-    size_t    offs       = 0;
-    size_t    row_size   = 0;
-    int64_t   row_ne     = 0;
-    int64_t   n_rows     = 0;
-};
-
-struct llama_moe_stream_ple_work {
-    int32_t   row = -1;
-    uint8_t * dst = nullptr;
-};
-
 struct llama_moe_stream {
     uint32_t n_slots      = 0; // expert cache slots per streamed layer
     int32_t  n_io_threads = 0;
@@ -287,10 +269,6 @@ struct llama_moe_stream {
 
     // reopen the GGUF files for streaming reads
     void open_files(const std::vector<std::string> & paths);
-
-    // Register and read an on-disk PLE gather table without materializing the full tensor.
-    void register_ple(const ggml_tensor * meta, uint16_t file_idx, size_t offs);
-    void read_ple_rows(const std::vector<int32_t> & rows, ggml_tensor * dst);
 
     size_t size_bufs() const;
 
@@ -322,10 +300,6 @@ struct llama_moe_stream {
                ((int64_t) expert*100) / (int64_t) n_expert >= (int64_t) alt_split;
     }
 
-    llama_moe_stream_ple ple;
-    std::unique_ptr<llama_file> ple_file; // buffered by default
-    bool ple_direct = false;              // LLAMA_MOE_STREAM_PLE_DIRECT reads the rows uncached instead
-
     size_t  max_nb_expert      = 0;
     int64_t hot_decay_interval = 0; // remap calls between route-hotness halvings (0 = no decay)
 
@@ -356,12 +330,6 @@ struct llama_moe_stream {
     std::condition_variable cv_done; // a load committed or failed
 
     std::deque<llama_moe_stream_work> q_demand;
-
-    // PLE rows are graph inputs and must all land before graph execution starts. They share the
-    // expert readers, but have their own queue and completion count.
-    std::deque<llama_moe_stream_ple_work> q_ple;
-    size_t ple_pending = 0;
-    std::vector<uint8_t> ple_buf;
 
     // Speculative loads (lookahead and hash prefetch) live in their OWN queue, drained only when
     // nothing is being waited on. With a single FIFO a wide prefetch delays the demand read a layer

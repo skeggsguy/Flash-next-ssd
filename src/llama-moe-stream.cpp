@@ -214,7 +214,6 @@ llama_moe_stream::~llama_moe_stream() {
         std::lock_guard<std::mutex> lock(mtx);
         shutting_down = true;
         q_demand.clear();
-        q_ple.clear();
         q_spec.clear();
     }
     cv_work.notify_all();
@@ -423,99 +422,6 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
     return cache;
 }
 
-void llama_moe_stream::register_ple(const ggml_tensor * meta, uint16_t file_idx, size_t offs) {
-    GGML_ASSERT(meta != nullptr);
-    GGML_ASSERT(ggml_is_contiguous(meta));
-    GGML_ASSERT(ggml_n_dims(meta) == 2);
-    GGML_ASSERT(meta->ne[0] > 0 && meta->ne[1] > 0);
-    GGML_ASSERT(!ple.registered);
-
-    ple.registered = true;
-    ple.type       = meta->type;
-    ple.file_idx   = file_idx;
-    ple.offs       = offs;
-    ple.row_ne     = meta->ne[0];
-    ple.n_rows     = meta->ne[1];
-    ple.row_size   = ggml_row_size(meta->type, meta->ne[0]);
-
-    GGML_ASSERT(ple.row_size == meta->nb[1]);
-    GGML_ASSERT(ple.row_size * (size_t) ple.n_rows == ggml_nbytes(meta));
-}
-
-void llama_moe_stream::read_ple_rows(const std::vector<int32_t> & rows, ggml_tensor * dst) {
-    GGML_ASSERT(ple.registered && ple_file != nullptr);
-    GGML_ASSERT(dst != nullptr && dst->type == ple.type);
-    GGML_ASSERT(ggml_is_contiguous(dst));
-    GGML_ASSERT(dst->ne[0] == ple.row_ne);
-    GGML_ASSERT((size_t) ggml_nelements(dst) == (size_t) ple.row_ne * rows.size());
-
-    const size_t nbytes = ple.row_size * rows.size();
-    GGML_ASSERT(ggml_nbytes(dst) == nbytes);
-
-    uint8_t * out_data = (uint8_t *) ggml_backend_tensor_get_host_ptr(dst);
-    const bool direct = out_data != nullptr;
-
-    // Read each unique row once. Sorting by file offset gives the buffered reader and SSD a less
-    // hostile access pattern during large prefills; decode still consists of only a few rows.
-    std::vector<std::pair<int32_t, size_t>> reads;
-    std::vector<size_t> duplicate_of(rows.size(), SIZE_MAX);
-    std::unordered_map<int32_t, size_t> first;
-    first.reserve(rows.size());
-
-    for (size_t i = 0; i < rows.size(); ++i) {
-        const int32_t row = rows[i];
-        if (row < 0 || (int64_t) row >= ple.n_rows) {
-            throw std::runtime_error(format("PLE row %d is outside [0, %lld)", row, (long long) ple.n_rows));
-        }
-        const auto [it, inserted] = first.emplace(row, i);
-        if (inserted) {
-            reads.emplace_back(row, i);
-        } else {
-            duplicate_of[i] = it->second;
-        }
-    }
-    std::sort(reads.begin(), reads.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
-
-    {
-        std::unique_lock<std::mutex> lk(mtx);
-        if (load_failed) {
-            throw std::runtime_error("PLE row streaming: a previous model read failed");
-        }
-        GGML_ASSERT(ple_pending == 0 && q_ple.empty());
-
-        if (!direct) {
-            ple_buf.resize(nbytes);
-            out_data = ple_buf.data();
-        }
-        ple_pending = reads.size();
-        start_workers_locked();
-
-        for (const auto & [row, i] : reads) {
-            q_ple.push_back({ row, out_data + i*ple.row_size });
-        }
-        cv_work.notify_all();
-
-        // Do not return while another reader still owns a pointer into dst or ple_buf. In
-        // particular, an early I/O failure must not let graph teardown invalidate that pointer.
-        cv_done.wait(lk, [&] { return ple_pending == 0; });
-        if (load_failed) {
-            throw std::runtime_error("PLE row streaming: model read failed");
-        }
-    }
-
-    for (size_t i = 0; i < duplicate_of.size(); ++i) {
-        if (duplicate_of[i] != SIZE_MAX) {
-            memcpy(out_data + i*ple.row_size,
-                   out_data + duplicate_of[i]*ple.row_size,
-                   ple.row_size);
-        }
-    }
-
-    if (!direct) {
-        ggml_backend_tensor_set(dst, out_data, 0, nbytes);
-    }
-}
-
 void llama_moe_stream::alloc_bufs(bool no_alloc) {
     if (ctx_state && ggml_get_first_tensor(ctx_state.get()) != nullptr) {
         ggml_backend_buffer_t buf;
@@ -663,23 +569,6 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
                 __func__, alt_split, paths[0].c_str(), alt_paths[0].c_str());
     }
 
-    if (ple.registered) {
-        if (ple.file_idx >= paths.size()) {
-            throw std::runtime_error("PLE row streaming file index is out of range");
-        }
-        // buffered is the default. LLAMA_MOE_STREAM_PLE_DIRECT reads the rows uncached instead;
-        // measured level with buffered on M5 Pro, so it is an experiment knob, not a tuning.
-        ple_direct = std::getenv("LLAMA_MOE_STREAM_PLE_DIRECT") != nullptr;
-        ple_file = std::make_unique<llama_file>(paths[ple.file_idx].c_str(), "rb", ple_direct);
-        if (ple_direct && !ple_file->has_direct_io()) {
-            LLAMA_LOG_WARN("%s: PLE direct reads not available, falling back to buffered\n", __func__);
-            ple_direct = false;
-        }
-        LLAMA_LOG_WARN("%s: PLE row streaming enabled: %.2f GiB table, %zu-byte rows, %s parallel reads\n",
-                __func__, (double) (ple.row_size * (size_t) ple.n_rows) / (1024.0*1024.0*1024.0), ple.row_size,
-                ple_direct ? "direct" : "buffered");
-    }
-
     // fall back to buffered when O_DIRECT is unusable: either the open did not honor it (macOS,
     // Windows, unsupported filesystems), or it opened but a probe read fails (some network/overlay
     // filesystems accept the flag then reject aligned reads). reopening is needed because O_DIRECT
@@ -770,33 +659,9 @@ void llama_moe_stream::worker_loop() {
 
     std::unique_lock<std::mutex> lk(mtx);
     while (true) {
-        cv_work.wait(lk, [&]{ return shutting_down || !q_demand.empty() || !q_ple.empty() || !q_spec.empty(); });
+        cv_work.wait(lk, [&]{ return shutting_down || !q_demand.empty() || !q_spec.empty(); });
         if (shutting_down) {
             break;
-        }
-
-        // demand first, always. PLE rows are also blocking graph inputs, ahead of speculative work.
-        if (q_demand.empty() && !q_ple.empty()) {
-            const llama_moe_stream_ple_work w = q_ple.front();
-            q_ple.pop_front();
-
-            lk.unlock();
-            // a direct read is block-aligned, so it needs the head/tail slack staging has - aimed
-            // straight at a row-sized dst it would scribble past the row. Bounce and copy out.
-            const uint8_t * data = llama_moe_stream_pread(*ple_file, ple_direct ? staging : w.dst,
-                    ple.row_size, ple.offs + (size_t) w.row*ple.row_size, ple_direct);
-            if (ple_direct && data != nullptr) {
-                memcpy(w.dst, data, ple.row_size);
-            }
-            lk.lock();
-
-            if (data == nullptr) {
-                load_failed = true;
-            }
-            GGML_ASSERT(ple_pending > 0);
-            ple_pending--;
-            cv_done.notify_all();
-            continue;
         }
 
         // demand first, always: a layer is blocked on those, nothing is blocked on a prefetch
