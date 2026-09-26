@@ -2,6 +2,7 @@
 
 #include "ggml-backend-impl.h"
 #include "ggml-metal-device.h"
+#include "ggml-metal-fusion-fn.h"
 
 #include <algorithm>
 #include <cstring>
@@ -677,9 +678,10 @@ static const ggml_metal_fusion ggml_metal_fusions[] = {
 };
 
 const ggml_metal_fusion * ggml_metal_fusion_all(int * n) {
-    *n = (int) sizeof(ggml_metal_fusions) / sizeof(ggml_metal_fusions[0]);
+    const int n_base = (int) sizeof(ggml_metal_fusions) / sizeof(ggml_metal_fusions[0]);
 
-    return ggml_metal_fusions;
+    // fix 2: GGML_METAL_FUSION_FN appends its patterns (ggml-metal-fusion-fn.cpp); off, this table alone
+    return ggml_metal_fusion_fn_table(ggml_metal_fusions, n_base, n);
 }
 
 static bool ggml_metal_fusion_match_raw_pattern(

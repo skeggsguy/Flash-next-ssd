@@ -7,6 +7,7 @@
 #import "ggml-metal-common.h"
 #import "ggml-metal-ops.h"
 #import "ggml-metal-fusion.h"
+#import "ggml-metal-fusion-fn.h"
 
 #import <Foundation/Foundation.h>
 
@@ -708,6 +709,11 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             ctx->n_nodes_per_cb = 0;
         } else {
             ctx->n_nodes_0      = MIN(n_main, gf->n_nodes);
+            if (ggml_metal_fusion_fn_enabled()) {
+                // fix 2 (P8): start the next command buffer at a fusion group, not inside it (a cut
+                // group runs unmerged); only this first split, as the expert servicer pins n_cb to 1
+                ctx->n_nodes_0 = ggml_metal_fusion_fn_split(gf, ctx->n_nodes_0);
+            }
             ctx->n_nodes_1      = gf->n_nodes - ctx->n_nodes_0;
 
             ctx->n_nodes_per_cb = (ctx->n_nodes_1 + ctx->n_cb - 1) / ctx->n_cb;

@@ -8,6 +8,7 @@
 #include "ggml-metal-common.h"
 #include "ggml-metal-device.h"
 #include "ggml-metal-fusion.h"
+#include "ggml-metal-fusion-fn.h"
 #include "ggml-metal-tuning.h"
 
 #include <cassert>
@@ -214,6 +215,33 @@ static bool ggml_metal_op_concurrency_add(ggml_metal_op_t ctx, const ggml_tensor
     return ggml_mem_ranges_add(ctx->mem_ranges, node);
 }
 
+// fix 2 (GGML_METAL_FUSION_FN): the merged chain starting at idx, if any; with the switch off this
+// asks nothing, so today's encoding is untouched
+static const ggml_metal_fusion * ggml_metal_op_fn_match(ggml_metal_op_t ctx, int idx, int * n) {
+    if (!ggml_metal_fusion_fn_enabled() || !ctx->use_fusion()) {
+        return nullptr;
+    }
+
+    const ggml_metal_fusion * fusion = ctx->can_fuse(idx, GGML_METAL_FUSION_FULL, n);
+
+    return fusion && ggml_metal_fusion_fn_is_fn(fusion->id) ? fusion : nullptr;
+}
+
+static int ggml_metal_op_fn(ggml_metal_op_t ctx, int idx, const ggml_metal_fusion * fusion, int n) {
+    const ggml_tensor * nodes[GGML_METAL_FUSION_MAX];
+    for (int j = 0; j < n; ++j) {
+        nodes[j] = ctx->node(idx + j);
+    }
+
+    ctx->count_fusions(fusion);
+
+    if (ggml_metal_fusion_info_debug(ctx->finfo) > 1) {
+        GGML_LOG_DEBUG("%s: fuse (FN) %d ops, last %s\n", __func__, n, ggml_get_name(nodes[n - 1]));
+    }
+
+    return ggml_metal_op_fn_encode(ctx->lib, ctx->enc, fusion, nodes, n);
+}
+
 static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
     struct ggml_tensor * node = ctx->node(idx);
 
@@ -259,10 +287,20 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
     // if the condition is not satisfied, we put a memory barrier and clear all ranges
     // otherwise, we add the new ranges to the encoding context and process the node concurrently
     //
+    // fix 2 (GGML_METAL_FUSION_FN): a merged chain starting here is encoded by ggml-metal-ops-fn.cpp
+    int n_fn = 1;
+    const ggml_metal_fusion * fn = ggml_metal_op_fn_match(ctx, idx, &n_fn);
+
     {
         bool is_concurrent = ggml_metal_op_concurrency_check(ctx, node);
 
-        if (is_concurrent && ctx->use_fusion()) {
+        if (is_concurrent && fn) {
+            // the merged kernel reads the external sources of every node in the chain, not only of
+            // its ends, so every node is checked
+            for (int j = 1; j < n_fn && is_concurrent; ++j) {
+                is_concurrent = ggml_mem_ranges_check(ctx->mem_ranges, ctx->node(idx + j));
+            }
+        } else if (is_concurrent && ctx->use_fusion()) {
             int n_fuse = 1;
             const ggml_metal_fusion * fusion = ctx->can_fuse(idx, GGML_METAL_FUSION_FULL, &n_fuse);
             if (fusion) {
@@ -313,6 +351,9 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         }
     }
 
+    if (fn) {
+        n_fuse = ggml_metal_op_fn(ctx, idx, fn, n_fn);
+    } else
     switch (node->op) {
         case GGML_OP_CONCAT:
             {
