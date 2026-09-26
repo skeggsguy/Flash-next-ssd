@@ -563,16 +563,23 @@ kernel void kernel_dsv4_hc_pre_gated_f32(
     *(device float *) (dst + i0*args.nb_d0 + it*args.nb_d1) = args.scale*result;
 }
 
-kernel void kernel_dsv4_hc_post_nocomb_f32(
+// The body of kernel_dsv4_hc_post_nocomb_f32. With W (fix 2, P1, GGML_METAL_FUSION_FN) `post` holds
+// hc combine's inject and the scatter weights 2*sigmoid(inject/hc) are computed here, by the unary
+// kernels' own float4 expressions for SCALE, SIGMOID and SCALE on the token's row of 4. A template
+// rather than a function constant: a Metal function with any function constant must be specialized,
+// and today's pipeline for this kernel is built without one.
+template <bool W>
+static inline void dsv4_hc_post_nocomb_impl(
         constant ggml_metal_kargs_dsv4_hc_post & args,
+        ggml_metal_kargs_fn_hc_post_w wargs,
         device const char * x,
         device const char * residual,
         device const char * post,
         device       char * dst,
-        uint3   tgpig[[threadgroup_position_in_grid]],
-        ushort  tiisg[[thread_index_in_simdgroup]],
-        ushort  sgitg[[simdgroup_index_in_threadgroup]],
-        ushort3   ntg[[threads_per_threadgroup]]) {
+        uint3   tgpig,
+        ushort  tiisg,
+        ushort  sgitg,
+        ushort3 ntg) {
     constexpr ushort hc = 4;
 
     const int it = tgpig.y;
@@ -580,7 +587,15 @@ kernel void kernel_dsv4_hc_post_nocomb_f32(
 
     float post_lane = 0.0f;
     if (tiisg < hc) {
-        post_lane = *(device const float *) (post + tiisg*args.nb_p0 + it*args.nb_p1);
+        if (W) {
+            float4 w = *(device const float4 *) (post + it*args.nb_p1);
+            w = (float4) (wargs.scale0 * w + wargs.bias0);
+            w = (float4) (1 / (1 + exp(-w)));
+            w = (float4) (wargs.scale1 * w + wargs.bias1);
+            post_lane = w[tiisg];
+        } else {
+            post_lane = *(device const float *) (post + tiisg*args.nb_p0 + it*args.nb_p1);
+        }
     }
 
     float post_reg[hc];
@@ -598,6 +613,33 @@ kernel void kernel_dsv4_hc_post_nocomb_f32(
         const float rv = *(device const float *) (rb + idst*args.nb_r1);
         *(device float *) (dst + i0*args.nb_d0 + idst*args.nb_d1 + it*args.nb_d2) = xv*post_reg[idst] + rv;
     }
+}
+
+kernel void kernel_dsv4_hc_post_nocomb_f32(
+        constant ggml_metal_kargs_dsv4_hc_post & args,
+        device const char * x,
+        device const char * residual,
+        device const char * post,
+        device       char * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tiisg[[thread_index_in_simdgroup]],
+        ushort  sgitg[[simdgroup_index_in_threadgroup]],
+        ushort3   ntg[[threads_per_threadgroup]]) {
+    dsv4_hc_post_nocomb_impl<false>(args, {}, x, residual, post, dst, tgpig, tiisg, sgitg, ntg);
+}
+
+kernel void kernel_fn_hc_post_w_f32(
+        constant ggml_metal_kargs_dsv4_hc_post & args,
+        device const char * x,
+        device const char * residual,
+        device const char * inject,
+        device       char * dst,
+        constant ggml_metal_kargs_fn_hc_post_w & wargs,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tiisg[[thread_index_in_simdgroup]],
+        ushort  sgitg[[simdgroup_index_in_threadgroup]],
+        ushort3   ntg[[threads_per_threadgroup]]) {
+    dsv4_hc_post_nocomb_impl<true>(args, wargs, x, residual, inject, dst, tgpig, tiisg, sgitg, ntg);
 }
 
 kernel void kernel_dsv4_hc_post_f32(

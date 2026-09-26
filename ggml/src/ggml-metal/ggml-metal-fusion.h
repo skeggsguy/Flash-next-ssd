@@ -41,6 +41,7 @@ typedef enum ggml_metal_fusion_id {
     GGML_METAL_FUSION_SSM_CONV_SILU, // SSM_CONV + UNARY (silu)
     // fix 2, only with GGML_METAL_FUSION_FN=1 (ggml-metal-fusion-fn.h)
     GGML_METAL_FUSION_FN_SCALE_UNARY, // SCALE + UNARY (silu), P4
+    GGML_METAL_FUSION_FN_HC_POST_W,   // SCALE + UNARY (sigmoid) + SCALE + DSV4_HC_POST, P1
 } ggml_metal_fusion_id;
 
 struct ggml_metal_fusion {

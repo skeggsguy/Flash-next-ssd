@@ -1347,6 +1347,15 @@ typedef struct {
     uint64_t nb_d2;
 } ggml_metal_kargs_dsv4_hc_post;
 
+// fix 2 (P1, GGML_METAL_FUSION_FN): hc combine's scatter weights, SCALE + SIGMOID + SCALE, computed
+// inside DSV4_HC_POST (kernel_fn_hc_post_w_f32)
+typedef struct {
+    float scale0; // the first SCALE
+    float bias0;
+    float scale1; // the SCALE after the SIGMOID
+    float bias1;
+} ggml_metal_kargs_fn_hc_post_w;
+
 typedef struct {
     int32_t  ne00;
     int32_t  ne01;

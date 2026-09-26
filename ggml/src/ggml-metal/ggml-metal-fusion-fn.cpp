@@ -86,12 +86,71 @@ static bool ggml_metal_fusion_fn_check_scale_unary(
     return true;
 }
 
+// P1: hc combine's scatter weights, SCALE(1/hc) + SIGMOID + SCALE(2), folded into the DSV4_HC_POST
+// that reads them (build_hc_combine). The merged kernel computes each token's 4 weights as one float4,
+// the width the unary kernels use on a row of 4, then HC_POST's own arithmetic. Not an elision chain
+// (HC_POST reads the weights as src[2], and x and residual beside them), so this check is the sole
+// validator (unsafe = true).
+static bool ggml_metal_fusion_fn_check_hc_post_w(
+        const ggml_metal_fusion      * fusion,
+        const ggml_tensor * const    * nodes,
+        const ggml_cgraph            * gf,
+        const int                    * node_idxs,
+              int                      idx,
+              ggml_metal_fusion_mode   mode) {
+    const ggml_tensor * s0     = nodes[0];
+    const ggml_tensor * g      = nodes[1];
+    const ggml_tensor * s1     = nodes[2];
+    const ggml_tensor * post   = nodes[3];
+    const ggml_tensor * inject = s0->src[0];
+
+    if (g->src[0] != s0 || ggml_get_unary_op(g) != GGML_UNARY_OP_SIGMOID || s1->src[0] != g) {
+        return false;
+    }
+
+    // the weights are HC_POST's `post` only; with a comb matrix (src[3]) HC_POST is another kernel
+    if (post->src[2] != s1 || post->src[3] != nullptr || post->src[0] == s1 || post->src[1] == s1) {
+        return false;
+    }
+
+    const ggml_tensor * f32s[] = { inject, s0, g, s1, post, post->src[0], post->src[1] };
+    for (const ggml_tensor * t : f32s) {
+        if (t->type != GGML_TYPE_F32) {
+            return false;
+        }
+    }
+
+    // one float4 of weights per token, as the unary kernels read a row of hc = 4
+    if (inject->ne[0] != 4 || post->src[1]->ne[1] != 4 || !ggml_is_contiguous(inject) ||
+        !ggml_are_same_shape(inject, s0) || !ggml_are_same_shape(inject, g) || !ggml_are_same_shape(inject, s1)) {
+        return false;
+    }
+
+    // four consecutive graph nodes, whose intermediates nothing else reads
+    if (node_idxs[idx + fusion->n_ops - 1] - node_idxs[idx] != fusion->n_ops - 1) {
+        return false;
+    }
+    const int outputs[1] = { node_idxs[idx + fusion->n_ops - 1] };
+    if (!ggml_can_fuse_subgraph_ext(gf, node_idxs + idx, fusion->n_ops, fusion->ops, outputs, 1)) {
+        return false;
+    }
+
+    // HC_POST's own inputs keep today's rule; inject is read by the merged kernel only
+    if (mode == GGML_METAL_FUSION_FULL && !ggml_metal_fusion_fn_apart(post, inject, false)) {
+        return false;
+    }
+
+    return true;
+}
+
 // ---- patterns --------------------------------------------------------------
 
 static const ggml_op ops_fn_scale_unary[] = { GGML_OP_SCALE, GGML_OP_UNARY };
+static const ggml_op ops_fn_hc_post_w[]   = { GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_DSV4_HC_POST };
 
 static const std::vector<ggml_metal_fusion> ggml_metal_fusion_fn_patterns = {
     { GGML_METAL_FUSION_FN_SCALE_UNARY, ops_fn_scale_unary, 2, ops_fn_scale_unary, 2, false, ggml_metal_fusion_fn_check_scale_unary },
+    { GGML_METAL_FUSION_FN_HC_POST_W,   ops_fn_hc_post_w,   4, ops_fn_hc_post_w,   4, true,  ggml_metal_fusion_fn_check_hc_post_w },
 };
 
 const ggml_metal_fusion * ggml_metal_fusion_fn_table(const ggml_metal_fusion * base, int n_base, int * n) {

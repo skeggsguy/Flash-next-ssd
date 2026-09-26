@@ -219,6 +219,55 @@ void test_scale_silu(testing & t, env & e) {
     check_case(t, e, case_scale_silu(320, 6, 2), LABEL_P4, 0);
 }
 
+// ---- P1: hc combine's 2*sigmoid(inject/4) folded into DSV4_HC_POST ---------------
+
+const char * LABEL_P1 = "SCALE+UNARY+SCALE+DSV4_HC_POST";
+
+struct hc_scales { float s0, b0, s1, b1; };
+const hc_scales HC_MODEL = { 0.25f, 0.0f, 2.0f, 0.0f };   // build_hc_combine's
+const hc_scales HC_ODD   = { 1.0f/3.0f, 0.1f, 1.7f, -0.2f }; // no power of two: rounding shows
+
+// block_out [n_embd, n], residual [n_embd, 4, n], inject [4, n]; neg 1: the SIGMOID is also read by
+// another op, neg 2: HC_POST with a comb matrix (another kernel), neg 3: an op between the weights and
+// HC_POST (not contiguous, and the reorder cannot pass a SOFT_MAX)
+graph_case case_hc_post(int64_t n_embd, int64_t nt, int neg, hc_scales hs = HC_MODEL) {
+    graph_case gc;
+    gc.name = "hc_post n=" + std::to_string(nt) + " neg=" + std::to_string(neg) + " s0=" + std::to_string(hs.s0);
+    gc.build = [=](ggml_context * ctx_in, ggml_context * ctx_g, ggml_cgraph * gf, std::vector<ggml_tensor *> & outs) {
+        ggml_tensor * block_out = ggml_new_tensor_2d(ctx_in, GGML_TYPE_F32, n_embd, nt);
+        ggml_tensor * residual  = ggml_new_tensor_3d(ctx_in, GGML_TYPE_F32, n_embd, 4, nt);
+        ggml_tensor * inject    = ggml_new_tensor_2d(ctx_in, GGML_TYPE_F32, 4, nt);
+        ggml_tensor * comb      = neg == 2 ? ggml_new_tensor_3d(ctx_in, GGML_TYPE_F32, 4, 4, nt) : nullptr;
+
+        ggml_tensor * g = ggml_sigmoid(ctx_g, ggml_scale_bias(ctx_g, inject, hs.s0, hs.b0));
+        ggml_tensor * w = ggml_scale_bias(ctx_g, g, hs.s1, hs.b1);
+        if (neg == 3) {
+            ggml_build_forward_expand(gf, w);
+            block_out = ggml_soft_max(ctx_g, block_out);
+        }
+        ggml_tensor * out = ggml_dsv4_hc_post(ctx_g, block_out, residual, w, comb);
+        ggml_set_output(out);
+        outs.push_back(out);
+        ggml_build_forward_expand(gf, out);
+        if (neg == 1) {
+            outs.push_back(also_read(ctx_g, gf, g));
+        }
+    };
+    gc.fill = [](ggml_tensor * t, std::mt19937 & rng) { fill_f32(t, rng, -30.0f, 30.0f); };
+    return gc;
+}
+
+void test_hc_post(testing & t, env & e) {
+    for (int64_t nt : { 1, 4, 6, 512 }) {
+        check_case(t, e, case_hc_post(2560, nt, 0), LABEL_P1, 1);
+    }
+    check_case(t, e, case_hc_post(2560, 6, 0, HC_ODD), LABEL_P1, 1);
+    check_case(t, e, case_hc_post(100, 3, 0, HC_ODD), LABEL_P1, 1); // a part tile
+    for (int neg : { 1, 2, 3 }) {
+        check_case(t, e, case_hc_post(2560, 6, neg), LABEL_P1, 0);
+    }
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -255,6 +304,7 @@ int main(int argc, char ** argv) {
 
     t.test("split", test_split);
     t.test("P4 scale+silu", [&](testing & t) { test_scale_silu(t, e); });
+    t.test("P1 hc_post weights", [&](testing & t) { test_hc_post(t, e); });
 
     ggml_backend_sched_free(e.sched);
     ggml_backend_free(e.cpu);

@@ -95,6 +95,63 @@ static int ggml_metal_fn_encode_scale_unary(ggml_metal_library_t lib, ggml_metal
     return 2;
 }
 
+// P1: SCALE + SIGMOID + SCALE + DSV4_HC_POST. kernel_fn_hc_post_w_f32 is kernel_dsv4_hc_post_nocomb_f32
+// reading inject as `post` and computing the weights itself, dispatched as ggml_metal_op_dsv4_hc does
+static int ggml_metal_fn_encode_hc_post_w(ggml_metal_library_t lib, ggml_metal_encoder_t enc, const ggml_tensor * const * nodes) {
+    const ggml_tensor * s0       = nodes[0];
+    const ggml_tensor * s1       = nodes[2];
+    const ggml_tensor * op       = nodes[3];
+    const ggml_tensor * inject   = s0->src[0];
+    const ggml_tensor * x        = op->src[0];
+    const ggml_tensor * residual = op->src[1];
+
+    const char * name = "kernel_fn_hc_post_w_f32";
+
+    ggml_metal_pipeline_with_params pipeline = ggml_metal_library_get_pipeline(lib, name);
+    if (!pipeline.pipeline) {
+        pipeline = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    ggml_metal_kargs_dsv4_hc_post args = {
+        /*.n_embd   =*/ (int32_t) x->ne[0],
+        /*.n_tokens =*/ (int32_t) x->ne[1],
+        /*.nb_x0    =*/ x->nb[0],
+        /*.nb_x1    =*/ x->nb[1],
+        /*.nb_r0    =*/ residual->nb[0],
+        /*.nb_r1    =*/ residual->nb[1],
+        /*.nb_r2    =*/ residual->nb[2],
+        /*.nb_p0    =*/ inject->nb[0],
+        /*.nb_p1    =*/ inject->nb[1],
+        /*.nb_c0    =*/ 0,
+        /*.nb_c1    =*/ 0,
+        /*.nb_c2    =*/ 0,
+        /*.nb_d0    =*/ op->nb[0],
+        /*.nb_d1    =*/ op->nb[1],
+        /*.nb_d2    =*/ op->nb[2],
+    };
+
+    ggml_metal_kargs_fn_hc_post_w wargs = {
+        /*.scale0 =*/ ggml_get_op_params_f32(s0, 0),
+        /*.bias0  =*/ ggml_get_op_params_f32(s0, 1),
+        /*.scale1 =*/ ggml_get_op_params_f32(s1, 0),
+        /*.bias1  =*/ ggml_get_op_params_f32(s1, 1),
+    };
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(x),        1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(residual), 2);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(inject),   3);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(op),       4);
+    ggml_metal_encoder_set_bytes   (enc, &wargs, sizeof(wargs), 5);
+
+    const int n_tiles = (args.n_embd + 31)/32;
+    const int nsg = std::min(4, n_tiles);
+    ggml_metal_encoder_dispatch_threadgroups(enc, (n_tiles + nsg - 1)/nsg, args.n_tokens, 1, 32, nsg, 1);
+
+    return 4;
+}
+
 int ggml_metal_op_fn_encode(
         ggml_metal_library_t        lib,
         ggml_metal_encoder_t        enc,
@@ -105,6 +162,7 @@ int ggml_metal_op_fn_encode(
 
     switch (fusion->id) {
         case GGML_METAL_FUSION_FN_SCALE_UNARY: n_done = ggml_metal_fn_encode_scale_unary(lib, enc, nodes); break;
+        case GGML_METAL_FUSION_FN_HC_POST_W:   n_done = ggml_metal_fn_encode_hc_post_w  (lib, enc, nodes); break;
         default:
             GGML_ABORT("%s: not an FN fusion (id %d)", __func__, (int) fusion->id);
     }
