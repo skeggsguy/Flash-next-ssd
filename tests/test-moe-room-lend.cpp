@@ -184,8 +184,9 @@ void random_sequence(testing & t, uint32_t seed) {
                     }
                 }
             }
-        } else if (!lend.busy()) {
-            // the room takes the belt back: nothing may be busy, and afterwards nothing is found
+        } else if (!lend.inflight()) {
+            // the room takes the belt back: a copy still being copied or read (in flight) forbids it, a
+            // PENDING slab does not (a promise, its bytes untouched); afterwards nothing is found
             lend.clear();
             for (auto & [seq, s] : sh) {
                 s.gone = true;
@@ -202,7 +203,7 @@ void random_sequence(testing & t, uint32_t seed) {
 
         // the oracle: the ring holds exactly the live copies, in order, at 256 B, inside the belt, apart
         size_t n_live = 0, n_complete = 0;
-        bool   busy = false;
+        bool   busy = false, inflight = false;
         for (auto & [seq, s] : sh) {
             const llama_moe_lend_copy * c = lend.at(seq);
             if (s.gone) {
@@ -214,6 +215,10 @@ void random_sequence(testing & t, uint32_t seed) {
             n_live++;
             n_complete += s.complete();
             busy = busy || s.busy();
+            inflight = inflight || s.pins > 0;
+            for (int32_t i = 0; i < s.n_slabs; i++) {
+                inflight = inflight || s.slab[i] == LLAMA_MOE_LEND_RUNNING;
+            }
             if (c == nullptr) {
                 fail(s.busy() ? "a busy copy is never dropped" : "a copy is dropped only when one is placed over it");
                 continue;
@@ -238,8 +243,8 @@ void random_sequence(testing & t, uint32_t seed) {
                 }
             }
         }
-        if (lend.ring.size() != n_live || lend.held() != n_complete || lend.busy() != busy) {
-            fail("held, busy and the ring's size agree with the oracle");
+        if (lend.ring.size() != n_live || lend.held() != n_complete || lend.busy() != busy || lend.inflight() != inflight) {
+            fail("held, busy, inflight and the ring's size agree with the oracle");
         }
     }
     t.assert_true("seed " + std::to_string(seed) + (ok ? "" : ": " + why_failed), ok);
@@ -313,6 +318,24 @@ int main(int argc, char ** argv) {
         lend.unpin(s);
         t.assert_true("then it goes", lend.keep(0, 3, 0, 2000, 2, why) != nullptr && lend.at(s) == nullptr);
         t.assert_true("bigger than the belt: blocked", !lend.keep(0, 4, 0, 4001, 2, why) && why == LLAMA_MOE_LEND_BLOCKED);
+    });
+
+    t.test("busy is any unfinished business; in flight is a thread copying right now", [&](testing & t) {
+        llama_moe_lend lend(10000);
+        llama_moe_lend_keep why;
+        llama_moe_lend_copy * a = lend.keep(0, 1, 0, 3000, 2, why);
+        const uint64_t s = a->seq;
+        t.assert_true("pending: busy, not in flight (a promise, its bytes untouched)", lend.busy() && !lend.inflight());
+        lend.claim(s, 0);
+        t.assert_true("running: in flight", lend.inflight());
+        lend.finish(s, 0);
+        t.assert_true("one slab done, the other pending: busy, not in flight", lend.busy() && !lend.inflight());
+        done(lend, a);
+        t.assert_true("complete: neither", !lend.busy() && !lend.inflight());
+        lend.pin(s);
+        t.assert_true("pinned: both", lend.busy() && lend.inflight());
+        lend.unpin(s);
+        t.assert_true("unpinned: neither", !lend.busy() && !lend.inflight());
     });
 
     t.test("clear is an epoch", [&](testing & t) {

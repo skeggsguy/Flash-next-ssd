@@ -36,6 +36,7 @@ struct config {
     uint32_t ubatch     = 0;     // the batch the model is told its contexts read in with (0 = not said)
     bool     direct     = false; // --moe-stream-direct: the study's path, staging + tensor_set onto the belt
     std::string alt;             // --moe-stream-alt-path: two runners, a byte-identical copy
+    int32_t  io_threads = 0;     // --moe-stream-io-threads (0 = the engine's default)
 };
 
 struct segment {
@@ -83,6 +84,7 @@ llama_model * load(const config & c) {
     mp.moe_stream_room_ubatch = c.ubatch;
     mp.moe_stream_direct     = c.direct;
     mp.moe_stream_alt_path   = c.alt.empty() ? nullptr : c.alt.c_str();
+    mp.moe_stream_io_threads = c.io_threads;
     return llama_model_load_from_file(g_path.c_str(), mp);
 }
 
