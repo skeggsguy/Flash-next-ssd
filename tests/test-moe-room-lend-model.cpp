@@ -144,7 +144,18 @@ int main(int argc, char ** argv) {
         check(g_lend_log.find("reading room:") == std::string::npos &&
               g_lend_log.find("moe stream: room") == std::string::npos && g_lend_log.find("moe stream: drives") == std::string::npos,
               "writing: none of them reads as the room's lines to the study's parser");
-        for (const size_t at : { at_load, at_line, at_total }) {
+        // printed: the load line, the window that copied the most books back, and the run's total
+        size_t at_busiest = at_line;
+        int    most       = -1;
+        for (size_t at = at_line; at != std::string::npos; at = g_lend_log.find("moe stream: lent belt: ", at + 1)) {
+            int x = 0;
+            const size_t bar = g_lend_log.find("| ", at);
+            if (bar != std::string::npos && sscanf(g_lend_log.c_str() + bar + 2, "%d of", &x) == 1 && x > most) {
+                most       = x;
+                at_busiest = at;
+            }
+        }
+        for (const size_t at : { at_load, at_busiest, at_total }) {
             if (at != std::string::npos) {
                 printf("  | %s", g_lend_log.substr(at, g_lend_log.find('\n', at) - at + 1).c_str());
             }
