@@ -143,14 +143,91 @@ static bool ggml_metal_fusion_fn_check_hc_post_w(
     return true;
 }
 
+// P3: the router's weights, GET_ROWS + SUM_ROWS + CLAMP + DIV (build_moe_ffn with norm_w: 3 ops of
+// ~10 floats a token). The graph has a RESHAPE after the GET_ROWS, which SUM_ROWS and DIV both read,
+// so the chain is matched on its raw nodes; this check is the sole validator (unsafe = true).
+static bool ggml_metal_fusion_fn_check_router_w(
+        const ggml_metal_fusion      * fusion,
+        const ggml_tensor * const    * nodes,
+        const ggml_cgraph            * gf,
+        const int                    * node_idxs,
+              int                      idx,
+              ggml_metal_fusion_mode   mode) {
+    GGML_UNUSED(nodes);
+
+    const int raw0 = node_idxs[idx];
+    if (node_idxs[idx + fusion->n_ops - 1] - raw0 + 1 != fusion->n_raw_ops) {
+        return false;
+    }
+    int raw_idxs[GGML_METAL_FUSION_MAX];
+    for (int i = 0; i < fusion->n_raw_ops; ++i) {
+        raw_idxs[i] = raw0 + i;
+        if (gf->nodes[raw0 + i]->op != fusion->raw_ops[i]) {
+            return false;
+        }
+    }
+
+    const ggml_tensor * gr    = gf->nodes[raw0 + 0]; // [1, n_used, n]
+    const ggml_tensor * w     = gf->nodes[raw0 + 1]; // [n_used, n]
+    const ggml_tensor * sum   = gf->nodes[raw0 + 2]; // [1, n]
+    const ggml_tensor * cl    = gf->nodes[raw0 + 3];
+    const ggml_tensor * div   = gf->nodes[raw0 + 4]; // [n_used, n]
+    const ggml_tensor * probs = gr->src[0];          // [1, n_expert, n]
+    const ggml_tensor * ids   = gr->src[1];          // [n_used, n]
+
+    if (w->src[0] != gr || sum->src[0] != w || cl->src[0] != sum || div->src[0] != w || div->src[1] != cl) {
+        return false;
+    }
+
+    if (probs->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32 || gr->type != GGML_TYPE_F32 ||
+        sum->type != GGML_TYPE_F32 || cl->type != GGML_TYPE_F32 || div->type != GGML_TYPE_F32) {
+        return false;
+    }
+
+    const int64_t n_used = ids->ne[0];
+    const int64_t nt     = ids->ne[1];
+    if (probs->ne[0] != 1 || probs->ne[2] != nt || probs->ne[3] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1 ||
+        w->ne[0] != n_used || w->ne[1] != nt || !ggml_is_contiguous(w) || !ggml_are_same_shape(div, w)) {
+        return false;
+    }
+
+    // one simdgroup: SUM_ROWS then runs one thread per element (per float4 when n_used is a
+    // multiple of 4), whatever its pipeline's thread limit
+    if ((n_used % 4 == 0 ? n_used/4 : n_used) > 32) {
+        return false;
+    }
+
+    // the sign of an all-zero sum is not pinned down under fast math; a positive floor makes it moot
+    if (!(ggml_get_op_params_f32(cl, 0) > 0.0f)) {
+        return false;
+    }
+
+    const int outputs[1] = { raw_idxs[fusion->n_raw_ops - 1] };
+    if (!ggml_can_fuse_subgraph_ext(gf, raw_idxs, fusion->n_raw_ops, fusion->raw_ops, outputs, 1)) {
+        return false;
+    }
+
+    if (mode == GGML_METAL_FUSION_FULL &&
+        (!ggml_metal_fusion_fn_apart(div, probs, false) || !ggml_metal_fusion_fn_apart(div, ids, false))) {
+        return false;
+    }
+
+    return true;
+}
+
 // ---- patterns --------------------------------------------------------------
 
 static const ggml_op ops_fn_scale_unary[] = { GGML_OP_SCALE, GGML_OP_UNARY };
 static const ggml_op ops_fn_hc_post_w[]   = { GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_DSV4_HC_POST };
+static const ggml_op ops_fn_router_w[]    = { GGML_OP_GET_ROWS, GGML_OP_SUM_ROWS, GGML_OP_CLAMP, GGML_OP_DIV };
+static const ggml_op ops_fn_router_w_raw[] = {
+    GGML_OP_GET_ROWS, GGML_OP_RESHAPE, GGML_OP_SUM_ROWS, GGML_OP_CLAMP, GGML_OP_DIV
+};
 
 static const std::vector<ggml_metal_fusion> ggml_metal_fusion_fn_patterns = {
     { GGML_METAL_FUSION_FN_SCALE_UNARY, ops_fn_scale_unary, 2, ops_fn_scale_unary, 2, false, ggml_metal_fusion_fn_check_scale_unary },
     { GGML_METAL_FUSION_FN_HC_POST_W,   ops_fn_hc_post_w,   4, ops_fn_hc_post_w,   4, true,  ggml_metal_fusion_fn_check_hc_post_w },
+    { GGML_METAL_FUSION_FN_ROUTER_W,    ops_fn_router_w,    4, ops_fn_router_w_raw, 5, true, ggml_metal_fusion_fn_check_router_w },
 };
 
 const ggml_metal_fusion * ggml_metal_fusion_fn_table(const ggml_metal_fusion * base, int n_base, int * n) {

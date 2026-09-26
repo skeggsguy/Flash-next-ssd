@@ -152,6 +152,58 @@ static int ggml_metal_fn_encode_hc_post_w(ggml_metal_library_t lib, ggml_metal_e
     return 4;
 }
 
+// P3: GET_ROWS + SUM_ROWS + CLAMP + DIV. kernel_fn_router_w (kernels/fuse_fn.metal), one token per
+// threadgroup, with the thread count and float4 choice ggml_metal_op_sum_rows makes for the weights row
+static int ggml_metal_fn_encode_router_w(ggml_metal_library_t lib, ggml_metal_encoder_t enc, const ggml_tensor * const * nodes) {
+    const ggml_tensor * gr    = nodes[0];
+    const ggml_tensor * cl    = nodes[2];
+    const ggml_tensor * div   = nodes[3];
+    const ggml_tensor * probs = gr->src[0];
+    const ggml_tensor * ids   = gr->src[1];
+
+    const int32_t n_used = (int32_t) ids->ne[0];
+    const int32_t nt     = (int32_t) ids->ne[1];
+    const bool    is_c4  = n_used % 4 == 0;
+
+    const char * name = is_c4 ? "kernel_fn_router_w_f32_4" : "kernel_fn_router_w_f32";
+
+    ggml_metal_pipeline_with_params pipeline = ggml_metal_library_get_pipeline(lib, name);
+    if (!pipeline.pipeline) {
+        pipeline = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    ggml_metal_kargs_fn_router_w args = {
+        /*.ne00   =*/ is_c4 ? n_used/4 : n_used,
+        /*.n_used =*/ n_used,
+        /*.nb_p1  =*/ probs->nb[1],
+        /*.nb_p2  =*/ probs->nb[2],
+        /*.nb_i0  =*/ ids->nb[0],
+        /*.nb_i1  =*/ ids->nb[1],
+        /*.nb_d0  =*/ div->nb[0],
+        /*.nb_d1  =*/ div->nb[1],
+        /*.min    =*/ ggml_get_op_params_f32(cl, 0),
+        /*.max    =*/ ggml_get_op_params_f32(cl, 1),
+    };
+
+    // ggml_metal_op_sum_rows' thread count (the check keeps ne00 <= 32, so it is ne00)
+    int nth = 32;
+    while (nth < args.ne00 && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+        nth *= 2;
+    }
+    nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+    nth = std::min(nth, (int) args.ne00);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(probs), 1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(ids),   2);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_fn_buffer_id(div),   3);
+    ggml_metal_encoder_set_threadgroup_memory_size(enc, 32*sizeof(float)*(is_c4 ? 4 : 1), 0);
+    ggml_metal_encoder_dispatch_threadgroups(enc, nt, 1, 1, nth, 1, 1);
+
+    return 4;
+}
+
 int ggml_metal_op_fn_encode(
         ggml_metal_library_t        lib,
         ggml_metal_encoder_t        enc,
@@ -163,6 +215,7 @@ int ggml_metal_op_fn_encode(
     switch (fusion->id) {
         case GGML_METAL_FUSION_FN_SCALE_UNARY: n_done = ggml_metal_fn_encode_scale_unary(lib, enc, nodes); break;
         case GGML_METAL_FUSION_FN_HC_POST_W:   n_done = ggml_metal_fn_encode_hc_post_w  (lib, enc, nodes); break;
+        case GGML_METAL_FUSION_FN_ROUTER_W:    n_done = ggml_metal_fn_encode_router_w   (lib, enc, nodes); break;
         default:
             GGML_ABORT("%s: not an FN fusion (id %d)", __func__, (int) fusion->id);
     }

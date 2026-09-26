@@ -1356,6 +1356,21 @@ typedef struct {
     float bias1;
 } ggml_metal_kargs_fn_hc_post_w;
 
+// fix 2 (P3, GGML_METAL_FUSION_FN): the router's weights, GET_ROWS + SUM_ROWS + CLAMP + DIV
+// (kernel_fn_router_w_f32[_4], kernels/fuse_fn.metal)
+typedef struct {
+    int32_t  ne00;   // SUM_ROWS' row length in its elements: n_used, or n_used/4 in its float4 kernel
+    int32_t  n_used;
+    uint64_t nb_p1;  // probs [1, n_expert, n_tokens]: next book, next token
+    uint64_t nb_p2;
+    uint64_t nb_i0;  // ids [n_used, n_tokens]
+    uint64_t nb_i1;
+    uint64_t nb_d0;  // dst [n_used, n_tokens]
+    uint64_t nb_d1;
+    float    min;    // CLAMP's bounds
+    float    max;
+} ggml_metal_kargs_fn_router_w;
+
 typedef struct {
     int32_t  ne00;
     int32_t  ne01;

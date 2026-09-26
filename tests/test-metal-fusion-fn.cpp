@@ -22,6 +22,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <numeric>
 #include <random>
 #include <string>
 #include <vector>
@@ -268,6 +269,59 @@ void test_hc_post(testing & t, env & e) {
     }
 }
 
+// ---- P3: the router's GET_ROWS + SUM_ROWS + CLAMP + DIV --------------------------
+
+const char * LABEL_P3 = "GET_ROWS+SUM_ROWS+CLAMP+DIV";
+
+// probs [n_expert, n] (the softmax), ids [n_used, n] (the top-k), as build_moe_ffn with norm_w;
+// neg 1: the picked weights also read by another op, neg 2: the sum also read, neg 3: CLAMP with a
+// floor of 0 (not merged: an all-zero sum's sign is not pinned down under fast math)
+graph_case case_router_w(int64_t n_expert, int64_t n_used, int64_t nt, int neg) {
+    graph_case gc;
+    gc.name = "router_w " + std::to_string(n_used) + " of " + std::to_string(n_expert) + " n=" + std::to_string(nt) +
+              " neg=" + std::to_string(neg);
+    gc.build = [=](ggml_context * ctx_in, ggml_context * ctx_g, ggml_cgraph * gf, std::vector<ggml_tensor *> & outs) {
+        ggml_tensor * probs = ggml_new_tensor_2d(ctx_in, GGML_TYPE_F32, n_expert, nt);
+        ggml_tensor * ids   = ggml_new_tensor_2d(ctx_in, GGML_TYPE_I32, n_used, nt);
+
+        ggml_tensor * w   = ggml_get_rows(ctx_g, ggml_reshape_3d(ctx_g, probs, 1, n_expert, nt), ids);
+        ggml_tensor * w2  = ggml_reshape_2d(ctx_g, w, n_used, nt);
+        ggml_tensor * sum = ggml_sum_rows(ctx_g, w2);
+        ggml_tensor * out = ggml_div(ctx_g, w2, ggml_clamp(ctx_g, sum, neg == 3 ? 0.0f : 6.103515625e-5f, INFINITY));
+        ggml_set_output(out);
+        outs.push_back(out);
+        ggml_build_forward_expand(gf, out);
+        if (neg == 1 || neg == 2) {
+            outs.push_back(also_read(ctx_g, gf, neg == 1 ? w : sum));
+        }
+    };
+    gc.fill = [n_expert, n_used](ggml_tensor * t, std::mt19937 & rng) {
+        if (t->type == GGML_TYPE_I32) {
+            // n_used distinct books a token
+            std::vector<int32_t> books(n_expert);
+            for (int64_t r = 0; r < t->ne[1]; r++) {
+                std::iota(books.begin(), books.end(), 0);
+                std::shuffle(books.begin(), books.end(), rng);
+                ggml_backend_tensor_set(t, books.data(), r*t->nb[1], n_used*sizeof(int32_t));
+            }
+        } else {
+            fill_f32(t, rng, 0.0f, 1.0f);
+        }
+    };
+    return gc;
+}
+
+void test_router_w(testing & t, env & e) {
+    for (int64_t nt : { 1, 4, 6, 512 }) {
+        check_case(t, e, case_router_w(512, 10, nt, 0), LABEL_P3, 1);
+    }
+    check_case(t, e, case_router_w(64, 8, 5, 0), LABEL_P3, 1);   // the 64-book test models: the float4 sum
+    check_case(t, e, case_router_w(512, 32, 3, 0), LABEL_P3, 1); // a full simdgroup
+    for (int neg : { 1, 2, 3 }) {
+        check_case(t, e, case_router_w(512, 10, 6, neg), LABEL_P3, 0);
+    }
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -302,9 +356,17 @@ int main(int argc, char ** argv) {
 
     printf("GGML_METAL_FUSION_FN=%s\n", e.fn ? "1" : "0");
 
+    t.test("switch", [&](testing & t) {
+        // the FN patterns are in the fusion table exactly when the switch is on
+        const auto counts = e.api.counts();
+        for (const char * label : { LABEL_P4, LABEL_P1, LABEL_P3 }) {
+            t.assert_equal(std::string("in the table: ") + label, e.fn, counts.count(label) == 1);
+        }
+    });
     t.test("split", test_split);
     t.test("P4 scale+silu", [&](testing & t) { test_scale_silu(t, e); });
     t.test("P1 hc_post weights", [&](testing & t) { test_hc_post(t, e); });
+    t.test("P3 router weights", [&](testing & t) { test_router_w(t, e); });
 
     ggml_backend_sched_free(e.sched);
     ggml_backend_free(e.cpu);

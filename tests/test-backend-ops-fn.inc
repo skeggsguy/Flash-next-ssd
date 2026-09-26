@@ -4,8 +4,10 @@
 // Each chain is built exactly as the model builds it, so on a backend with GGML_METAL_FUSION_FN=1 the
 // whole-graph comparison runs the merged kernel against the CPU. The "blocked" variant marks one
 // intermediate as a graph output: a merged kernel never writes its intermediates, so the chain must
-// then run unmerged, and the comparison checks the intermediate as well as the result. The same
-// cases, timed with `perf`, give the before/after of a merge (C0 records the before).
+// then run unmerged, and the comparison checks the intermediate as well as the result.
+//
+// There are no perf cases for the chains: `perf` times a graph by repeating its output node, so it
+// would time the chain's last op alone. A merge's saving is counted in GPU jobs (GGML_METAL_CBLOG).
 //
 // No input is a param (ggml_set_param): a param becomes an OP_NONE node and would sit between the
 // chain's nodes, which is not what the model's graph looks like.
@@ -176,11 +178,4 @@ static void test_fn_add_eval_cases(std::vector<std::unique_ptr<test_case>> & tes
         test_cases.emplace_back(new test_fn_router_w(512, 10, nt, 1));
         test_cases.emplace_back(new test_fn_router_w(512, 10, nt, 2));
     }
-}
-
-// perf: writing (1 token) at the model's shapes
-static void test_fn_add_perf_cases(std::vector<std::unique_ptr<test_case>> & test_cases) {
-    test_cases.emplace_back(new test_fn_scale_silu({320, 1}, false));
-    test_cases.emplace_back(new test_fn_hc_post(2560, 1, 0));
-    test_cases.emplace_back(new test_fn_router_w(512, 10, 1, 0));
 }

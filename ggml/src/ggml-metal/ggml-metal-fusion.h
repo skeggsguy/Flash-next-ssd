@@ -42,6 +42,7 @@ typedef enum ggml_metal_fusion_id {
     // fix 2, only with GGML_METAL_FUSION_FN=1 (ggml-metal-fusion-fn.h)
     GGML_METAL_FUSION_FN_SCALE_UNARY, // SCALE + UNARY (silu), P4
     GGML_METAL_FUSION_FN_HC_POST_W,   // SCALE + UNARY (sigmoid) + SCALE + DSV4_HC_POST, P1
+    GGML_METAL_FUSION_FN_ROUTER_W,    // GET_ROWS + SUM_ROWS + CLAMP + DIV (MoE routing weights), P3
 } ggml_metal_fusion_id;
 
 struct ggml_metal_fusion {
