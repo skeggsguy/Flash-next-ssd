@@ -263,7 +263,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # is the study's own I/O path (direct reads, two runners) and the apprentice's graph builds.
     llama_build(test-moe-room-model.cpp)
     llama_build(test-moe-room-model-paths.cpp)
-    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths)
+    llama_build(test-moe-room-lend-model.cpp)
+    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(

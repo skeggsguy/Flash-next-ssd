@@ -144,24 +144,21 @@ void llama_moe_stream::worker_loop() {
             sl.slot_state[w.slot] != LLAMA_MOE_STREAM_SLOT_LOADING ||
             sl.slot_expert[w.slot] != w.expert ||
             w.widx < 0 || (size_t) w.widx >= sl.weights.size())) {
+            if (w.lent) {
+                room->lend.unpin(w.lent); // a restore that will not happen reads nothing
+            }
             continue; // stale item
+        }
+        // a restore copies the book back from the lent belt (llama-moe-room-lend-ops.cpp): no drive, no drive stats
+        if (w.lent) {
+            room->lend_restore_locked(lk, w);
+            continue;
         }
 
         // two runners: low expert ids from the model's own shards, high ids from the alt copy.
         // The offset is the same in both, because the alt shards are byte-identical copies.
         const bool alt = use_alt(w.expert, sl.n_expert);
-        busy_begin_locked(alt);
 
-        lk.unlock();
-
-        // Timed to separate the two halves of a miss. A miss currently reads its 2-3 weight slabs
-        // SEQUENTIALLY on one thread, so the device sees queue depth 1 even though the reads are
-        // independent - and it idles during each upload. Whether that is worth fixing depends on the
-        // read:upload split, which is what these two counters measure.
-        // exactly one slab, so N workers can be in flight on the same expert. Measured before this
-        // change: read 1.00 ms/slab, upload 0.065 ms/slab, i.e. 94% of a miss is the read, and the
-        // three reads of an expert were strictly serialised at the device's QD1 rate (~2.9 GB/s
-        // against 7.3 GB/s at QD8). Issuing them together is what raises the depth.
         // Read into the cache slot itself when the backend hands out a host pointer - on unified
         // memory the slot IS host memory, so staging then uploading is a pure extra copy of the
         // whole slab. The direct-io path keeps staging: it needs the head/tail slack for its
@@ -176,7 +173,23 @@ void llama_moe_stream::worker_loop() {
                 dst = host ? host + (size_t) w.slot*wt.nb_expert : nullptr;
             }
         }
+        // the slot's old book is being kept on the lent belt: a read straight into the slot waits until
+        // this slab is copied out (a staged read waits just before its upload, below)
+        if (w.save && dst != nullptr) {
+            room->lend_gate_locked(lk, w);
+        }
+        busy_begin_locked(alt);
 
+        lk.unlock();
+
+        // Timed to separate the two halves of a miss. A miss currently reads its 2-3 weight slabs
+        // SEQUENTIALLY on one thread, so the device sees queue depth 1 even though the reads are
+        // independent - and it idles during each upload. Whether that is worth fixing depends on the
+        // read:upload split, which is what these two counters measure.
+        // exactly one slab, so N workers can be in flight on the same expert. Measured before this
+        // change: read 1.00 ms/slab, upload 0.065 ms/slab, i.e. 94% of a miss is the read, and the
+        // three reads of an expert were strictly serialised at the device's QD1 rate (~2.9 GB/s
+        // against 7.3 GB/s at QD8). Issuing them together is what raises the depth.
         const int64_t t0 = ggml_time_us();
         const uint8_t * data = llama_moe_stream_pread(*(alt ? files_alt : files)[wt.file_idx], dst ? dst : staging,
                 wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
@@ -186,6 +199,11 @@ void llama_moe_stream::worker_loop() {
             if (ring) {
                 ggml_backend_tensor_set(room->whole, data, w.ring_offs, wt.nb_expert);
             } else {
+                if (w.save) {
+                    lk.lock();
+                    room->lend_gate_locked(lk, w); // the slot kept its old bytes until here
+                    lk.unlock();
+                }
                 ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
             }
         }

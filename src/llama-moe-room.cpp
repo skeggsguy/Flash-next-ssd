@@ -114,6 +114,7 @@ void llama_moe_room::alloc(bool no_alloc) {
 
     LLAMA_LOG_INFO("%s: %12s reading room size = %8.2f MiB, %d parts per floor\n", __func__,
             ggml_backend_buffer_name(buf), lay.room_bytes/1048576.0, lay.parts);
+    lend_init(no_alloc); // between read-ins the belt is lent to the desk (llama-moe-room-lend-ops.cpp)
 }
 
 bool llama_moe_room::take(int32_t il, int64_t n_tokens, bool allowed) {
@@ -139,6 +140,7 @@ llama_moe_room_op * llama_moe_room::op_userdata(llama_moe_stream_layer * sl, int
 }
 
 void llama_moe_room::begin_ubatch_locked() {
+    lend_take_back_locked(); // the belt was lent to the desk while writing: its copies go now
     stats.n_ubatches++;
 
     // The last read-in is over: the op running this has drained the GPU. Its parts that are READY or in

@@ -1,5 +1,6 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
+#include "llama-moe-room.h"
 
 #include "ggml-backend.h"
 
@@ -88,6 +89,11 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     std::fill(sl->keep.begin(), sl->keep.end(), 0);
     sl->demand_slots.clear();
 
+    // the lent belt (llama-moe-room-lend-ops.cpp): a miss may be copied back from it, and each book this
+    // call puts back is kept on it; the desk's own choices below are the same with it off
+    llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
+    uint32_t n_kept = 0;
+
     bool waited = false;
     for (const int32_t e : sl->uniq) {
         const auto it = sl->expert_slot.find(e);
@@ -105,6 +111,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             sl->keep[s] = 1;
             sl->demand_slots.push_back(s);
         } else {
+            const uint64_t lent = lender ? lender->lend_find_locked(*sl, e) : 0; // pinned before any keep
             int32_t v;
             while ((v = mgr->pick_victim_locked(*sl, sl->keep.data())) < 0) {
                 // every allowed slot is loading; wait for a commit and retry
@@ -117,16 +124,18 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
                 mgr->stats.n_miss_cold++;
                 sl->n_miss_cold++;
             }
+            const uint64_t save = lender ? lender->lend_keep_locked(*sl, v, n_kept) : 0; // before reserve forgets the old book
             mgr->reserve_slot_locked(*sl, e, v);
             // one work item PER SLAB: the 2-3 slabs of an expert are independent reads, and
             // issuing them together is what lifts device queue depth above 1.
             sl->slot_pending[v] = (uint8_t) sl->weights.size();
 
             for (size_t wi = 0; wi < sl->weights.size(); wi++) {
-
-                mgr->q_demand.push_back({ sl, e, v, (int32_t) wi, sl->slot_gen[v] });
+                llama_moe_stream_work w = { sl, e, v, (int32_t) wi, sl->slot_gen[v] };
+                w.lent = lent;
+                w.save = save;
+                mgr->q_demand.push_back(w);
                 mgr->cv_work.notify_one();  // one wakeup per slab
-
             }
             // (workers woken per slab inside the loop above)
             mgr->stats.n_miss++;
@@ -135,6 +144,10 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             sl->keep[v] = 1;
             sl->demand_slots.push_back(v);
         }
+    }
+
+    if (lender) {
+        lender->lend_help_locked(lk); // copy the put-back books out while the runners read
     }
 
     if (waited) {

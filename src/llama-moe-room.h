@@ -19,6 +19,7 @@
 #include "llama.h"
 #include "llama-arch.h"
 #include "llama-moe-room-belt.h"
+#include "llama-moe-room-lend.h"
 #include "llama-moe-room-size.h"
 
 #include "ggml-cpp.h"
@@ -91,6 +92,19 @@ struct llama_moe_room_stats {
     int64_t n_part_ops   = 0;
 };
 
+// the lent belt's counters, cumulative; the stats dump prints the deltas of a window
+struct llama_moe_lend_stats {
+    int64_t n_miss       = 0; // the writing remap's misses while lending is on
+    int64_t n_lent       = 0; // of those, copied back from the belt instead of read (still a desk miss)
+    int64_t n_kept       = 0; // books copied onto the belt as the desk put them back
+    int64_t n_not_kept   = 0; // put back but not kept: the call's cap was spent, or a busy copy was in the way
+    int64_t n_bytes_in   = 0; // bytes copied onto the belt
+    int64_t n_bytes_out  = 0; // bytes copied back to the desk
+    int64_t t_restore_us = 0; // time the copies back took, slab by slab
+    int64_t n_taken_back = 0; // times the room took the lent belt back for a read-in
+    int64_t n_cleared    = 0; // copies those take-backs dropped
+};
+
 struct llama_moe_room {
     llama_moe_stream &    mgr;
     llama_moe_room_layout lay;
@@ -118,6 +132,17 @@ struct llama_moe_room {
     llama_moe_room_stats stats;
     llama_moe_room_stats stats_prev;
 
+    // The lent belt (llama-moe-room-lend-ops.cpp): between read-ins the belt keeps copies of the books the
+    // writing remap puts back, and a later trip for one of them copies it back instead of reading it. The
+    // desk's choices are untouched, so the words are the same with it on or off (LLAMA_MOE_ROOM_LEND=0).
+    bool     lend_on  = false; // on unless LLAMA_MOE_ROOM_LEND=0, and possible here (lend_init says why not)
+    bool     lent_out = false; // the belt is lent to the desk right now
+    uint32_t lend_cap = 0;     // books one remap call may keep on one floor
+    llama_moe_lend lend;
+    std::vector<uint64_t> lend_queued; // keeps this remap call made, for the op thread to help copy
+    llama_moe_lend_stats  lstats;
+    llama_moe_lend_stats  lstats_prev;
+
     llama_moe_room(llama_moe_stream & mgr, const llama_moe_room_layout & lay);
 
     // the belt buffer after the desk's (the gentle opening's pause first) and each floor's views of it
@@ -138,9 +163,19 @@ struct llama_moe_room {
     bool worker_begin_locked(const llama_moe_stream_work & w); // false: the read is stale, skip it
     void worker_end_locked(const llama_moe_stream_work & w, bool ok);
 
-    // the stats lines (llama-moe-room-stats.cpp): a window's `moe stream: room` line, and the run's total
+    // the stats lines (llama-moe-room-stats.cpp): a window's `moe stream: room` and `moe stream: lent belt`
+    // lines, and the run's totals
     void dump_stats_locked(int64_t dt_us);
     void print_stats_locked() const;
+
+    // the lent belt (llama-moe-room-lend-ops.cpp); all but lend_init under mgr.mtx
+    void     lend_init(bool no_alloc);   // at alloc: on or off, the cap, and the load line
+    void     lend_take_back_locked();    // the room needs its belt: nothing is busy, every copy is dropped
+    uint64_t lend_find_locked(const llama_moe_stream_layer & sl, int32_t book); // a writing miss: its copy (pinned) or 0
+    uint64_t lend_keep_locked(const llama_moe_stream_layer & sl, int32_t slot, uint32_t & n_kept); // before the slot is reserved
+    void     lend_help_locked(std::unique_lock<std::mutex> & lk); // the op thread copies its keeps before it waits
+    void     lend_gate_locked(std::unique_lock<std::mutex> & lk, const llama_moe_stream_work & w); // before w writes its slot
+    void     lend_restore_locked(std::unique_lock<std::mutex> & lk, const llama_moe_stream_work & w); // a worker's copy back
 
     // the ops (llama-moe-room-ops.cpp), under mgr.mtx: each writes its group's id plane
     void desk_locked(std::unique_lock<std::mutex> & lk, llama_moe_room_floor & F, const int32_t * ids, int64_t n, int32_t * out);
