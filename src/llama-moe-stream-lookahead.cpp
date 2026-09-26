@@ -101,7 +101,11 @@ uint32_t llama_moe_stream_lookahead_depth2_env() {
     return s != nullptr ? (uint32_t) std::max(0, atoi(s)) : 0;
 }
 
-static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, const float * logits2) {
+// the rows are [n1 + n2] per token (L+1's logits, then L+2's); with LLAMA_MOE_STREAM_LOOKAHEAD_ALL a small
+// batch (the apprentice's check) fetches two floors ahead for every token, rank by rank from the last,
+// each book once, as prefetch_next_all does one floor ahead; otherwise the last token only
+static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, const float * rows, int64_t n_tok,
+        int64_t stride, int64_t n1) {
     if (!la->bias2_read) {
         la->bias2_read = true;
         if (la->bias_src2) {
@@ -109,9 +113,24 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
             ggml_backend_tensor_get(la->bias_src2, la->bias2.data(), 0, ggml_nbytes(la->bias_src2));
         }
     }
-    std::vector<int32_t> picks;
-    llama_moe_stream_lookahead_top(la, logits2, picks, la->sl_next2->n_expert, la->bias2, la->top_k2);
-    llama_moe_stream_lookahead_issue(*la->sl_next2, picks, true);
+    const uint32_t n2 = la->sl_next2->n_expert;
+    const int64_t first = (n_tok > 1 && n_tok <= 16 && la->all) ? 0 : n_tok - 1;
+    std::vector<std::vector<int32_t>> picks((size_t) n_tok);
+    for (int64_t t = first; t < n_tok; t++) {
+        llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2);
+    }
+    std::vector<uint8_t> seen(n2, 0);
+    std::vector<int32_t> books;
+    for (uint32_t k = 0; k < la->top_k2; k++) {
+        for (int64_t t = n_tok - 1; t >= first; t--) {
+            const int32_t e = picks[(size_t) t][k];
+            if (!seen[e]) {
+                seen[e] = 1;
+                books.push_back(e);
+            }
+        }
+    }
+    llama_moe_stream_lookahead_issue(*la->sl_next2, books, true);
 }
 
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1: a small batch (the apprentice's check, 2..16 tokens) prefetches the
@@ -183,7 +202,7 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
         }
         const int64_t n1 = la->sl_next->n_expert;
         if (la->sl_next2 && la->top_k2 > 0 && b->ne[0] == n1 + la->sl_next2->n_expert) {
-            llama_moe_stream_prefetch_next2(la, logits + n1);
+            llama_moe_stream_prefetch_next2(la, (const float *) b->data, n_tok, b->ne[0], n1);
         }
     }
 }

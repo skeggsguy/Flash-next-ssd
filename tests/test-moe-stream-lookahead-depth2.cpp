@@ -92,7 +92,23 @@ int main(int argc, char ** argv) {
         c_on = counts(m_on);
         llama_model_free(m_on);
     }
+    // with LLAMA_MOE_STREAM_LOOKAHEAD_ALL too, the 4-token checks fetch two floors ahead for every token
+    std::vector<float> all;
+    la2_counts c_all;
+    setenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL", "1", 1);
+    llama_model * m_all = load(c);
+    check(m_all != nullptr, "streamed model (two floors ahead, every token) loaded");
+    if (m_all) {
+        check(run_writing(m_all, all), "two floors ahead, every token: the tokens ran");
+        c_all = counts(m_all);
+        llama_model_free(m_all);
+    }
+    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL");
     unsetenv(g_depth2_env);
+
+    check(same(all, ref), "two floors ahead, every token: the same logits as no streaming");
+    check(c_all.fetched > c_on.fetched, "every token fetched more two floors ahead (" +
+            std::to_string(c_all.fetched) + " against " + std::to_string(c_on.fetched) + ")");
 
     check(nonzero(ref), "the reference logits are not all zero");
     check(same(off, ref), "one floor ahead: the same logits as no streaming");
@@ -101,6 +117,7 @@ int main(int argc, char ** argv) {
     check(c_on.fetched > 0, "switch on: books fetched two floors ahead");
     check(c_on.used > 0 && c_on.used <= c_on.fetched, "switch on: some were read by their floor (" +
             std::to_string(c_on.used) + " of " + std::to_string(c_on.fetched) + ")");
-    printf("two floors ahead: fetched %lld, used %lld\n", (long long) c_on.fetched, (long long) c_on.used);
+    printf("two floors ahead: fetched %lld, used %lld; every token: fetched %lld, used %lld\n",
+            (long long) c_on.fetched, (long long) c_on.used, (long long) c_all.fetched, (long long) c_all.used);
     return finish();
 }
