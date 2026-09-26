@@ -173,6 +173,10 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
         const int32_t s = sl->expert_slot.at(ids[i]);
         sl->slot_last_use[s] = ++sl->use_counter;
         out[i] = s;
+        if (!sl->slot_la2.empty() && sl->slot_la2[s] == ids[i]) {
+            sl->slot_la2[s] = -1; // a two-floors-ahead fetch, read by its floor
+            mgr->stats.n_la2_used++;
+        }
     }
 
     if (mgr->gpu_slot) {

@@ -22,9 +22,7 @@
 // guess's own worker at its gate, whichever comes first.
 // the top_k predicted books of one token's row of next-floor logits, most likely first
 static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, const float * logits,
-        std::vector<int32_t> & picks) {
-    const uint32_t n = la->sl_next->n_expert;
-
+        std::vector<int32_t> & picks, uint32_t n, const std::vector<float> & bias, uint32_t top_k) {
     picks.clear();
     la->score.resize(n);
     for (uint32_t e = 0; e < n; e++) {
@@ -32,10 +30,10 @@ static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, cons
         const float x = logits[e];
         float p = x > 20.0f ? x : log1pf(expf(x));   // softplus, guarded for large x
         p = sqrtf(p);
-        la->score[e] = p + (la->bias.empty() ? 0.0f : la->bias[e]);
+        la->score[e] = p + (bias.empty() ? 0.0f : bias[e]);
     }
 
-    for (uint32_t k = 0; k < la->top_k; k++) {
+    for (uint32_t k = 0; k < top_k; k++) {
         uint32_t best = 0;
         float    bv   = -INFINITY;
         for (uint32_t e = 0; e < n; e++) {
@@ -47,8 +45,8 @@ static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, cons
 }
 
 // start loading the listed books in order; stops when the backlog is full or no slot is free
-static void llama_moe_stream_lookahead_issue(llama_moe_stream_lookahead * la, const std::vector<int32_t> & books) {
-    llama_moe_stream_layer & sl = *la->sl_next;
+static void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const std::vector<int32_t> & books,
+        bool two_ahead = false) {
     auto * mgr = sl.mgr;
 
     llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
@@ -77,13 +75,43 @@ static void llama_moe_stream_lookahead_issue(llama_moe_stream_lookahead * la, co
             mgr->cv_work.notify_one();
         }
         mgr->stats.n_preload_issued++;
+        if (two_ahead) {
+            if (sl.slot_la2.size() != (size_t) sl.n_slots) {
+                sl.slot_la2.assign((size_t) sl.n_slots, -1);
+            }
+            sl.slot_la2[v] = best;
+            mgr->stats.n_la2_issued++;
+        }
     }
 }
 
 static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, const float * logits) {
     std::vector<int32_t> picks;
-    llama_moe_stream_lookahead_top(la, logits, picks);
-    llama_moe_stream_lookahead_issue(la, picks);
+    llama_moe_stream_lookahead_top(la, logits, picks, la->sl_next->n_expert, la->bias, la->top_k);
+    llama_moe_stream_lookahead_issue(*la->sl_next, picks);
+}
+
+// LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: floor L also fetches floor L+2's K most likely books for the batch's
+// last token, predicted by floor L+2's router on floor L's input (one more small GEMM in the graph, joined
+// to L+1's logits). Two floors of attention and FFN are skipped, so the guess is weaker than L+1's and K is
+// kept small; it queues after L+1's guesses. Each slot it fills remembers the book, and the floor's remap
+// counts the ones it reads ("lookahead 2 floors" in the stats), so the guess's accuracy is measured.
+uint32_t llama_moe_stream_lookahead_depth2_env() {
+    const char * s = getenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2");
+    return s != nullptr ? (uint32_t) std::max(0, atoi(s)) : 0;
+}
+
+static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, const float * logits2) {
+    if (!la->bias2_read) {
+        la->bias2_read = true;
+        if (la->bias_src2) {
+            la->bias2.resize(ggml_nelements(la->bias_src2));
+            ggml_backend_tensor_get(la->bias_src2, la->bias2.data(), 0, ggml_nbytes(la->bias_src2));
+        }
+    }
+    std::vector<int32_t> picks;
+    llama_moe_stream_lookahead_top(la, logits2, picks, la->sl_next2->n_expert, la->bias2, la->top_k2);
+    llama_moe_stream_lookahead_issue(*la->sl_next2, picks, true);
 }
 
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1: a small batch (the apprentice's check, 2..16 tokens) prefetches the
@@ -103,7 +131,7 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
         int64_t n_tok, int64_t stride) {
     std::vector<std::vector<int32_t>> picks((size_t) n_tok);
     for (int64_t t = 0; t < n_tok; t++) {
-        llama_moe_stream_lookahead_top(la, rows + t*stride, picks[(size_t) t]);
+        llama_moe_stream_lookahead_top(la, rows + t*stride, picks[(size_t) t], la->sl_next->n_expert, la->bias, la->top_k);
     }
     std::vector<uint8_t> seen(la->sl_next->n_expert, 0);
     std::vector<int32_t> books;
@@ -120,7 +148,7 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
             }
         }
     }
-    llama_moe_stream_lookahead_issue(la, books);
+    llama_moe_stream_lookahead_issue(*la->sl_next, books);
 }
 
 void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b, int ith, int nth, void * userdata) {
@@ -132,8 +160,9 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
         return;
     }
 
-    // b is [n_expert, n_tokens] of predicted next-layer logits; use the last token's row, which is
-    // the one whose routing the next layer will actually resolve first
+    // b is [n_expert, n_tokens] of predicted next-layer logits (with depth 2, [2*n_expert, n_tokens]: the
+    // next layer's, then the one after's); use the last token's row, which is the one whose routing the
+    // next layer will actually resolve first
     const int64_t n_tok = b->ne[1] > 0 ? b->ne[1] : 1;
     const float * logits = (const float *) b->data + (n_tok - 1)*b->ne[0];
 
@@ -151,6 +180,10 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
             llama_moe_stream_prefetch_next_all(la, (const float *) b->data, n_tok, b->ne[0]);
         } else {
             llama_moe_stream_prefetch_next(la, logits);
+        }
+        const int64_t n1 = la->sl_next->n_expert;
+        if (la->sl_next2 && la->top_k2 > 0 && b->ne[0] == n1 + la->sl_next2->n_expert) {
+            llama_moe_stream_prefetch_next2(la, logits + n1);
         }
     }
 }

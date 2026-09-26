@@ -298,6 +298,8 @@ bool llama_moe_stream_lookahead_all_env();
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS=N: with the above, the batch's last token still prefetches its top_k
 // and every earlier token only its N most likely books (unset or 0: top_k for every token)
 uint32_t llama_moe_stream_lookahead_all_ranks_env();
+// LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: also fetch floor L+2's K most likely books (0 or unset: off)
+uint32_t llama_moe_stream_lookahead_depth2_env();
 
 // Identity on the ubatch token ids, with a side effect: start the loads for every hash-routed
 // layer. The hash layers take their tid2eid get_rows index from this op's output, which is what

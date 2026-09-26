@@ -75,6 +75,13 @@ struct llama_moe_stream_lookahead {
     bool                     bias_read = false;
     std::vector<float>       bias;              // host copy of bias_src, filled on first use
     std::vector<float>       score;             // scratch [n_expert]
+
+    // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: two floors ahead as well, K books for the batch's last token
+    llama_moe_stream_layer * sl_next2   = nullptr; // floor L+2, null = off
+    uint32_t                 top_k2     = 0;
+    ggml_tensor *            bias_src2  = nullptr;
+    bool                     bias2_read = false;
+    std::vector<float>       bias2;
 };
 
 struct llama_moe_stream_layer;
@@ -102,6 +109,7 @@ struct llama_moe_stream_layer {
     std::vector<uint64_t>                slot_gen;      // [n_slots] reservation generation
     std::vector<int64_t>                 slot_last_use; // [n_slots] LRU stamps
     std::unordered_map<int32_t, int32_t> expert_slot;   // RESIDENT and LOADING entries
+    std::vector<int32_t>                 slot_la2;      // [n_slots] book a two-floors-ahead fetch put here, -1 none
 
     std::vector<uint32_t> route_hotness; // [n_expert] decayed selection counts, for eviction
     std::vector<uint8_t>  seen;          // [n_expert] for cold-miss attribution
@@ -175,6 +183,7 @@ struct llama_moe_stream_layer {
     // one-layer-ahead prefetch (LLAMA_MOE_STREAM_LOOKAHEAD=K). Set by the model at load time so
     // build_moe_ffn can reach the NEXT layer's router without a signature change.
     ggml_tensor * la_gate_inp = nullptr;   // next layer's ffn_gate_inp
+    ggml_tensor * la_gate_inp2 = nullptr;  // the layer after next's, with LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2
     ggml_tensor * la_bias_src = nullptr;   // next layer's exp_probs_b, may be null
     struct llama_moe_stream_lookahead * la = nullptr;
 };

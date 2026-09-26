@@ -243,6 +243,16 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             FIXTURES_SETUP generate-models-e64
         )
     endforeach()
+    # four floors, so a lookahead two floors ahead (LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2) has somewhere to go
+    llama_test(
+        test-llama-archs
+        NAME test-generate-models-qwen4exp-e64l4
+        LABEL main
+        ARGS -a qwen4exp --n-expert 64 --n-expert-used 8 --n-layer 4 --suffix -e64l4 --unit-scales -s 42 -o "${MODEL_DIR}"
+    )
+    set_tests_properties(test-generate-models-qwen4exp-e64l4 PROPERTIES
+        FIXTURES_SETUP generate-models-e64l4
+    )
 
     # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
     # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
@@ -277,6 +287,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-room-model-paths.cpp)
     llama_build(test-moe-room-lend-model.cpp)
     llama_build(test-moe-stream-lookahead-all.cpp)
+    llama_build(test-moe-stream-lookahead-depth2.cpp)
+    foreach (E64_NGL 99 0)
+        llama_test(
+            test-moe-stream-lookahead-depth2
+            NAME test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64l4.gguf" -ngl ${E64_NGL}
+        )
+        set_tests_properties(test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL} PROPERTIES
+            FIXTURES_REQUIRED generate-models-e64l4
+        )
+    endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)

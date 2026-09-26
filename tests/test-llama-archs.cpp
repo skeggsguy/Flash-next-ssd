@@ -45,6 +45,7 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
 // shrinks its activations to ~1e-9 before the down GEMM, and the Metal matrix kernels' F16 input
 // rounds that to exactly zero - every expert then reads in as nothing and no expert bug can show.
 static bool g_unit_scales = false;
+static uint32_t g_n_layer = 0; // --n-layer: more floors than the arch default (0: the default)
 
 static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     size_t seed = *(const size_t *) userdata;
@@ -164,6 +165,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe,
     ms.add_kv(LLM_KV_CONTEXT_LENGTH,            n_ctx);
     ms.add_kv(LLM_KV_EMBEDDING_LENGTH,          n_embd);
     ms.add_kv(LLM_KV_FEATURES_LENGTH,           n_embd);
+    if (g_n_layer > 0) {
+        n_layer = g_n_layer;
+    }
     ms.add_kv(LLM_KV_BLOCK_COUNT,               n_layer);
     ms.add_kv(LLM_KV_LEADING_DENSE_BLOCK_COUNT, uint32_t(1));
 
@@ -1041,6 +1045,14 @@ int main(int argc, char ** argv) {
         }
         if (strcmp(argv[i], "--unit-scales") == 0) {
             g_unit_scales = true;
+        }
+        if (strcmp(argv[i], "--n-layer") == 0) {
+            if (i + 1 < argc) {
+                g_n_layer = (uint32_t) std::stoul(argv[++i]);
+            } else {
+                usage(argv);
+                return 1;
+            }
         }
         if (strcmp(argv[i], "--suffix") == 0) {
             if (i + 1 < argc) {

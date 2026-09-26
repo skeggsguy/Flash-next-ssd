@@ -1992,12 +1992,21 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     sl->la->top_k    = k;
                     sl->la->all      = llama_moe_stream_lookahead_all_env();
                     sl->la->all_ranks = llama_moe_stream_lookahead_all_ranks_env();
+                    auto * next2 = il + 2 < (uint32_t) n_layer_all ? pimpl->moe_stream->layer(il + 2) : nullptr;
+                    const uint32_t k2 = llama_moe_stream_lookahead_depth2_env();
+                    if (k2 > 0 && next2 && layers[il + 2].ffn_gate_inp) {
+                        sl->la_gate_inp2   = layers[il + 2].ffn_gate_inp;
+                        sl->la->sl_next2   = next2;
+                        sl->la->top_k2     = k2;
+                        sl->la->bias_src2  = layers[il + 2].ffn_exp_probs_b;
+                    }
                     sl->la->bias_src = layers[il + 1].ffn_exp_probs_b;
                     n_la++;
                 }
                 if (n_la > 0) {
-                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers%s\n", __func__, k, n_la,
-                            llama_moe_stream_lookahead_all_env() ? ", every token of a small batch" : "");
+                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers%s%s\n", __func__, k, n_la,
+                            llama_moe_stream_lookahead_all_env() ? ", every token of a small batch" : "",
+                            llama_moe_stream_lookahead_depth2_env() > 0 ? ", and two floors ahead" : "");
                 }
             }
         }

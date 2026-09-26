@@ -109,6 +109,12 @@ void llama_moe_stream::maybe_dump_stats_locked() {
             LLAMA_LOG_WARN("%s: moe stream: drives busy file/alt = %5.1f%%/%5.1f%% | %5.2f/%5.2f GB/s\n",
                     __func__, dt > 0 ? 100.0*d_tf/dt : 0.0, dt > 0 ? 100.0*d_ta/dt : 0.0,
                     d_tf > 0 ? d_bf/1e3/d_tf : 0.0, d_ta > 0 ? d_ba/1e3/d_ta : 0.0);
+            const int64_t d_la2_i = stats.n_la2_issued - stats_prev.n_la2_issued;
+            const int64_t d_la2_u = stats.n_la2_used   - stats_prev.n_la2_used;
+            if (d_la2_i > 0 || d_la2_u > 0) {
+                LLAMA_LOG_WARN("%s: moe stream: lookahead 2 floors: fetched %lld, used %lld (%.1f%%)\n", __func__,
+                        (long long) d_la2_i, (long long) d_la2_u, d_la2_i > 0 ? 100.0*d_la2_u/d_la2_i : 0.0);
+            }
         }
 
         if (room) {
