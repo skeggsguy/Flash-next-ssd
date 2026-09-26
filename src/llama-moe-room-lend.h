@@ -17,10 +17,12 @@
 //   PENDING -> RUNNING -> DONE      (claimed by whoever copies it out of the desk slot, then copied)
 //
 // A copy can be found (for a restore) only once every slab is DONE. It is busy while a slab is not DONE
-// or a restore still reads it (a pin), and a busy copy is never dropped: a placement that would drop one
-// fails instead, and that book is not kept. Seqs are never reused, so the index from (floor, book) to a
-// copy may go stale: a lookup checks the seq is still in the ring. That makes clear() an O(1) epoch for
-// the index, which the room pays each time it takes the belt back for a read-in.
+// or a restore still reads it (a pin), and a busy copy is never dropped by a placement: one that would
+// drop a busy copy fails instead, and that book is not kept. A PENDING slab is only a promise (nobody has
+// touched the bytes), so clear() may drop a copy with PENDING slabs; it must not drop one in flight (a
+// RUNNING slab or a pin: a thread is copying outside the lock). Seqs are never reused, so the index from
+// (floor, book) to a copy may go stale: a lookup checks the seq is still in the ring. That makes clear()
+// an O(1) epoch for the index, which the room pays each time it takes the belt back for a read-in.
 
 #include <cstddef>
 #include <cstdint>
@@ -87,9 +89,10 @@ struct llama_moe_lend {
     void pin(uint64_t seq);
     void unpin(uint64_t seq);
 
-    size_t clear();     // drops every copy (returns how many); must not be busy
-    bool   busy() const; // any copy busy: a keep not finished or a restore still reading
-    size_t held() const; // complete copies
+    size_t clear();         // drops every copy (returns how many); nothing may be in flight
+    bool   busy() const;     // any copy busy: a keep not finished or a restore still reading
+    bool   inflight() const; // a thread is copying right now, outside the lock: a RUNNING slab or a pin
+    size_t held() const;     // complete copies
 
 private:
     std::vector<std::vector<uint64_t>> index; // [il][book] -> seq, possibly stale; 0 = none

@@ -35,7 +35,7 @@ void llama_moe_room::desk_locked(std::unique_lock<std::mutex> & lk, llama_moe_ro
         }
     }
     if (sl.il == first) {
-        begin_ubatch_locked();
+        begin_ubatch_locked(lk);
     }
     if (op_floor >= order.size() || order[op_floor] != sl.il || op_group != -1) {
         GGML_ABORT("reading room: floor %d's desk op ran out of order", sl.il);

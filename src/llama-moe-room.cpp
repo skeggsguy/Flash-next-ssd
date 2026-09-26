@@ -139,8 +139,8 @@ llama_moe_room_op * llama_moe_room::op_userdata(llama_moe_stream_layer * sl, int
     return F->ops[group + 1].get();
 }
 
-void llama_moe_room::begin_ubatch_locked() {
-    lend_take_back_locked(); // the belt was lent to the desk while writing: its copies go now
+void llama_moe_room::begin_ubatch_locked(std::unique_lock<std::mutex> & lk) {
+    lend_take_back_locked(lk); // the belt was lent to the desk while writing: its copies go now
     stats.n_ubatches++;
 
     // The last read-in is over: the op running this has drained the GPU. Its parts that are READY or in

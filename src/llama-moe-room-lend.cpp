@@ -150,6 +150,20 @@ bool llama_moe_lend::busy() const {
     return std::any_of(ring.begin(), ring.end(), [](const llama_moe_lend_copy & c) { return c.busy(); });
 }
 
+bool llama_moe_lend::inflight() const {
+    return std::any_of(ring.begin(), ring.end(), [](const llama_moe_lend_copy & c) {
+        if (c.pins > 0) {
+            return true;
+        }
+        for (int32_t i = 0; i < c.n_slabs; i++) {
+            if (c.slab[i] == LLAMA_MOE_LEND_RUNNING) {
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
 size_t llama_moe_lend::held() const {
     return (size_t) std::count_if(ring.begin(), ring.end(), [](const llama_moe_lend_copy & c) { return c.complete(); });
 }

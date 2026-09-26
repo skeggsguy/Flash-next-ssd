@@ -111,7 +111,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             sl->keep[s] = 1;
             sl->demand_slots.push_back(s);
         } else {
-            const uint64_t lent = lender ? lender->lend_find_locked(*sl, e) : 0; // pinned before any keep
+            const uint64_t lent = lender ? lender->lend_find_locked(*sl, e, false) : 0; // pinned before any keep
             int32_t v;
             while ((v = mgr->pick_victim_locked(*sl, sl->keep.data())) < 0) {
                 // every allowed slot is loading; wait for a commit and retry
@@ -275,12 +275,18 @@ void llama_moe_stream_prefetch_hash(ggml_tensor * dst, const ggml_tensor * a, in
 
 // Prefetch the next layer's predicted experts. Never waits and never evicts anything this call
 // needs - a wrong guess costs one slab read, which the drive has headroom for (decode uses ~1.2 of
-// ~6.9 GB/s). Called from the remap op, so it adds no graph split of its own.
+// ~6.9 GB/s). Called from the remap op, so it adds no graph split of its own. With the lent belt
+// (llama-moe-room-lend-ops.cpp) a guess keeps the book it puts back and is copied back from the belt
+// when its book is there; the guesses' keeps are copied out by the next floor's remap op, or by the
+// guess's own worker at its gate, whichever comes first.
 static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, const float * logits) {
     llama_moe_stream_layer & sl = *la->sl_next;
     auto * mgr = sl.mgr;
 
     const uint32_t n = sl.n_expert;
+
+    llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
+    uint32_t n_kept = 0;
 
     la->score.resize(n);
     for (uint32_t e = 0; e < n; e++) {
@@ -309,10 +315,15 @@ static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, cons
         if (v < 0) {
             break;                     // every slot busy; the layer's own remap will demand-load it
         }
+        const uint64_t lent = lender ? lender->lend_find_locked(sl, (int32_t) best, true) : 0; // pinned before any keep
+        const uint64_t save = lender ? lender->lend_keep_locked(sl, v, n_kept) : 0;             // before reserve forgets the old book
         mgr->reserve_slot_locked(sl, (int32_t) best, v);
         sl.slot_pending[v] = (uint8_t) sl.weights.size();
         for (size_t wi = 0; wi < sl.weights.size(); wi++) {
-            mgr->q_spec.push_back({ &sl, (int32_t) best, v, (int32_t) wi, sl.slot_gen[v] });
+            llama_moe_stream_work w = { &sl, (int32_t) best, v, (int32_t) wi, sl.slot_gen[v] };
+            w.lent = lent;
+            w.save = save;
+            mgr->q_spec.push_back(w);
             mgr->cv_work.notify_one();
         }
         mgr->stats.n_preload_issued++;

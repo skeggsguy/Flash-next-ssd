@@ -1,35 +1,44 @@
 // The lent belt's glue (llama-moe-room.h; its bookkeeping is llama-moe-room-lend.h). Between read-ins the
-// reading room's belt sits idle, so it is lent to the desk while the library writes: the writing remap
-// keeps a copy of each book it puts back, and a later miss for one of those books copies it back into its
-// new desk slot (a restore, ~0.1 ms) instead of a trip to the stacks (~0.8 ms). Waves, cold fills and
-// prefetch guesses neither keep nor restore (v1): a short read-in's waves would flush the belt with cold
-// books, and a guess runs asynchronously, outside any op that could wait for its copies.
+// reading room's belt sits idle, so it is lent to the desk while the library writes: the writing remap,
+// and the lookahead's guesses for the next floor that it queues, keep a copy of each book they put back,
+// and a later trip for one of those books (a miss, or a guess) copies it back into its new desk slot (a
+// restore, ~0.1 ms) instead of a trip to the stacks (~0.8 ms). Waves, cold fills and the hash prefetch
+// neither keep nor restore: a short read-in's waves would flush the belt with cold books. The guesses are
+// in because the study writes with the lookahead on, where they are two thirds of what the desk puts back
+// (RR-room: 77 guesses against 36 misses a written token).
 //
 // When the belt is lent and taken back:
 //   borrow     at the first book the writing remap puts back once every room floor of the last read-in
 //              has run (op_floor == order.size()). A remap op is a CPU op, so the scheduler has drained the
 //              GPU before it (docs/wizard-reading-room.md section 2) and no GEMM still reads a part: every
 //              part is handed back at once. The belt is lent only once no cancelled read is still landing.
-//   take back  at the top of begin_ubatch_locked, in the first room floor's desk op (drained too). Nothing
-//              is busy then: a remap op waits for its slots to turn RESIDENT, a slot turns RESIDENT only
-//              after each of its slabs landed, each landing waits for that slab's keep (the gate), and each
-//              restore unpins its copy before its slab counts down, so every keep and restore a remap op
-//              queued is finished before it returns.
+//   take back  at the top of begin_ubatch_locked, in the first room floor's desk op (drained too). Every
+//              keep and restore a remap op queued for itself is finished by then: the op waits for its
+//              slots to turn RESIDENT, a slot turns RESIDENT only after each of its slabs landed, each
+//              landing waits for that slab's keep (the gate), and each restore unpins its copy before its
+//              slab counts down. A guess is not waited for, so its keep or restore may still be queued (its
+//              copy goes with the belt: a queued restore turns into a plain read, a queued keep's slab was
+//              never touched) or in flight (a memcpy outside the lock: the take-back waits for it, bounded
+//              by one slab copy each). The gate then finds no copy and lets the write through.
 //
 // Why the words cannot change:
-//   - the desk's choices are the remap's own (pick_victim, reserve, hotness, LRU); lending only changes
-//     where a miss's bytes come from, so the id planes, and the desk, are the same with lending off;
+//   - the desk's choices are the remap's and the lookahead's own (pick_victim, reserve, hotness, LRU);
+//     lending only changes where a load's bytes come from, so the id planes are the same with lending off
+//     (the desk too, except that a restore lands sooner than a read, which the lookahead's timing already
+//     makes run-dependent);
 //   - a keep copies the old book: its slot's new slab is written only by a work item carrying `save`, and
 //     the gate holds that write until the old slab is copied out (on the direct path the read lands in
 //     staging and the gate sits before tensor_set; on the zero-copy path the read lands in the slot
-//     itself, so the gate sits before the read);
+//     itself, so the gate sits before the read); a LOADING slot is never reserved again, so nothing else
+//     writes it;
 //   - only a complete copy is found, and a found copy is pinned until its restore is copied, so no keep is
-//     ever placed over it;
+//     ever placed over it and no take-back drops it;
 //   - a restore follows the trip protocol: slot_pending counts its slabs down and the slot turns RESIDENT
-//     on the last, which the remap waits for as for any trip;
+//     on the last, which the remap or the desk op waits for as for any trip;
 //   - the GPU never reads a lent copy: only the room's views read the belt, in a room ubatch, and the belt
 //     is taken back before the first of them.
-// Copies run outside the lock; every state change runs under mgr.mtx.
+// Copies run outside the lock; every state change runs under mgr.mtx. One graph thread drives a manager
+// (the remap's per-floor scratch already assumes it); lend_queued is that thread's list.
 
 #include "llama-moe-room.h"
 
@@ -102,22 +111,37 @@ void llama_moe_room::lend_init(bool no_alloc) {
     }
 }
 
-void llama_moe_room::lend_take_back_locked() {
+void llama_moe_room::lend_take_back_locked(std::unique_lock<std::mutex> & lk) {
     if (!lent_out) {
         return;
     }
-    if (lend.busy()) {
-        GGML_ABORT("lent belt: a copy is still being made or read as the room takes the belt back");
+    // Guesses still queued lose their copies with the belt: a queued restore becomes a plain read (its
+    // pins let go); a queued keep is forgotten (its slab is PENDING: nothing has touched the bytes), and
+    // its worker's gate finds no copy. Only a queued item's own worker writes its (slot, slab), so no
+    // copy-out of it can be running.
+    for (auto * q : { &mgr.q_spec, &mgr.q_demand }) {
+        for (auto & w : *q) {
+            if (w.lent) {
+                lend.unpin(w.lent);
+                w.lent = 0;
+                lstats.n_guess_unlent++;
+            }
+        }
     }
+    // a guess in flight: a copy-out (RUNNING) or a restore (a pin) is a memcpy outside the lock; wait
+    mgr.cv_done.wait(lk, [&] { return !lend.inflight(); });
+
     // POISON: a copy the room's parts now overwrite must never be found again; 0xFF makes one that is
     // found anyway fail the file check on its restore, and changes the words
-    if (poison) {
-        for (const auto & c : lend.ring) {
+    for (const auto & c : lend.ring) {
+        lstats.n_kept_forgotten += !c.complete();
+        if (poison) {
             memset(belt_at(*this, c.offs), 0xFF, c.bytes);
         }
     }
     lstats.n_cleared += (int64_t) lend.clear();
     lstats.n_taken_back++;
+    lend_queued.clear();
     lent_out = false;
 }
 
@@ -138,8 +162,8 @@ static bool lend_borrow_locked(llama_moe_room & room) {
     return true;
 }
 
-uint64_t llama_moe_room::lend_find_locked(const llama_moe_stream_layer & sl, int32_t book) {
-    lstats.n_miss++;
+uint64_t llama_moe_room::lend_find_locked(const llama_moe_stream_layer & sl, int32_t book, bool guess) {
+    (guess ? lstats.n_guess : lstats.n_miss)++;
     const llama_moe_lend_copy * c = lent_out ? lend.find(sl.il, book) : nullptr;
     if (c == nullptr) {
         return 0;
@@ -148,7 +172,7 @@ uint64_t llama_moe_room::lend_find_locked(const llama_moe_stream_layer & sl, int
     for (size_t wi = 0; wi < sl.weights.size(); wi++) {
         lend.pin(c->seq);
     }
-    lstats.n_lent++;
+    (guess ? lstats.n_guess_lent : lstats.n_lent)++;
     return c->seq;
 }
 
@@ -167,7 +191,8 @@ uint64_t llama_moe_room::lend_keep_locked(const llama_moe_stream_layer & sl, int
     llama_moe_lend_keep why;
     const llama_moe_lend_copy * c = lend.keep(sl.il, sl.slot_expert[slot], slot, F.stride, (int32_t) sl.weights.size(), why);
     if (c == nullptr) {
-        lstats.n_not_kept += why == LLAMA_MOE_LEND_BLOCKED; // HELD: its copy is already on the belt
+        lstats.n_not_kept      += why == LLAMA_MOE_LEND_BLOCKED; // HELD: its copy is already on the belt
+        lstats.n_not_kept_busy += why == LLAMA_MOE_LEND_BLOCKED;
         return 0;
     }
     n_kept++;
@@ -208,7 +233,10 @@ void llama_moe_room::lend_help_locked(std::unique_lock<std::mutex> & lk) {
 void llama_moe_room::lend_gate_locked(std::unique_lock<std::mutex> & lk, const llama_moe_stream_work & w) {
     for (;;) {
         const llama_moe_lend_copy * c = lend.at(w.save);
-        GGML_ASSERT(c != nullptr && c->il == w.sl->il && c->slot == w.slot); // busy until copied: never dropped
+        if (c == nullptr) {
+            return; // the room took the belt back while this guess was queued or in flight: nothing to keep
+        }
+        GGML_ASSERT(c->il == w.sl->il && c->slot == w.slot); // a placement never drops a copy still copying
         if (c->slab[w.widx] == LLAMA_MOE_LEND_DONE) {
             return;
         }

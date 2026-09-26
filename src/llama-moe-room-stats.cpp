@@ -14,12 +14,14 @@
 // or the room took the belt back. It starts "moe stream: lent belt:", never "room" or "drives", which the
 // study's runner matches (runner/roomstats.py):
 //
-//   moe stream: lent belt: N books held | X of Y misses from the belt (Z%) | copied in I MiB, out O MiB | T ms a book | not kept K | taken back B
+//   moe stream: lent belt: N books held | X of Y misses from the belt (Z%) | copied in I MiB, out O MiB | T ms a book | not kept K (J busy) | guesses G, H from the belt | taken back B
 //
 // held = complete copies on the belt at the end of the window; Y = the writing remap's misses, X = those
 // copied back from the belt instead of read (each still a desk miss in stats line 1); copied in = keeps,
-// out = copies back; ms a book = copying one book back, slab by slab; not kept = books put back that the
-// call's cap or a busy copy kept off the belt; taken back = read-ins that took the belt back.
+// out = copies back (misses and guesses); ms a book = copying one book back, slab by slab; not kept =
+// books put back that the call's cap or a busy copy (J of them) kept off the belt; guesses = the
+// lookahead's loads, H of them copied back from the belt instead of read; taken back = read-ins that
+// took the belt back.
 
 #include "llama-moe-room.h"
 
@@ -50,15 +52,18 @@ void llama_moe_room::dump_stats_locked(int64_t dt_us) {
 
     const llama_moe_lend_stats & l = lstats;
     const llama_moe_lend_stats & q = lstats_prev;
-    if (lend_on && (l.n_miss > q.n_miss || l.n_kept > q.n_kept || l.n_taken_back > q.n_taken_back)) {
+    if (lend_on && (l.n_miss > q.n_miss || l.n_guess > q.n_guess || l.n_kept > q.n_kept || l.n_taken_back > q.n_taken_back)) {
         const int64_t d_miss = l.n_miss - q.n_miss;
         const int64_t d_lent = l.n_lent - q.n_lent;
+        const int64_t d_back = d_lent + l.n_guess_lent - q.n_guess_lent; // books copied back, either way
         LLAMA_LOG_WARN("%s: moe stream: lent belt: %5zu books held | %5" PRId64 " of %5" PRId64 " misses from the belt (%5.1f%%)"
-                       " | copied in %7.1f MiB, out %7.1f MiB | %6.3f ms a book | not kept %4" PRId64 " | taken back %3" PRId64 "\n",
+                       " | copied in %7.1f MiB, out %7.1f MiB | %6.3f ms a book | not kept %4" PRId64 " (%3" PRId64 " busy)"
+                       " | guesses %5" PRId64 ", %5" PRId64 " from the belt | taken back %3" PRId64 "\n",
                 "maybe_dump_stats_locked", lend.held(), d_lent, d_miss, d_miss > 0 ? 100.0*d_lent/d_miss : 0.0,
                 (l.n_bytes_in - q.n_bytes_in)/1048576.0, (l.n_bytes_out - q.n_bytes_out)/1048576.0,
-                d_lent > 0 ? (l.t_restore_us - q.t_restore_us)/1000.0/d_lent : 0.0,
-                l.n_not_kept - q.n_not_kept, l.n_taken_back - q.n_taken_back);
+                d_back > 0 ? (l.t_restore_us - q.t_restore_us)/1000.0/d_back : 0.0,
+                l.n_not_kept - q.n_not_kept, l.n_not_kept_busy - q.n_not_kept_busy,
+                l.n_guess - q.n_guess, l.n_guess_lent - q.n_guess_lent, l.n_taken_back - q.n_taken_back);
     }
     lstats_prev = lstats;
 }
@@ -71,11 +76,14 @@ void llama_moe_room::print_stats_locked() const {
             stats.n_bytes_cancelled/1073741824.0);
     if (lend_on) {
         const llama_moe_lend_stats & l = lstats;
+        const int64_t back = l.n_lent + l.n_guess_lent;
         LLAMA_LOG_WARN("%s: moe stream: lent belt = %" PRId64 " books kept, %" PRId64 " of %" PRId64 " writing misses from "
-                       "the belt (%.1f%%), %.2f GiB copied in, %.2f GiB out, %.3f ms a book, %" PRId64 " not kept, "
-                       "taken back %" PRId64 " times (%" PRId64 " copies dropped)\n",
+                       "the belt (%.1f%%), %" PRId64 " of %" PRId64 " guesses from the belt, %.2f GiB copied in, %.2f GiB out, "
+                       "%.3f ms a book, %" PRId64 " not kept (%" PRId64 " busy), taken back %" PRId64 " times (%" PRId64
+                       " copies dropped, of them %" PRId64 " keeps still pending; %" PRId64 " queued guesses read instead)\n",
                 "print_stats", l.n_kept, l.n_lent, l.n_miss, l.n_miss > 0 ? 100.0*l.n_lent/l.n_miss : 0.0,
-                l.n_bytes_in/1073741824.0, l.n_bytes_out/1073741824.0, l.n_lent > 0 ? l.t_restore_us/1000.0/l.n_lent : 0.0,
-                l.n_not_kept, l.n_taken_back, l.n_cleared);
+                l.n_guess_lent, l.n_guess, l.n_bytes_in/1073741824.0, l.n_bytes_out/1073741824.0,
+                back > 0 ? l.t_restore_us/1000.0/back : 0.0, l.n_not_kept, l.n_not_kept_busy,
+                l.n_taken_back, l.n_cleared, l.n_kept_forgotten, l.n_guess_unlent);
     }
 }

@@ -202,7 +202,7 @@ struct llama_moe_stream_work {
 
     size_t   ring_offs = 0; // belt only: where on the belt this slab goes
 
-    // the lent belt (llama-moe-room.h), writing's remap only
+    // the lent belt (llama-moe-room.h): the writing remap's trips and the lookahead's guesses
     uint64_t lent = 0; // a restore: copy this slab back from the lent belt's copy with this seq, no read
     uint64_t save = 0; // the slot's old book is being kept (that copy's seq): its slab is copied out first
 };
