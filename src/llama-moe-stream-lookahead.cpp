@@ -4,6 +4,7 @@
 
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -88,6 +89,11 @@ static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, cons
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1: a small batch (the apprentice's check, 2..16 tokens) prefetches the
 // next floor's predicted books for every token, not only the last: rank 1 of each token (the last
 // token first), then rank 2, and so on, each book once. Unset: the last token only, as before.
+uint32_t llama_moe_stream_lookahead_all_ranks_env() {
+    const char * s = getenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS");
+    return s != nullptr ? (uint32_t) std::max(0, atoi(s)) : 0;
+}
+
 bool llama_moe_stream_lookahead_all_env() {
     const char * s = getenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL");
     return s != nullptr && *s != '\0' && strcmp(s, "0") != 0;
@@ -101,8 +107,12 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
     }
     std::vector<uint8_t> seen(la->sl_next->n_expert, 0);
     std::vector<int32_t> books;
+    const uint32_t ranks = la->all_ranks > 0 ? std::min(la->all_ranks, la->top_k) : la->top_k;
     for (uint32_t k = 0; k < la->top_k; k++) {
         for (int64_t t = n_tok - 1; t >= 0; t--) {
+            if (t != n_tok - 1 && k >= ranks) {
+                continue; // an earlier token: only its most likely books
+            }
             const int32_t e = picks[(size_t) t][k];
             if (!seen[e]) {
                 seen[e] = 1;

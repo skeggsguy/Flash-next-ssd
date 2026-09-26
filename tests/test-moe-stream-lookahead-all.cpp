@@ -86,7 +86,22 @@ int main(int argc, char ** argv) {
         pre_on = preloads(m_on);
         llama_model_free(m_on);
     }
+    std::vector<float> narrow;
+    int64_t pre_narrow = 0;
+    setenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS", "3", 1);
+    llama_model * m_narrow = load(c);
+    check(m_narrow != nullptr, "streamed model (every token, 3 books each before the last) loaded");
+    if (m_narrow) {
+        check(run_checks(m_narrow, narrow), "every token, 3 ranks: the checks ran");
+        pre_narrow = preloads(m_narrow);
+        llama_model_free(m_narrow);
+    }
+    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS");
     unsetenv(g_all_env);
+
+    check(same(narrow, ref), "every token, 3 ranks: the same logits as no streaming");
+    check(pre_off < pre_narrow && pre_narrow < pre_on, "3 ranks sit between last token only and every rank (" +
+            std::to_string(pre_off) + " < " + std::to_string(pre_narrow) + " < " + std::to_string(pre_on) + ")");
 
     check(nonzero(ref), "the reference logits are not all zero");
     check(same(off, ref), "last token only: the same logits as no streaming");
@@ -94,6 +109,7 @@ int main(int argc, char ** argv) {
     check(same(on, off), "every token: the same logits as last token only");
     check(pre_on > pre_off, "every token issued more prefetches (" + std::to_string(pre_on) + " against " +
             std::to_string(pre_off) + ")");
-    printf("prefetches issued: last token only %lld, every token %lld\n", (long long) pre_off, (long long) pre_on);
+    printf("prefetches issued: last token only %lld, every token 3 ranks %lld, every token %lld\n",
+            (long long) pre_off, (long long) pre_narrow, (long long) pre_on);
     return finish();
 }

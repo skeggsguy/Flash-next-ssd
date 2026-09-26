@@ -295,6 +295,9 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL set and not "0": a small batch (2..16 tokens, the apprentice's check)
 // prefetches the next floor's predicted books for every token, not only the last. Read at model load.
 bool llama_moe_stream_lookahead_all_env();
+// LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS=N: with the above, the batch's last token still prefetches its top_k
+// and every earlier token only its N most likely books (unset or 0: top_k for every token)
+uint32_t llama_moe_stream_lookahead_all_ranks_env();
 
 // Identity on the ubatch token ids, with a side effect: start the loads for every hash-routed
 // layer. The hash layers take their tid2eid get_rows index from this op's output, which is what

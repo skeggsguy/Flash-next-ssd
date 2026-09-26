@@ -70,6 +70,7 @@ struct llama_moe_stream_lookahead {
     llama_moe_stream_layer * sl_next = nullptr; // layer to prefetch into, null = plain remap
     uint32_t                 top_k   = 0;       // how many predicted experts to fetch
     bool                     all     = false;   // LLAMA_MOE_STREAM_LOOKAHEAD_ALL: every token of a small batch
+    uint32_t                 all_ranks = 0;     // LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS: books per earlier token (0: top_k)
     ggml_tensor *            bias_src = nullptr;// next layer's exp_probs_b, may be null
     bool                     bias_read = false;
     std::vector<float>       bias;              // host copy of bias_src, filled on first use
