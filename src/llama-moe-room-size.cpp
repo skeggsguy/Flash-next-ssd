@@ -82,6 +82,14 @@ static llama_moe_room_layout resolve_asked(const llama_moe_room_request & req, c
                            b.desk_slots, b.n_expert);
         return lay;
     }
+    if (b.ubatch > 0 && b.ubatch < b.sweep_min_tokens) {
+        // the room takes a batch of sweep_min_tokens and up, and a read-in is cut into batches of -ub
+        // first (llama.cpp's own default is 512): a batch that can never reach it is a room never used
+        lay.error = format("--moe-stream-room: reading in comes in batches of %u tokens (-ub), fewer than the %u the "
+                           "reading room takes, so the room would never be used and would only shrink the desk; raise "
+                           "-ub to %u or more, or run with --moe-stream-room 0", b.ubatch, b.sweep_min_tokens, b.sweep_min_tokens);
+        return lay;
+    }
 
     // The room shrinks the desk, and a smaller desk leaves more books per floor for the room to hold,
     // so a room sized in floors is the fixed point of the two. Starting from the whole budget the desk

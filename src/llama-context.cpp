@@ -287,7 +287,9 @@ llama_context::llama_context(
                 __func__, model.moe_stream()->n_slots, cparams.n_ubatch);
 
         // the reading room only takes read-ins of sweep_min_tokens and up, and a read-in is cut into
-        // ubatches first: below that the room is carved out of the desk and never used
+        // ubatches first: below that the room is carved out of the desk and never used. The load sizes
+        // the room by the batch it is told (moe_stream_room_ubatch); this catches a caller that told it
+        // nothing, or a context whose batch is not the one the model was told
         const llama_moe_room_layout & room = model.moe_stream()->room_layout;
         if (room.on && cparams.n_ubatch < room.sweep_min_tokens && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
             LLAMA_LOG_WARN("%s: reading room: -ub %u is below the %u tokens the room takes, so it will never be "

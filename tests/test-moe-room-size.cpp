@@ -214,11 +214,12 @@ int main(int argc, char ** argv) {
         // Each thing that stops an asked-for room: the default one leaves today's desk, room off, and says
         // why in a warning, never an error (an error stops the load)
         const llama_moe_room_books lib = library_books();
-        llama_moe_room_books arch = lib, whole = lib, none = lib, tiny = lib;
+        llama_moe_room_books arch = lib, whole = lib, none = lib, tiny = lib, ub512 = lib;
         arch.refusal     = "--moe-stream-room: llama4 weights each book's input before the expert maths";
         whole.desk_slots = whole.n_expert;
         none.book_bytes  = 0;
         tiny.stride_min  = 64*1024; // 1.25 floors of the largest books hold far more than 1024 of the smallest
+        ub512.ubatch     = 512;     // llama.cpp's own default -ub, under the library's 1,024-token threshold
         struct refused { const char * what; llama_moe_room_books books; int32_t parts; const char * reason; };
         for (const refused & r : std::vector<refused>{
                 { "the arch or the devices",  arch,          4,  "llama4 weights each book's input" },
@@ -226,6 +227,7 @@ int main(int argc, char ** argv) {
                 { "a desk that seats every book", whole,     4,  "the desk already holds every book" },
                 { "no streamed books",        none,          4,  "no streamed books" },
                 { "more than 1024 records",   tiny,          4,  "but the GPU indexes at most 1024" },
+                { "a batch under the threshold", ub512,      4,  "batches of 512 tokens" },
                 { "parts 0 through the API",  lib,           0,  "must be between 1 and 16 (got 0)" } }) {
             const llama_moe_room_layout asked = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0, r.parts), r.books);
             const llama_moe_room_layout dflt  = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0, r.parts), r.books);
@@ -244,6 +246,50 @@ int main(int argc, char ** argv) {
         // any size asked for refuses on the arch alone
         t.assert_true("GiB asked for refuses", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_GIB, 1.0), arch).error, "llama4"));
         t.assert_true("floors asked for refuse", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_FLOORS, 1.0), arch).error, "llama4"));
+    });
+
+    t.test("a batch that can never reach the threshold makes no room", [](testing & t) {
+        // The room takes a reading-in batch of sweep_min_tokens and up (1,024 on the library), and a read-in
+        // is cut into batches of -ub first. llama.cpp's own default is -ub 512, so a default user would have
+        // ~1.1 GiB carved out of the desk for a room that never runs: the default room stays off and says
+        // so, a room asked for refuses (the same class as a desk that seats every book: the room would only
+        // shrink the desk). 0 is "not known" (an API caller that did not say) and leaves the old rule: the
+        // room is made and the context warns when its batch turns out too small.
+        llama_moe_room_books b = library_books();
+        for (const uint32_t ub : { 0u, 1024u, 4096u }) {
+            b.ubatch = ub;
+            const std::string w = "-ub " + std::to_string(ub);
+            t.assert_true(w + ": the default room is on", llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0), b).on);
+            t.assert_true(w + ": auto is on", llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0), b).on);
+        }
+        for (const uint32_t ub : { 1u, 512u, 1023u }) {
+            b.ubatch = ub;
+            const std::string w = "-ub " + std::to_string(ub);
+            const llama_moe_room_layout dflt = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0), b);
+            t.assert_true(w + ": the default room is off, and loads", !dflt.on && dflt.error.empty());
+            t.assert_equal(w + ": the whole desk", b.desk_slots, dflt.desk_slots);
+            t.assert_true(w + ": the warning names the batch and the threshold",
+                    contains(dflt.warning, "batches of " + std::to_string(ub) + " tokens (-ub), fewer than the 1024"));
+            t.assert_true(w + ": the warning says what to do", contains(dflt.warning, "raise -ub to 1024 or more"));
+            for (const int32_t mode : { LLAMA_MOE_ROOM_AUTO, LLAMA_MOE_ROOM_GIB, LLAMA_MOE_ROOM_FLOORS }) {
+                const llama_moe_room_layout asked = llama_moe_room_resolve(request(mode, 1.0), b);
+                t.assert_true(w + ": asked for (mode " + std::to_string(mode) + ") refuses",
+                        !asked.on && contains(asked.error, "the room would never be used"));
+            }
+            // "reading room:" is the startup line's mark, and the runner takes the first line that carries
+            // it as the room, so no warning may carry it
+            t.assert_true(w + ": the warning is not a startup line", !contains(dflt.warning, "reading room:"));
+        }
+        // the rung's own threshold (LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS) is what the batch is held against
+        b.ubatch = 512;
+        b.sweep_min_tokens = 234;
+        t.assert_true("a lowered threshold under -ub 512 keeps the room", llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0), b).on);
+        b.sweep_min_tokens = 513;
+        t.assert_true("a raised one above it does not", !llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0), b).on);
+        // room 0 has nothing to say about the batch
+        b.sweep_min_tokens = 1024;
+        const llama_moe_room_layout off = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_OFF, 0.0), b);
+        t.assert_true("room 0 at -ub 512", !off.on && off.error.empty() && off.warning.empty());
     });
 
     return t.summary();

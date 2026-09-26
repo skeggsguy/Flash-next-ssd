@@ -1322,6 +1322,9 @@ struct cmd_params_instance {
             mparams.moe_stream_room_mode  = moe_stream_room_mode;
             mparams.moe_stream_room_value = moe_stream_room_value;
             mparams.moe_stream_room_parts = moe_stream_room_parts;
+            // the batch this instance reads in with, so the room is only carved out where it can be
+            // used (equal_mparams reloads the model when -ub changes for this reason)
+            mparams.moe_stream_room_ubatch = (uint32_t) std::max(1, n_ubatch <= 0 ? n_batch : std::min(n_batch, n_ubatch));
         }
 
         if (n_cpu_moe <= 0) {
@@ -1369,7 +1372,9 @@ struct cmd_params_instance {
                main_gpu == other.main_gpu && tensor_split == other.tensor_split &&
                load_mode == other.load_mode && lazy_mode == other.lazy_mode &&
                devices == other.devices && no_host == other.no_host &&
-               vec_tensor_buft_override_equal(tensor_buft_overrides, other.tensor_buft_overrides);
+               vec_tensor_buft_override_equal(tensor_buft_overrides, other.tensor_buft_overrides) &&
+               // a streamed model's desk is cut for the reading room by the batch it reads in with
+               (!moe_stream || (n_batch == other.n_batch && n_ubatch == other.n_ubatch));
     }
 
     llama_context_params to_llama_cparams() const {

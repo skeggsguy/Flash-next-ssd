@@ -52,6 +52,7 @@ struct llama_moe_room_books {
     uint32_t n_expert      = 0; // books per floor
     uint32_t n_expert_used = 0; // books a word reads per floor (the slip's length)
     uint32_t sweep_min_tokens = 0; // read-ins of at least this many tokens use the room
+    uint32_t ubatch        = 0; // the reading-in batch the contexts will use (-ub), 0 = not known
 
     // non-empty: why this model cannot take the room at all, whatever its size (its arch's expert
     // maths, or its floors on different devices), in plain words

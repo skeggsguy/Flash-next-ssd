@@ -376,6 +376,14 @@ extern "C" {
         float        moe_stream_room_value;
         int32_t      moe_stream_room_parts;
 
+        // The reading-in batch (llama_context_params::n_ubatch, after its clamp to n_batch) the contexts
+        // on this model will use, or 0 for not known. The room takes a batch of at least its threshold
+        // (about 20 slips per book: 1,024 tokens for a 512-book, 10-read model), so a batch that can never
+        // reach it would leave the room carved out of the desk and never used: the default room then stays
+        // off with a warning, and a room asked for refuses to load. The desk is sized at model load, before
+        // any context exists, which is why the model has to be told.
+        uint32_t     moe_stream_room_ubatch;
+
         bool     moe_stream_direct;     // use O_DIRECT for expert reads (bypass page cache); falls back if unsupported
 
         // Keep the booleans together to avoid misalignment during copy-by-value.

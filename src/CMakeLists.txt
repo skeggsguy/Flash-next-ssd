@@ -43,6 +43,7 @@ set(LLAMA_CORE_SOURCES
     llama-model.cpp
     llama-moe-room.cpp
     llama-moe-room-belt.cpp
+    llama-moe-room-load.cpp
     llama-moe-room-ops.cpp
     llama-moe-room-plan.cpp
     llama-moe-room-stats.cpp

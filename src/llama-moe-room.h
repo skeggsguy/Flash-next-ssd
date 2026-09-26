@@ -1,7 +1,8 @@
 #pragma once
 
 // The reading room, manager side: the book manager's (llama_moe_stream, llama-moe-stream.h) belt of
-// books for long read-ins. The sizing arithmetic is llama-moe-room-size.h, the belt's bookkeeping
+// books for long read-ins. The sizing at load (the books measured from the file, the refusals) is
+// llama-moe-room-load.cpp and its arithmetic llama-moe-room-size.h, the belt's bookkeeping
 // llama-moe-room-belt.h, a floor's plan and id planes llama-moe-room-plan.h, the CPU ops that drive all
 // of this from the graph llama-moe-room-ops.cpp, and the graph itself llama-graph-moe-room.cpp.
 //
@@ -40,11 +41,12 @@ struct llama_moe_stream_work;
 // choice at create_tensor), or null for a floor that is not a repeating layer
 using llama_moe_room_floor_buft = std::function<ggml_backend_buffer_type_t(int il, ggml_tensor * weight)>;
 
-// Sizes the room for a model about to load, from the desk's slots with the room off: the layout's
-// desk_slots are what the desk keeps. Logs the startup line (and any warning) in plain words. When the
-// room cannot be made - an arch whose expert maths a split floor would change, floors whose desks sit on
-// different devices, or a size the arithmetic refuses - a room asked for throws std::runtime_error with
-// the plain-words reason, and the default one is off with a warning (llama_moe_room_resolve).
+// Sizes the room for a model about to load (llama-moe-room-load.cpp), from the desk's slots with the room
+// off: the layout's desk_slots are what the desk keeps. Logs the startup line (and any warning) in plain
+// words. When the room cannot be made - an arch whose expert maths a split floor would change, floors
+// whose desks sit on different devices, a reading-in batch (moe_stream_room_ubatch) that can never reach
+// the room's threshold, or a size the arithmetic refuses - a room asked for throws std::runtime_error
+// with the plain-words reason, and the default one is off with a warning (llama_moe_room_resolve).
 llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & params, llm_arch arch,
         const llama_hparams & hparams, const llama_model_loader & ml, uint32_t n_slots,
         const llama_moe_room_floor_buft & floor_buft);

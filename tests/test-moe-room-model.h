@@ -33,6 +33,7 @@ struct config {
     int32_t  room_mode  = LLAMA_MOE_ROOM_AUTO;
     float    room_value = 0.0f;
     int32_t  parts      = 4;
+    uint32_t ubatch     = 0;     // the batch the model is told its contexts read in with (0 = not said)
     bool     direct     = false; // --moe-stream-direct: the study's path, staging + tensor_set onto the belt
     std::string alt;             // --moe-stream-alt-path: two runners, a byte-identical copy
 };
@@ -79,6 +80,7 @@ llama_model * load(const config & c) {
     mp.moe_stream_room_mode  = c.room_mode;
     mp.moe_stream_room_value = c.room_value;
     mp.moe_stream_room_parts = c.parts;
+    mp.moe_stream_room_ubatch = c.ubatch;
     mp.moe_stream_direct     = c.direct;
     mp.moe_stream_alt_path   = c.alt.empty() ? nullptr : c.alt.c_str();
     return llama_model_load_from_file(g_path.c_str(), mp);

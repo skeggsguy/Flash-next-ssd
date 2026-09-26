@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <sstream>
 #include <unordered_set>
@@ -291,6 +292,18 @@ static void test(void) {
         assert(common_model_params_to_llama(room_params).moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
         assert(llama_model_default_params().moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
         assert(llama_model_default_params().moe_stream_room_parts == 4);
+        // the model is told the batch its contexts read in with, as llama_context will clamp it (-ub to -b),
+        // so a default -ub 512 under the library's 1,024-token threshold leaves the default room off rather
+        // than carving a room out of the desk that never runs; the API's own default is 0, not known
+        assert(llama_model_default_params().moe_stream_room_ubatch == 0);
+        assert(common_model_params_to_llama(room_params).moe_stream_room_ubatch == 512);
+        for (const auto & [b, ub, want] : std::vector<std::tuple<const char *, const char *, uint32_t>>{
+                { "4096", "4096", 4096u }, { "4096", "1024", 1024u }, { "256", "512", 256u } }) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "-b", b, "-ub", ub};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(common_model_params_to_llama(p).moe_stream_room_ubatch == want);
+        }
         struct room_case { const char * arg; int32_t mode; float value; };
         for (const room_case & rc : std::vector<room_case>{
                 { "auto",  LLAMA_MOE_ROOM_AUTO,   0.0f  },

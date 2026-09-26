@@ -10,9 +10,9 @@
 //   default   the fixtures' own threshold, 160 (20 slips per book): 320 tokens at -ub 160 take the room,
 //             159 tokens take waves
 //   on by default  llama_model_default_params() takes auto's room where it fits (B through it, byte for
-//             byte), and where the room is refused (40 slots; floors on two devices) loads with it off and
-//             a warning, while an asked-for auto stops the load; a load without streaming says nothing
-//             about the room and makes none
+//             byte), and where the room is refused (40 slots; floors on two devices; a batch under the
+//             threshold) loads with it off and a warning, while an asked-for auto stops the load; a load
+//             without streaming says nothing about the room and makes none
 //   last row  B asking for its last row only, as a server does: the last floor takes waves beside the room
 //   empty     a desk of 62 of 64 books, so two of the four parts hold nothing (all-skip links)
 //   desks     prompt B after A and after C on two fresh models: different desks, the same bytes
@@ -114,6 +114,26 @@ int main(int argc, char ** argv) {
         g_room_log.clear();
         check(load(small_auto) == nullptr && g_room_log.find("takes the whole desk budget") != std::string::npos,
                 "auto asked for, 40 slots: the load stops, saying why");
+
+        // A batch that can never reach the threshold (35 here, 1,024 on the library against llama.cpp's own
+        // -ub 512): told so, the default room stays off and says why, a room asked for stops the load, and
+        // a batch that reaches it keeps the room. Not told (0, every other scenario), the room is made.
+        config low = dflt, low_auto = room4, told = dflt;
+        low.ubatch = low_auto.ubatch = 34;
+        told.ubatch = 35;
+        g_room_log.clear();
+        m = load(low);
+        check(m != nullptr && room_of(m) == nullptr && m->moe_stream()->n_slots == room4.slots &&
+              g_room_log.find("reading room: off;") < g_room_log.find("on by default but cannot be made here") &&
+              g_room_log.find("batches of 34 tokens (-ub), fewer than the 35") != std::string::npos,
+              "on by default, -ub 34: loads with the room off and the whole desk, saying why");
+        llama_model_free(m);
+        g_room_log.clear();
+        check(load(low_auto) == nullptr && g_room_log.find("the room would never be used") != std::string::npos,
+                "auto asked for, -ub 34: the load stops, saying why");
+        m = load(told);
+        check(m != nullptr && room_of(m) != nullptr, "on by default, -ub 35: the room is made");
+        llama_model_free(m);
 
         // floors on two devices: at -ngl 2 the fixture's floor 0 is on the CPU and floor 1 on the GPU
         if (llama_supports_gpu_offload()) {
