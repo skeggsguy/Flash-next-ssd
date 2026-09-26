@@ -119,8 +119,10 @@ run_result run(env & e, const graph_case & gc, bool fusion, uint32_t seed) {
 // fused vs unfused, byte for byte; the named counter fired `expect` times (0: must not merge)
 void check_case(testing & t, env & e, const graph_case & gc, const std::string & label, uint64_t expect) {
     for (uint32_t seed : { 1u, 2u, 3u }) {
-        const run_result off = run(e, gc, false, seed);
+        // merged first: an output the merged kernel failed to write then holds the previous seed's
+        // values, not the ones the unmerged run is about to write
         const run_result on  = run(e, gc, true,  seed);
+        const run_result off = run(e, gc, false, seed);
 
         t.assert_true(gc.name + ": outputs nonzero", on.nonzero);
         t.assert_true(gc.name + ": same bytes merged and unmerged",
@@ -143,6 +145,16 @@ void fill_f32(ggml_tensor * t, std::mt19937 & rng, float lo, float hi) {
         v[i] = i % 7 == 3 ? edges[(i/7) % 8] : u(rng);
     }
     ggml_backend_tensor_set(t, v.data(), 0, ggml_nbytes(t));
+}
+
+// a second reader of an intermediate, built after the chain: the chain must then not merge, since the
+// merged kernel never writes its intermediates (an output flag alone is no test here: the allocator
+// may still let the next op overwrite a flagged tensor in place)
+ggml_tensor * also_read(ggml_context * ctx_g, ggml_cgraph * gf, ggml_tensor * t) {
+    ggml_tensor * r = ggml_scale(ctx_g, t, 3.0f);
+    ggml_set_output(r);
+    ggml_build_forward_expand(gf, r);
+    return r;
 }
 
 // ---- P8: the command-buffer split ------------------------------------------
@@ -168,6 +180,43 @@ void test_split(testing & t) {
     t.assert_equal("split 0 stays", 0, ggml_metal_fusion_fn_split(gf, 0));
     t.assert_equal("split at the end stays", 12, ggml_metal_fusion_fn_split(gf, 12));
     ggml_free(ctx);
+}
+
+// ---- P4: hc mix's SCALE(1/4) + SILU ----------------------------------------
+
+const char * LABEL_P4 = "SCALE+UNARY";
+
+// lo [ne0, n] (the down GEMM's output) -> scale(1/4) -> silu; neg 1: the SCALE is also read by another
+// op, neg 2: a SIGMOID where the model has SILU. The model's 1/4 is a power of two, which makes the product
+// exact; a scale of 1/3 with a bias is what shows the SCALE step rounds exactly where its kernel does.
+graph_case case_scale_silu(int64_t ne0, int64_t nt, int neg, float scale = 0.25f, float bias = 0.0f) {
+    graph_case gc;
+    gc.name = "scale_silu ne0=" + std::to_string(ne0) + " n=" + std::to_string(nt) + " neg=" + std::to_string(neg) +
+              " scale=" + std::to_string(scale) + " bias=" + std::to_string(bias);
+    gc.build = [=](ggml_context * ctx_in, ggml_context * ctx_g, ggml_cgraph * gf, std::vector<ggml_tensor *> & outs) {
+        ggml_tensor * lo  = ggml_new_tensor_2d(ctx_in, GGML_TYPE_F32, ne0, nt);
+        ggml_tensor * s   = ggml_scale_bias(ctx_g, lo, scale, bias);
+        ggml_tensor * out = neg == 2 ? ggml_sigmoid(ctx_g, s) : ggml_silu(ctx_g, s);
+        ggml_set_output(out);
+        outs.push_back(out);
+        ggml_build_forward_expand(gf, out);
+        if (neg == 1) {
+            outs.push_back(also_read(ctx_g, gf, s));
+        }
+    };
+    gc.fill = [](ggml_tensor * t, std::mt19937 & rng) { fill_f32(t, rng, -30.0f, 30.0f); };
+    return gc;
+}
+
+void test_scale_silu(testing & t, env & e) {
+    for (int64_t nt : { 1, 4, 6, 512 }) {
+        check_case(t, e, case_scale_silu(320, nt, 0), LABEL_P4, 1);
+    }
+    check_case(t, e, case_scale_silu(322, 3, 0), LABEL_P4, 1); // not a multiple of 4: the scalar kernels
+    check_case(t, e, case_scale_silu(320, 6, 0, 1.0f/3.0f, 0.5f), LABEL_P4, 1);
+    check_case(t, e, case_scale_silu(322, 3, 0, 1.0f/3.0f, 0.5f), LABEL_P4, 1);
+    check_case(t, e, case_scale_silu(320, 6, 1), LABEL_P4, 0);
+    check_case(t, e, case_scale_silu(320, 6, 2), LABEL_P4, 0);
 }
 
 } // namespace
@@ -205,6 +254,7 @@ int main(int argc, char ** argv) {
     printf("GGML_METAL_FUSION_FN=%s\n", e.fn ? "1" : "0");
 
     t.test("split", test_split);
+    t.test("P4 scale+silu", [&](testing & t) { test_scale_silu(t, e); });
 
     ggml_backend_sched_free(e.sched);
     ggml_backend_free(e.cpu);

@@ -3,6 +3,11 @@
 constant short FC_unary_op [[function_constant(FC_UNARY + 0)]];
 constant bool  FC_unary_cnt[[function_constant(FC_UNARY + 1)]];
 
+// fix 2 (P4, GGML_METAL_FUSION_FN): a SCALE merged in front of the op (args.scale, args.bias). Left
+// unset - every pipeline but the merged one - it is off.
+constant bool  FC_unary_pre_set [[function_constant(FC_FUSION_FN + 0)]];
+constant bool  FC_unary_pre = is_function_constant_defined(FC_unary_pre_set) && FC_unary_pre_set;
+
 template <typename T0, typename T, typename TC>
 kernel void kernel_unary_impl(
         constant ggml_metal_kargs_unary & args,
@@ -45,7 +50,11 @@ kernel void kernel_unary_impl(
             }
         }
 
-        const TC x = (TC) src0_ptr[i0];
+        const TC x0 = (TC) src0_ptr[i0];
+
+        // the merged SCALE, as its own kernel computes it (FC_OP == OP_UNARY_NUM_SCALE below) and
+        // rounds it to T on the store
+        const TC x = FC_unary_pre ? (TC) (T) (args.scale * x0 + args.bias) : x0;
 
         if (FC_OP == OP_UNARY_NUM_SCALE) {
             dst_ptr[i0] = (T) (args.scale * x + args.bias);

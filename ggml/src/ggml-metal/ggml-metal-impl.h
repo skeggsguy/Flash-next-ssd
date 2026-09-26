@@ -118,6 +118,7 @@
 #define FC_GATED_DELTA_NET             1600
 #define FC_NORM                        1700
 #define FC_TOPK_MOE                    1800
+#define FC_FUSION_FN                   1900 // fix 2 (GGML_METAL_FUSION_FN): merged steps in existing kernels
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8

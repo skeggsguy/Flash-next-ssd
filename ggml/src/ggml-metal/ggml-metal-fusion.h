@@ -39,6 +39,8 @@ typedef enum ggml_metal_fusion_id {
     GGML_METAL_FUSION_TOPK_MOE,     // SOFT_MAX + ARGSORT + GET_ROWS + norm/scale (MoE routing)
     GGML_METAL_FUSION_MOE_REDUCE,   // MUL + expert VIEWs + ADD chain (MoE output reduction)
     GGML_METAL_FUSION_SSM_CONV_SILU, // SSM_CONV + UNARY (silu)
+    // fix 2, only with GGML_METAL_FUSION_FN=1 (ggml-metal-fusion-fn.h)
+    GGML_METAL_FUSION_FN_SCALE_UNARY, // SCALE + UNARY (silu), P4
 } ggml_metal_fusion_id;
 
 struct ggml_metal_fusion {

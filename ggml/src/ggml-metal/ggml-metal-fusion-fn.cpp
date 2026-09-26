@@ -8,6 +8,7 @@
 
 #include "ggml-metal-fusion-fn.h"
 
+#include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 
 #include <algorithm>
@@ -23,10 +24,74 @@ bool ggml_metal_fusion_fn_enabled(void) {
     return enabled;
 }
 
+// ---- checks ----------------------------------------------------------------
+
+// A merged kernel reads the chain's external inputs while it writes the chain's last node. The alloc
+// deps keep them apart when the chain was contiguous before the reorder; one that became contiguous only
+// after it has none, so the encoder refuses a chain whose output overlaps an input. Exactly the same
+// bytes are allowed where every thread reads its element before writing it (elementwise in place).
+static bool ggml_metal_fusion_fn_apart(const ggml_tensor * dst, const ggml_tensor * src, bool same_ok) {
+    ggml_backend_buffer_t bd = dst->view_src ? dst->view_src->buffer : dst->buffer;
+    ggml_backend_buffer_t bs = src->view_src ? src->view_src->buffer : src->buffer;
+
+    const ggml_metal_buffer_id d = ggml_metal_buffer_get_id((ggml_metal_buffer_t) bd->context, dst);
+    const ggml_metal_buffer_id s = ggml_metal_buffer_get_id((ggml_metal_buffer_t) bs->context, src);
+
+    if (d.metal != s.metal) {
+        return true;
+    }
+    if (same_ok && d.offs == s.offs && ggml_nbytes(dst) == ggml_nbytes(src)) {
+        return true;
+    }
+    return d.offs + ggml_nbytes(dst) <= s.offs || s.offs + ggml_nbytes(src) <= d.offs;
+}
+
+// P4: hc mix's SCALE(1/hc) + SILU (build_hc_mix). The merged kernel is kernel_unary's SILU with the
+// SCALE step in front, the same expression and vector width as the SCALE kernel. The generic checks
+// (unsafe = false) already hold it to a chain of one shape whose SCALE feeds only the SILU.
+static bool ggml_metal_fusion_fn_check_scale_unary(
+        const ggml_metal_fusion      * fusion,
+        const ggml_tensor * const    * nodes,
+        const ggml_cgraph            * gf,
+        const int                    * node_idxs,
+              int                      idx,
+              ggml_metal_fusion_mode   mode) {
+    GGML_UNUSED(fusion);
+    GGML_UNUSED(gf);
+    GGML_UNUSED(node_idxs);
+    GGML_UNUSED(idx);
+
+    const ggml_tensor * scale = nodes[0];
+    const ggml_tensor * un    = nodes[1];
+    const ggml_tensor * src   = scale->src[0];
+
+    if (un->src[0] != scale || ggml_get_unary_op(un) != GGML_UNARY_OP_SILU) {
+        return false;
+    }
+
+    // F32 only: a half chain would also have to round through the SCALE's half store
+    if (src->type != GGML_TYPE_F32 || scale->type != GGML_TYPE_F32 || un->type != GGML_TYPE_F32) {
+        return false;
+    }
+
+    // the merged kernel reads with the SCALE's layout and writes with the SILU's; flat is the simple case
+    if (!ggml_is_contiguous(src) || !ggml_is_contiguous(scale) || !ggml_is_contiguous(un)) {
+        return false;
+    }
+
+    if (mode == GGML_METAL_FUSION_FULL && !ggml_metal_fusion_fn_apart(un, src, true)) {
+        return false;
+    }
+
+    return true;
+}
+
 // ---- patterns --------------------------------------------------------------
 
+static const ggml_op ops_fn_scale_unary[] = { GGML_OP_SCALE, GGML_OP_UNARY };
+
 static const std::vector<ggml_metal_fusion> ggml_metal_fusion_fn_patterns = {
-    // (the patterns land with their kernels: P4, P1, P3)
+    { GGML_METAL_FUSION_FN_SCALE_UNARY, ops_fn_scale_unary, 2, ops_fn_scale_unary, 2, false, ggml_metal_fusion_fn_check_scale_unary },
 };
 
 const ggml_metal_fusion * ggml_metal_fusion_fn_table(const ggml_metal_fusion * base, int n_base, int * n) {
