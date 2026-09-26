@@ -292,6 +292,10 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
 // i.e. b holds the next layer's predicted logits). userdata is a llama_moe_stream_lookahead.
 void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b, int ith, int nth, void * userdata);
 
+// LLAMA_MOE_STREAM_LOOKAHEAD_ALL set and not "0": a small batch (2..16 tokens, the apprentice's check)
+// prefetches the next floor's predicted books for every token, not only the last. Read at model load.
+bool llama_moe_stream_lookahead_all_env();
+
 // Identity on the ubatch token ids, with a side effect: start the loads for every hash-routed
 // layer. The hash layers take their tid2eid get_rows index from this op's output, which is what
 // orders it before layer 0. Never waits.

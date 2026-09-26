@@ -1990,11 +1990,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     sl->la->sl       = sl;
                     sl->la->sl_next  = next;
                     sl->la->top_k    = k;
+                    sl->la->all      = llama_moe_stream_lookahead_all_env();
                     sl->la->bias_src = layers[il + 1].ffn_exp_probs_b;
                     n_la++;
                 }
                 if (n_la > 0) {
-                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers\n", __func__, k, n_la);
+                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers%s\n", __func__, k, n_la,
+                            llama_moe_stream_lookahead_all_env() ? ", every token of a small batch" : "");
                 }
             }
         }
