@@ -38,7 +38,14 @@ static int room_floor_of(const std::string & name, const ggml_tensor * t, uint32
 }
 
 llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & params, llm_arch arch,
-        const llama_hparams & hparams, const llama_model_loader & ml, uint32_t n_slots) {
+        const llama_hparams & hparams, const llama_model_loader & ml, uint32_t n_slots,
+        const llama_moe_room_floor_buft & floor_buft) {
+    llama_moe_room_request req;
+    req.mode  = params.moe_stream_room_mode;
+    req.value = params.moe_stream_room_value;
+    req.parts = params.moe_stream_room_parts;
+    const bool room_wanted = req.mode != LLAMA_MOE_ROOM_OFF;
+
     llama_moe_room_books books;
     books.desk_slots    = n_slots;
     books.n_expert      = hparams.n_expert;
@@ -51,10 +58,15 @@ llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & param
     // one book's bytes on each floor, weight by weight: the desk keeps each weight in its own slot
     // tensor, the belt keeps a book's weights together as one record
     std::map<int, std::vector<size_t>> floors;
+    std::vector<ggml_backend_buffer_type_t> desk_bufts; // where the floors' desks will sit
     for (const auto & [name, w] : ml.weights_map) {
         const int il = room_floor_of(name, w.tensor, books.n_expert);
         if (il >= 0) {
             floors[il].push_back(ggml_nbytes(w.tensor)/books.n_expert);
+            const ggml_backend_buffer_type_t buft = room_wanted ? floor_buft(il, w.tensor) : nullptr;
+            if (buft != nullptr && std::find(desk_bufts.begin(), desk_bufts.end(), buft) == desk_bufts.end()) {
+                desk_bufts.push_back(buft);
+            }
         }
     }
     for (const auto & [il, nb] : floors) {
@@ -68,24 +80,22 @@ llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & param
     books.budget = params.moe_stream_slots == 0 && params.moe_stream_budget > 0
         ? params.moe_stream_budget : (uint64_t) n_slots*books.book_bytes;
 
-    llama_moe_room_request req;
-    req.mode  = params.moe_stream_room_mode;
-    req.value = params.moe_stream_room_value;
-    req.parts = params.moe_stream_room_parts;
-
-    if (req.mode != LLAMA_MOE_ROOM_OFF) {
-        // The room is exact because every row a floor computes is the row a run without streaming computes.
-        // Two archs break that: mistral4 rescales each GEMM by its whole input (the F32 amax path), and
-        // llama4 weights each book's input before the maths, a shape the room's GEMMs do not take.
-        if (arch == LLM_ARCH_MISTRAL4) {
-            throw std::runtime_error("--moe-stream-room: mistral4's expert maths scale each row by the whole "
-                                     "input, so a floor split between the desk and the belt would not give the "
-                                     "same numbers; run it with --moe-stream-room 0");
-        }
-        if (arch == LLM_ARCH_LLAMA4) {
-            throw std::runtime_error("--moe-stream-room: llama4 weights each book's input before the expert maths, "
-                                     "which the reading room does not do; run it with --moe-stream-room 0");
-        }
+    // The room is exact because every row a floor computes is the row a run without streaming computes.
+    // Two archs break that: mistral4 rescales each GEMM by its whole input (the F32 amax path), and
+    // llama4 weights each book's input before the maths, a shape the room's GEMMs do not take. And a
+    // floor's belt links write into its desk's tensors, so every desk must sit on one device (a partial
+    // -ngl puts the first floors on the CPU); alloc() checks the same again once the desks exist, but by
+    // then the desk has been cut for the room, too late for the default room to step back to off.
+    if (arch == LLM_ARCH_MISTRAL4) {
+        books.refusal = "--moe-stream-room: mistral4's expert maths scale each row by the whole input, so a floor "
+                        "split between the desk and the belt would not give the same numbers; run it with "
+                        "--moe-stream-room 0";
+    } else if (arch == LLM_ARCH_LLAMA4) {
+        books.refusal = "--moe-stream-room: llama4 weights each book's input before the expert maths, which the "
+                        "reading room does not do; run it with --moe-stream-room 0";
+    } else if (desk_bufts.size() > 1) {
+        books.refusal = "--moe-stream-room: the desk's floors live on different devices, and the reading room "
+                        "needs them on one; run with --moe-stream-room 0";
     }
 
     const llama_moe_room_layout lay = llama_moe_room_resolve(req, books);
@@ -93,7 +103,8 @@ llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & param
         throw std::runtime_error(lay.error);
     }
 
-    // WARN, not INFO: llama-server filters library INFO, and this is the line that says what ran
+    // WARN, not INFO: llama-server filters library INFO, and this is the line that says what ran; any
+    // warning comes after it, as the study's runner takes the first "reading room:" line as the room
     LLAMA_LOG_WARN("load_tensors: %s\n", llama_moe_room_describe(lay).c_str());
     if (!lay.warning.empty()) {
         LLAMA_LOG_WARN("load_tensors: %s\n", lay.warning.c_str());

@@ -431,7 +431,7 @@ static const cmd_params cmd_params_defaults = {
     /* moe_stream           */ false,
     /* moe_stream_cache_gib */ 0,
     /* moe_stream_io_threads*/ 0,
-    /* moe_stream_room_mode */ LLAMA_MOE_ROOM_OFF,
+    /* moe_stream_room_mode */ LLAMA_MOE_ROOM_DEFAULT,
     /* moe_stream_room_value*/ 0.0f,
     /* moe_stream_room_parts*/ 4,
 };
@@ -485,7 +485,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("        --moe-stream                                stream MoE routed experts from disk\n");
     printf("        --moe-stream-cache <GiB>                    expert cache budget (implies --moe-stream)\n");
     printf("        --moe-stream-io-threads <n>                 expert load I/O threads\n");
-    printf("        --moe-stream-room <auto|0|GiB|Nf>           reading room, carved out of the cache (default: 0)\n");
+    printf("        --moe-stream-room <auto|0|GiB|Nf>           reading room, carved out of the cache (default: auto)\n");
     printf("        --moe-stream-room-parts <n>                 parts per floor on the room's belt, 1-16 (default: 4)\n");
     printf("  -ngl, --n-gpu-layers <n>                          (default: %s)\n", join(cmd_params_defaults.n_gpu_layers, ",").c_str());
     printf("  -ncmoe, --n-cpu-moe <n>                           (default: %s)\n", join(cmd_params_defaults.n_cpu_moe, ",").c_str());

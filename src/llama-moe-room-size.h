@@ -52,6 +52,10 @@ struct llama_moe_room_books {
     uint32_t n_expert      = 0; // books per floor
     uint32_t n_expert_used = 0; // books a word reads per floor (the slip's length)
     uint32_t sweep_min_tokens = 0; // read-ins of at least this many tokens use the room
+
+    // non-empty: why this model cannot take the room at all, whatever its size (its arch's expert
+    // maths, or its floors on different devices), in plain words
+    std::string refusal;
 };
 
 struct llama_moe_room_layout {
@@ -87,7 +91,11 @@ uint32_t llama_moe_room_sweep_min_tokens(uint32_t n_expert, uint32_t n_expert_us
 // rung can move the threshold without a rebuild; null gives the default above.
 uint32_t llama_moe_room_sweep_min_tokens_env(const char * env_value, uint32_t n_expert, uint32_t n_expert_used);
 
-// the layout the request makes of these books, or the plain-words reason it cannot
+// The layout the request makes of these books, or the plain-words reason it cannot (error). The room
+// is on by default (LLAMA_MOE_ROOM_DEFAULT, Tom 2026-09-26, after RR-room): sized as auto, and where
+// auto cannot be made the layout is off with a warning that gives the reason, never an error, so a
+// streamed load that worked while the room was off by default still loads. Only a room asked for
+// (auto, GiB, floors) turns the reason into an error that stops the load.
 llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req, const llama_moe_room_books & books);
 
 // the startup line, in the study's words

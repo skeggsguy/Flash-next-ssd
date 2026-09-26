@@ -598,7 +598,7 @@ struct common_params {
     int32_t  moe_stream_io_threads = 0;     // expert load I/O threads (<= 0 = default)
     std::string moe_stream_alt_path;        // two runners: first shard of the copy on the other drive
     int32_t  moe_stream_alt_split  = 53;    // percent of expert ids served from the model's own path
-    int32_t  moe_stream_room_mode  = 0;     // the reading room: a llama_moe_room_mode (0 = off)
+    int32_t  moe_stream_room_mode  = LLAMA_MOE_ROOM_DEFAULT; // the reading room: on (auto) unless it cannot be made
     float    moe_stream_room_value = 0.0f;  // its GiB or floors, by mode
     int32_t  moe_stream_room_parts = 4;     // parts a floor's books on the belt are cut into
     bool     moe_stream_direct     = false; // use O_DIRECT for expert reads (bypass page cache)

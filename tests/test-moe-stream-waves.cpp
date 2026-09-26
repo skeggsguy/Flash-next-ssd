@@ -8,7 +8,10 @@
 // streamed run against the same model with every book resident (no --moe-stream). The tiny fixture
 // cannot fill a real desk, so a small one (--moe-stream-cache 40s, 40 slots of 64) is what forces the
 // wave paths; --expect names the path the ubatch must have taken, from the graph's own
-// "n_tokens = ... partition ON/OFF" line, so a test that silently fell back cannot pass.
+// "n_tokens = ... partition ON/OFF" line, so a test that silently fell back cannot pass. The reading
+// room is on by default and takes big read-ins instead of waves, so the wave tests run with
+// --moe-stream-room 0 (at a 40-slot desk the default room cannot be made and steps back to off anyway,
+// which would test the fallback, not ask for waves).
 //
 // The fixture's weights are N(0, 0.01), so the experts add less than a float's resolution to the
 // residual stream and the logits would not move even if every book came from the wrong slot. Each

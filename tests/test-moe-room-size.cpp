@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -29,6 +30,19 @@ llama_moe_room_books small_books() {
     b.n_expert         = 256;
     b.n_expert_used    = 8;
     b.sweep_min_tokens = llama_moe_room_sweep_min_tokens(256, 8);
+    return b;
+}
+
+// the paperback's shape: 512 books a floor, 10 read, 48 floors, ~3.06 MiB a book per floor, desk 32 GiB
+llama_moe_room_books library_books() {
+    llama_moe_room_books b;
+    b.n_expert         = 512;
+    b.n_expert_used    = 10;
+    b.stride_min       = b.stride_max = 3211264;
+    b.book_bytes       = 48ull*3211264;
+    b.budget           = 32ull*1024*MiB;
+    b.desk_slots       = (uint32_t) (b.budget/b.book_bytes);
+    b.sweep_min_tokens = llama_moe_room_sweep_min_tokens(512, 10);
     return b;
 }
 
@@ -138,16 +152,7 @@ int main(int argc, char ** argv) {
     });
 
     t.test("auto on the library", [](testing & t) {
-        // the paperback's shape: 512 books a floor, 10 read, 48 floors, ~3.06 MiB a book per floor, desk 32 GiB
-        llama_moe_room_books b;
-        b.n_expert         = 512;
-        b.n_expert_used    = 10;
-        b.stride_min       = b.stride_max = 3211264;
-        b.book_bytes       = 48ull*3211264;
-        b.budget           = 32ull*1024*MiB;
-        b.desk_slots       = (uint32_t) (b.budget/b.book_bytes);
-        b.sweep_min_tokens = llama_moe_room_sweep_min_tokens(512, 10);
-
+        const llama_moe_room_books b = library_books();
         const llama_moe_room_layout lay = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0), b);
         t.assert_true("on", lay.on && lay.error.empty() && lay.warning.empty());
         t.assert_true("1.25 floors", lay.floors >= 1.25 && lay.floors < 1.2501);
@@ -189,6 +194,56 @@ int main(int argc, char ** argv) {
         tiny.stride_min = 64*1024;
         const llama_moe_room_layout lay = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_GIB, 0.25), tiny);
         t.assert_true("more than 1024 records", !lay.on && contains(lay.error, "holds 4096 books of one floor, but the GPU indexes at most 1024"));
+    });
+
+    t.test("the default is auto where the room can be made", [](testing & t) {
+        // not asked for (the flag absent): the same room auto makes, and nothing to warn about
+        const llama_moe_room_books b = library_books();
+        const llama_moe_room_layout asked = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0), b);
+        const llama_moe_room_layout dflt  = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0), b);
+        t.assert_true("on", dflt.on && dflt.error.empty() && dflt.warning.empty());
+        t.assert_equal("auto's room", asked.room_bytes, dflt.room_bytes);
+        t.assert_equal("auto's desk", asked.desk_slots, dflt.desk_slots);
+        t.assert_equal("auto's parts", asked.parts, dflt.parts);
+        t.assert_equal("auto's startup line", llama_moe_room_describe(asked), llama_moe_room_describe(dflt));
+        // parts still count when the room is the default one
+        t.assert_equal("parts 2", 2, llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0, 2), b).parts);
+    });
+
+    t.test("the default room steps back to off where asked-for refuses", [](testing & t) {
+        // Each thing that stops an asked-for room: the default one leaves today's desk, room off, and says
+        // why in a warning, never an error (an error stops the load)
+        const llama_moe_room_books lib = library_books();
+        llama_moe_room_books arch = lib, whole = lib, none = lib, tiny = lib;
+        arch.refusal     = "--moe-stream-room: llama4 weights each book's input before the expert maths";
+        whole.desk_slots = whole.n_expert;
+        none.book_bytes  = 0;
+        tiny.stride_min  = 64*1024; // 1.25 floors of the largest books hold far more than 1024 of the smallest
+        struct refused { const char * what; llama_moe_room_books books; int32_t parts; const char * reason; };
+        for (const refused & r : std::vector<refused>{
+                { "the arch or the devices",  arch,          4,  "llama4 weights each book's input" },
+                { "a budget too small",       small_books(), 4,  "takes the whole desk budget" },
+                { "a desk that seats every book", whole,     4,  "the desk already holds every book" },
+                { "no streamed books",        none,          4,  "no streamed books" },
+                { "more than 1024 records",   tiny,          4,  "but the GPU indexes at most 1024" },
+                { "parts 0 through the API",  lib,           0,  "must be between 1 and 16 (got 0)" } }) {
+            const llama_moe_room_layout asked = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_AUTO, 0.0, r.parts), r.books);
+            const llama_moe_room_layout dflt  = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_DEFAULT, 0.0, r.parts), r.books);
+            const std::string w = r.what;
+            t.assert_true(w + ": asked for, it refuses: " + asked.error, !asked.on && contains(asked.error, r.reason));
+            t.assert_true(w + ": the default loads, room off", !dflt.on && dflt.error.empty());
+            t.assert_equal(w + ": today's desk", r.books.desk_slots, dflt.desk_slots);
+            t.assert_equal(w + ": no room", (uint64_t) 0, dflt.room_bytes);
+            t.assert_true(w + ": the off startup line", contains(llama_moe_room_describe(dflt), "reading room: off;"));
+            t.assert_true(w + ": the warning says so", contains(dflt.warning, "on by default but cannot be made here, so it is off"));
+            t.assert_true(w + ": and gives asked-for's reason", contains(dflt.warning, asked.error));
+        }
+        // room 0 asked for on a model the room refuses is simply off, with nothing to say
+        const llama_moe_room_layout off = llama_moe_room_resolve(request(LLAMA_MOE_ROOM_OFF, 0.0), arch);
+        t.assert_true("room 0 on a refusing model", !off.on && off.error.empty() && off.warning.empty());
+        // any size asked for refuses on the arch alone
+        t.assert_true("GiB asked for refuses", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_GIB, 1.0), arch).error, "llama4"));
+        t.assert_true("floors asked for refuse", contains(llama_moe_room_resolve(request(LLAMA_MOE_ROOM_FLOORS, 1.0), arch).error, "llama4"));
     });
 
     return t.summary();

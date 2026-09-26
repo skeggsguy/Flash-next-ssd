@@ -52,7 +52,8 @@ struct outputs {
 const char * const G_SWEEP_MIN_TOKENS = "35"; // the threshold the scenarios run at (setup says why)
 
 int g_ngl = 99;
-std::string g_summary; // the last "reading room =" line print_stats wrote
+std::string g_summary;  // the last "reading room =" line print_stats wrote
+std::string g_room_log; // every log line about the room (startup line, warnings, the belt's allocation)
 std::string g_path;
 
 bool capture_moe_out(ggml_tensor * t, bool ask, void * user_data) {
@@ -258,10 +259,14 @@ llama_model * setup(int argc, char ** argv) {
         fprintf(stderr, "usage: %s -m model.gguf [-ngl N]\n", argv[0]);
         return nullptr;
     }
-    // silent, except that the run's room summary (print_stats) is caught to check it is written
+    // silent, except that the run's room summary (print_stats) and what loading said about the room are
+    // caught, to check they are written
     llama_log_set([](ggml_log_level, const char * text, void *) {
         if (strstr(text, "moe stream: reading room = ") != nullptr) {
             g_summary = text;
+        }
+        if (strstr(text, "reading room") != nullptr || strstr(text, "moe-stream-room") != nullptr) {
+            g_room_log += text;
         }
     }, nullptr);
     ggml_backend_load_all();

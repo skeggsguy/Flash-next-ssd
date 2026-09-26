@@ -46,13 +46,18 @@ static uint64_t room_for_floors(double floors, uint32_t desk, const llama_moe_ro
     return align_up((uint64_t) std::ceil(floors*missing*(double) b.stride_max), LLAMA_MOE_ROOM_SLAB_ALIGN);
 }
 
-llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req, const llama_moe_room_books & b) {
+// the layout of a room asked for (or off): any reason it cannot be made is an error
+static llama_moe_room_layout resolve_asked(const llama_moe_room_request & req, const llama_moe_room_books & b) {
     llama_moe_room_layout lay;
     lay.desk_slots       = b.desk_slots;
     lay.desk_bytes       = (uint64_t) b.desk_slots*b.book_bytes;
     lay.sweep_min_tokens = b.sweep_min_tokens;
 
     if (req.mode == LLAMA_MOE_ROOM_OFF) {
+        return lay;
+    }
+    if (!b.refusal.empty()) {
+        lay.error = b.refusal;
         return lay;
     }
     if (req.parts < 1 || req.parts > LLAMA_MOE_ROOM_PARTS_MAX) {
@@ -137,6 +142,27 @@ llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req,
 
     lay.on = true;
     return lay;
+}
+
+llama_moe_room_layout llama_moe_room_resolve(const llama_moe_room_request & req, const llama_moe_room_books & b) {
+    if (req.mode != LLAMA_MOE_ROOM_DEFAULT) {
+        return resolve_asked(req, b);
+    }
+    llama_moe_room_request as_auto = req;
+    as_auto.mode = LLAMA_MOE_ROOM_AUTO;
+    const llama_moe_room_layout lay = resolve_asked(as_auto, b);
+    if (lay.error.empty()) {
+        return lay;
+    }
+    // nobody asked for the room, so a model or desk that cannot take it reads in with waves, as it did
+    // before the room was on by default, and the load goes on; the reason is still said
+    llama_moe_room_request off = req;
+    off.mode = LLAMA_MOE_ROOM_OFF;
+    llama_moe_room_layout out = resolve_asked(off, b);
+    out.warning = "--moe-stream-room: the reading room is on by default but cannot be made here, so it is off and "
+                  "reading in uses waves on the desk. Asked for (--moe-stream-room auto), the load would stop "
+                  "with: " + lay.error;
+    return out;
 }
 
 std::string llama_moe_room_describe(const llama_moe_room_layout & lay) {

@@ -235,7 +235,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
     # Not 24 slots (3*n_expert_used): the partition path's spare-wave sizing then makes 10 waves of
     # 6-7 books, fewer than n_expert_used, and stage_wave_locked has no parking slots to borrow on
-    # wave 0 - an abort a real desk (~100 books a wave) cannot reach.
+    # wave 0 - an abort a real desk (~100 books a wave) cannot reach. The reading room is on by default
+    # and would take these read-ins, so the wave paths ask for it off.
     llama_build(test-moe-stream-waves.cpp)
     foreach (E64_ARCH qwen4exp qwen3moe)
         foreach (E64_PATH masked partition)
@@ -248,7 +249,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
                 test-moe-stream-waves
                 NAME test-moe-stream-waves-${E64_ARCH}-${E64_PATH}
                 LABEL main
-                ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" --moe-stream-cache 40s
+                ARGS -m "${MODEL_DIR}/${E64_ARCH}-moe-e64.gguf" --moe-stream-cache 40s --moe-stream-room 0
                      -b 1024 -ub ${E64_UB} -n 8 --expect ${E64_PATH}
             )
             set_tests_properties(test-moe-stream-waves-${E64_ARCH}-${E64_PATH} PROPERTIES

@@ -24,6 +24,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -35,12 +36,18 @@ struct llama_moe_stream;
 struct llama_moe_stream_layer;
 struct llama_moe_stream_work;
 
+// the buffer type a streamed floor's desk will take for one of its book weights (llama-model.cpp's
+// choice at create_tensor), or null for a floor that is not a repeating layer
+using llama_moe_room_floor_buft = std::function<ggml_backend_buffer_type_t(int il, ggml_tensor * weight)>;
+
 // Sizes the room for a model about to load, from the desk's slots with the room off: the layout's
-// desk_slots are what the desk keeps. Logs the startup line (and any warning) in plain words; throws
-// std::runtime_error with the plain-words reason when the room cannot be made - an arch whose expert
-// maths a split floor would change, or a size the arithmetic refuses.
+// desk_slots are what the desk keeps. Logs the startup line (and any warning) in plain words. When the
+// room cannot be made - an arch whose expert maths a split floor would change, floors whose desks sit on
+// different devices, or a size the arithmetic refuses - a room asked for throws std::runtime_error with
+// the plain-words reason, and the default one is off with a warning (llama_moe_room_resolve).
 llama_moe_room_layout llama_moe_room_size_model(const llama_model_params & params, llm_arch arch,
-        const llama_hparams & hparams, const llama_model_loader & ml, uint32_t n_slots);
+        const llama_hparams & hparams, const llama_model_loader & ml, uint32_t n_slots,
+        const llama_moe_room_floor_buft & floor_buft);
 
 // userdata of one room op: the floor and its group, -1 the desk, 0.. a part
 struct llama_moe_room_op {

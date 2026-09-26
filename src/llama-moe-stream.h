@@ -97,7 +97,8 @@ struct llama_moe_stream {
     std::string alt_path;         // the alt copy's FIRST shard; empty = one runner
     int32_t     alt_split = 100;  // percent of expert ids served from `files`
 
-    // The reading room's size, settled at load (llama_moe_room_size_model); off unless asked for.
+    // The reading room's size, settled at load (llama_moe_room_size_model): on (auto) by default, off
+    // when asked (--moe-stream-room 0) or when the default room cannot be made.
     llama_moe_room_layout room_layout;
 
     // which of the two sets serves expert `expert` of a layer that has `n_expert` experts

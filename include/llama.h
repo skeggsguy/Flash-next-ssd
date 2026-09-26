@@ -313,10 +313,14 @@ extern "C" {
 
     // --moe-stream-room: how the reading room's size is given (llama_model_params::moe_stream_room_mode)
     enum llama_moe_room_mode {
-        LLAMA_MOE_ROOM_OFF    = 0,
-        LLAMA_MOE_ROOM_AUTO   = 1, // 1.25 floors (layers) of look-ahead
-        LLAMA_MOE_ROOM_GIB    = 2, // moe_stream_room_value GiB
-        LLAMA_MOE_ROOM_FLOORS = 3, // moe_stream_room_value floors (layers) of look-ahead
+        LLAMA_MOE_ROOM_OFF     = 0,
+        LLAMA_MOE_ROOM_AUTO    = 1, // 1.25 floors (layers) of look-ahead
+        LLAMA_MOE_ROOM_GIB     = 2, // moe_stream_room_value GiB
+        LLAMA_MOE_ROOM_FLOORS  = 3, // moe_stream_room_value floors (layers) of look-ahead
+        // Not asked for (the default): sized as AUTO where the room can be made; where it cannot (the
+        // arch, the devices or the desk refuse it) the room stays off with a warning and the model
+        // loads. A room asked for (AUTO, GIB, FLOORS) refuses to load instead.
+        LLAMA_MOE_ROOM_DEFAULT = 4,
     };
 
     struct llama_model_params {
@@ -365,8 +369,9 @@ extern "C" {
 
         // The reading room: a belt of books (experts) for long read-ins (prompts), carved out of the
         // desk's budget (the expert cache), so reading in never evicts the desk. moe_stream_room_mode
-        // is a llama_moe_room_mode, moe_stream_room_value its GiB or floors (layers), and
-        // moe_stream_room_parts how many parts a floor's books on the belt are cut into (1..16).
+        // is a llama_moe_room_mode (default LLAMA_MOE_ROOM_DEFAULT: on, as auto, where it can be made),
+        // moe_stream_room_value its GiB or floors (layers), and moe_stream_room_parts how many parts a
+        // floor's books on the belt are cut into (1..16).
         int32_t      moe_stream_room_mode;
         float        moe_stream_room_value;
         int32_t      moe_stream_room_parts;

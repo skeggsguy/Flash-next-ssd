@@ -1628,9 +1628,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     if (params.moe_stream) {
         uint32_t n_slots = llama_moe_stream_resolve_slots(params, hparams, ml);
-        // the reading room comes out of the desk's budget (llama-moe-room.cpp); off keeps n_slots
+        // the reading room comes out of the desk's budget (llama-moe-room.cpp); off keeps n_slots. It
+        // needs every floor's desk on one device, so it is told where create_tensor will put each one.
+        const auto floor_buft = [&](int il, ggml_tensor * w) -> ggml_backend_buffer_type_t {
+            return il >= 0 && (size_t) il < pimpl->dev_layer.size()
+                ? llama_moe_stream_select_buft(hparams, w, pimpl->dev_layer[il].buft_list) : nullptr;
+        };
         const llama_moe_room_layout room = n_slots > 0
-            ? llama_moe_room_size_model(params, arch, hparams, ml, n_slots) : llama_moe_room_layout();
+            ? llama_moe_room_size_model(params, arch, hparams, ml, n_slots, floor_buft) : llama_moe_room_layout();
         n_slots = n_slots > 0 ? room.desk_slots : 0;
         if (n_slots > 0) {
             if (pimpl->has_tensor_overrides) {
@@ -3047,7 +3052,7 @@ llama_model_params llama_model_default_params() {
         /*.moe_stream_io_threads       =*/ 0,
         /*.moe_stream_alt_path         =*/ nullptr,
         /*.moe_stream_alt_split        =*/ 53,
-        /*.moe_stream_room_mode        =*/ LLAMA_MOE_ROOM_OFF,
+        /*.moe_stream_room_mode        =*/ LLAMA_MOE_ROOM_DEFAULT, // on (auto) where it can be made
         /*.moe_stream_room_value       =*/ 0.0f,
         /*.moe_stream_room_parts       =*/ 4,
         /*.moe_stream_direct           =*/ false,

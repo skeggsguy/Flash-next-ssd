@@ -9,6 +9,10 @@
 //   t_min     105 tokens at -ub 35, the smallest ubatch the room takes
 //   default   the fixtures' own threshold, 160 (20 slips per book): 320 tokens at -ub 160 take the room,
 //             159 tokens take waves
+//   on by default  llama_model_default_params() takes auto's room where it fits (B through it, byte for
+//             byte), and where the room is refused (40 slots; floors on two devices) loads with it off and
+//             a warning, while an asked-for auto stops the load; a load without streaming says nothing
+//             about the room and makes none
 //   last row  B asking for its last row only, as a server does: the last floor takes waves beside the room
 //   empty     a desk of 62 of 64 books, so two of the four parts hold nothing (all-skip links)
 //   desks     prompt B after A and after C on two fresh models: different desks, the same bytes
@@ -72,6 +76,67 @@ int main(int argc, char ** argv) {
         scenario("default: 320 tokens at -ub 160", room4, 160, { G }, ref_g, 2);
         scenario("default: 159 tokens take waves", room4, 160, { H }, ref_h, 0);
         setenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS", G_SWEEP_MIN_TOKENS, 1);
+    }
+    {
+        // The room is on by default (Tom, 2026-09-26): a load that asks for nothing gets auto's room where
+        // it can be made. It is a mode of its own, not auto, because where the room cannot be made the
+        // default steps back to off and loads, while a room asked for stops the load.
+        config dflt = room4;
+        dflt.room_mode = llama_model_default_params().moe_stream_room_mode;
+        check(dflt.room_mode == LLAMA_MOE_ROOM_DEFAULT, "on by default: the default params leave the room to the default");
+        llama_model * m_auto = load(room4);
+        g_room_log.clear();
+        llama_model * m_dflt = load(dflt);
+        const bool both = m_auto != nullptr && m_dflt != nullptr && room_of(m_auto) && room_of(m_dflt);
+        check(both && room_of(m_dflt)->lay.room_bytes == room_of(m_auto)->lay.room_bytes &&
+              m_dflt->moe_stream()->n_slots == m_auto->moe_stream()->n_slots,
+              "on by default: auto's room and desk (" + std::to_string(both ? m_dflt->moe_stream()->n_slots : 0) + " slots)");
+        check(g_room_log.find("reading room: ") != std::string::npos && g_room_log.find("floors of look-ahead") != std::string::npos &&
+              g_room_log.find("on by default but") == std::string::npos, "on by default: the startup line says the room, no warning");
+        printf("  | %s", g_room_log.substr(0, g_room_log.find('\n') + 1).c_str());
+        llama_model_free(m_auto);
+        llama_model_free(m_dflt);
+        scenario("on by default: B through the room", dflt, 128, { B }, ref_b, 3);
+
+        // where it cannot be made it steps back: 1.25 floors do not fit a 40-slot budget
+        config small = dflt, small_auto = room4;
+        small.slots = small_auto.slots = 40;
+        g_room_log.clear();
+        llama_model * m = load(small);
+        check(m != nullptr && room_of(m) == nullptr && m->moe_stream()->n_slots == 40,
+                "on by default, 40 slots: loads with the room off and the whole desk");
+        const size_t off_at = g_room_log.find("reading room: off;");
+        const size_t why_at = g_room_log.find("on by default but cannot be made here");
+        check(off_at < why_at && why_at != std::string::npos &&
+              g_room_log.find("takes the whole desk budget") != std::string::npos,
+              "on by default, 40 slots: the off line, then a warning that says why");
+        llama_model_free(m);
+        g_room_log.clear();
+        check(load(small_auto) == nullptr && g_room_log.find("takes the whole desk budget") != std::string::npos,
+                "auto asked for, 40 slots: the load stops, saying why");
+
+        // floors on two devices: at -ngl 2 the fixture's floor 0 is on the CPU and floor 1 on the GPU
+        if (llama_supports_gpu_offload()) {
+            const int ngl = g_ngl;
+            g_ngl = 2;
+            g_room_log.clear();
+            m = load(dflt);
+            check(m != nullptr && room_of(m) == nullptr && g_room_log.find("on by default but") != std::string::npos &&
+                  g_room_log.find("different devices") != std::string::npos,
+                  "on by default, floors on two devices: loads with the room off, saying why");
+            llama_model_free(m);
+            check(load(room4) == nullptr, "auto asked for, floors on two devices: the load stops");
+            g_ngl = ngl;
+        }
+
+        // without streaming the room is never sized: no manager, no room, not a word about it
+        config plain = dflt;
+        plain.stream = false;
+        g_room_log.clear();
+        m = load(plain);
+        check(m != nullptr && m->moe_stream() == nullptr && g_room_log.empty(),
+                "on by default, no streaming: no room made and nothing said about one");
+        llama_model_free(m);
     }
     {
         // the last row only: the last floor works on the output rows alone, under the threshold, so it

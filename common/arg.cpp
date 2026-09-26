@@ -2859,7 +2859,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--moe-stream-room"}, "auto|0|<GiB>|<N>f",
         "the reading room for --moe-stream: a belt of books for long read-ins, carved out of --moe-stream-cache, "
         "so reading in never evicts the desk. auto = 1.25 floors of look-ahead, <N>f = N floors, <GiB> (e.g. 1.1 "
-        "or 1.1G) = that size, 0 = off (default: 0)",
+        "or 1.1G) = that size, 0 = off (default: auto, and off with a warning where the room cannot be made; "
+        "asked for, it refuses to load instead)",
         [](common_params & params, const std::string & value) {
             std::string v = value;
             for (auto & c : v) {

@@ -278,11 +278,19 @@ static void test(void) {
     }
 
     {
-        // the reading room: off by default, and every way of sizing it. A GiB value that parsed as
-        // floors (or the reverse) would still load and quietly carve a different room out of the desk.
+        // the reading room: on by default (Tom, 2026-09-26), and every way of sizing it. A GiB value that
+        // parsed as floors (or the reverse) would still load and quietly carve a different room out of the
+        // desk. The default is its own mode, not auto: a model the room refuses still loads with it (room
+        // off, a warning), where an asked-for auto stops the load, so "auto" must not parse to the default.
         common_params room_params;
-        assert(room_params.moe_stream_room_mode == LLAMA_MOE_ROOM_OFF);
+        assert(room_params.moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
         assert(room_params.moe_stream_room_parts == 4);
+        argv = {"binary_name", "-m", "model_file.gguf", "--moe-stream"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), room_params, LLAMA_EXAMPLE_COMMON));
+        assert(room_params.moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
+        assert(common_model_params_to_llama(room_params).moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
+        assert(llama_model_default_params().moe_stream_room_mode == LLAMA_MOE_ROOM_DEFAULT);
+        assert(llama_model_default_params().moe_stream_room_parts == 4);
         struct room_case { const char * arg; int32_t mode; float value; };
         for (const room_case & rc : std::vector<room_case>{
                 { "auto",  LLAMA_MOE_ROOM_AUTO,   0.0f  },
@@ -420,7 +428,14 @@ static void test(void) {
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
     assert(params.load_mode == LLAMA_LOAD_MODE_DIRECT_IO);
 
-    // the rung's arms set the reading room by env, not by flag
+    // the rung's arms set the reading room by env, not by flag; an off arm now has to say 0
+    setenv("LLAMA_ARG_MOE_STREAM_ROOM", "0", true);
+    argv = {"binary_name"};
+    assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+    assert(params.moe_stream_room_mode == LLAMA_MOE_ROOM_OFF);
+    setenv("LLAMA_ARG_MOE_STREAM_ROOM", "auto", true);
+    assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+    assert(params.moe_stream_room_mode == LLAMA_MOE_ROOM_AUTO);
     setenv("LLAMA_ARG_MOE_STREAM_ROOM", "1.5f", true);
     setenv("LLAMA_ARG_MOE_STREAM_ROOM_PARTS", "6", true);
     argv = {"binary_name"};
