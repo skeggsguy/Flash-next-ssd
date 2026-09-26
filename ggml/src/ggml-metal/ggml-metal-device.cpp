@@ -903,6 +903,15 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
     return res;
 }
 
+// Q8_0 mat-vec (fix 2a): each simdgroup walks the row 8 blocks at a time, so at short k (hc up has
+// k = 320, 10 blocks) N_SG_Q8_0 = 4 leaves two simdgroups with no block to read. Trimming them is
+// exact: while nsg*8 >= nb every thread still reads the same one block, the idle ones only ever
+// added zeros, and the final reduction sums the same 32 lanes (unused lanes are zeroed either way).
+static int ggml_metal_mv_q8_0_nsg(int ne00) {
+    const int nb = ne00/(int) ggml_blck_size(GGML_TYPE_Q8_0);
+    return std::max(1, std::min(N_SG_Q8_0, (nb + 7)/8));
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_metal_library_t lib, const ggml_tensor * op) {
     GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
     GGML_TENSOR_LOCALS( int32_t, ne1, op->src[1], ne);
@@ -974,7 +983,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             } break;
         case GGML_TYPE_Q8_0:
             {
-                nsg = N_SG_Q8_0;
+                nsg = ggml_metal_mv_q8_0_nsg(ne00);
                 nr0 = N_R0_Q8_0;
                 smem = 32*sizeof(float)*N_R0_Q8_0;
             } break;
@@ -1295,7 +1304,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
             } break;
         case GGML_TYPE_Q8_0:
             {
-                nsg = N_SG_Q8_0;
+                nsg = ggml_metal_mv_q8_0_nsg(ne00);
                 nr0 = N_R0_Q8_0;
                 smem = 32*sizeof(float)*N_R0_Q8_0;
             } break;
