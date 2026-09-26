@@ -9168,6 +9168,9 @@ static const ggml_type other_types[] = {
     GGML_TYPE_BF16,
 };
 
+// Qwen3.8-Flash-Next's merged op chains (fix 2, GGML_METAL_FUSION_FN)
+#include "test-backend-ops-fn.inc"
+
 #ifdef _MSC_VER
 // Workaround long compile time with msvc
 #pragma optimize("", off)
@@ -11301,6 +11304,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    test_fn_add_eval_cases(test_cases);
+
     return test_cases;
 }
 #ifdef _MSC_VER
@@ -11332,7 +11337,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
         test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_K, GGML_TYPE_F32, 512, 10, false,  640, 1, 2560));
         test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q8_0, GGML_TYPE_F32, 512, 10, false, 2560, 1,  640));
+        // the paperback edition's ffn_down_exps (Q5_1 on 43 floors): the short-k mat-vec at k=640
+        test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q5_1, GGML_TYPE_F32, 512, 10, false, 2560, 1,  640));
         test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, {2560, 4, 1, 1}));
+        // fix 2: the op chains GGML_METAL_FUSION_FN merges, timed whole
+        test_fn_add_perf_cases(test_cases);
         test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {2560, 1, 1, 1}, {1, 1, 1, 1}));
     }
 
