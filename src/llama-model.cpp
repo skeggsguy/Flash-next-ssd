@@ -1628,10 +1628,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     if (params.moe_stream) {
         uint32_t n_slots = llama_moe_stream_resolve_slots(params, hparams, ml);
-        // the reading room comes out of the desk's budget (llama-moe-room.cpp); off keeps n_slots. It
-        // needs every floor's desk on one device, so it is told where create_tensor will put each one.
+        // the reading room comes out of the desk's budget (llama-moe-room-load.cpp); off keeps n_slots. It
+        // needs every floor's desk on one device, so it is told where create_tensor will put each one; an
+        // apprentice (MTP) floor whose weights are not loaded (TENSOR_SKIP without load_mtp) gets no desk,
+        // so it is left out, or a -ngl that puts only that floor on the GPU would refuse a room that works.
         const auto floor_buft = [&](int il, ggml_tensor * w) -> ggml_backend_buffer_type_t {
-            return il >= 0 && (size_t) il < pimpl->dev_layer.size()
+            const bool loaded = params.load_mtp || il < (int) hparams.n_layer();
+            return il >= 0 && (size_t) il < pimpl->dev_layer.size() && loaded
                 ? llama_moe_stream_select_buft(hparams, w, pimpl->dev_layer[il].buft_list) : nullptr;
         };
         const llama_moe_room_layout room = n_slots > 0
