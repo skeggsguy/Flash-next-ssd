@@ -10,6 +10,7 @@
 #include "ngram-mod.h"
 #include "sampling.h"
 #include "speculative-adaptive.h"
+#include "speculative-rate.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
 
@@ -1405,6 +1406,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<int> n_last;  // [n_seq] drafts attempted in the most recent draft() call
     std::vector<common_speculative_adaptive> adaptive_ctrl; // [n_seq] per-seq adaptive depth controller
 
+    // LLAMA_SPEC_ADAPTIVE_RATE=1: the throughput-seeking depth (speculative-rate.h) replaces the
+    // hand-tuned controller; at depth 0 a one-token shadow guess is scored, not verified
+    bool rate_mode = false;
+    std::vector<common_speculative_rate> rate_ctrl; // [n_seq]
+    std::vector<llama_token> shadow_tok;           // [n_seq] the shadow guess awaiting the real token
+    std::vector<uint8_t>     shadow_pending;       // [n_seq]
+
     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq, bool adaptive = false)
         : common_speculative_impl(adaptive ? COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE : COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq, params.draft.n_max)
         , params(params.draft)
@@ -1509,6 +1517,19 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 adaptive_ctrl[s].reset(this->params.n_max, this->params.n_min_adaptive);
             }
             SPC_TRC("%s", "adaptive draft depth enabled (draft-mtp-adaptive)\n");
+
+            const char * rate_env = std::getenv("LLAMA_SPEC_ADAPTIVE_RATE");
+            rate_mode = rate_env != nullptr && std::strcmp(rate_env, "0") != 0 && *rate_env != '\0';
+            if (rate_mode) {
+                rate_ctrl.assign(n_seq, common_speculative_rate());
+                for (auto & r : rate_ctrl) {
+                    r.init(this->params.n_max);
+                }
+                shadow_tok.assign(n_seq, LLAMA_TOKEN_NULL);
+                shadow_pending.assign(n_seq, 0);
+                SPC_WRN("draft depth: measured (LLAMA_SPEC_ADAPTIVE_RATE), depths 0..%d, the most tokens per second\n",
+                        this->params.n_max);
+            }
         }
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
@@ -1551,6 +1572,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         // so the controller starts from the floor again
         if (adaptive) {
             adaptive_ctrl[seq_id].reset(this->params.n_max, this->params.n_min_adaptive);
+        }
+        if (rate_mode) {
+            rate_ctrl[seq_id].restart_timer(); // keeps what it learnt; the wait between answers is not work
+            shadow_pending[seq_id] = 0;
         }
 
         auto * ctx_dft = this->params.ctx_dft;
@@ -1724,6 +1749,21 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             // effective draft cap for this step: adaptive depth (or the user n_max),
             // then clamped by the per-call context bound from the server
             n_cap[seq_id] = adaptive ? adaptive_ctrl[seq_id].n_cur : params.n_max;
+            if (rate_mode) {
+                auto & rc = rate_ctrl[seq_id];
+                if (shadow_pending[seq_id]) {
+                    rc.shadow_scored(shadow_tok[seq_id] == dp.id_last);
+                    shadow_pending[seq_id] = 0;
+                }
+                rc.cycle_begin(ggml_time_us());
+                n_cap[seq_id] = std::max(1, rc.k_next); // depth 0 still drafts its one shadow guess
+                if (rc.n_cycles > 0 && rc.n_cycles % 500 == 0 && rc.k_ran < 0) {
+                    SPC_WRN("draft depth: %" PRId64 " cycles | depth %d | kept p1..p5 %.2f %.2f %.2f %.2f %.2f | cycle ms d0..d5 %.1f %.1f %.1f %.1f %.1f %.1f\n",
+                            rc.n_cycles, rc.k_next, rc.keep(1), rc.keep(2), rc.keep(3), rc.keep(4), rc.keep(5),
+                            rc.cycle_cost(0)/1e3, rc.cycle_cost(1)/1e3, rc.cycle_cost(2)/1e3, rc.cycle_cost(3)/1e3,
+                            rc.cycle_cost(4)/1e3, rc.cycle_cost(5)/1e3);
+                }
+            }
             if (dp.n_max > 0 && dp.n_max < n_cap[seq_id]) {
                 n_cap[seq_id] = dp.n_max;
             }
@@ -1851,6 +1891,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 continue;
             }
 
+            if (rate_mode && rate_ctrl[seq_id].k_next == 0) {
+                // depth 0: keep the guess to score against the real next token, verify nothing
+                if (!dp.result->empty()) {
+                    shadow_tok[seq_id]     = (*dp.result)[0];
+                    shadow_pending[seq_id] = 1;
+                }
+                dp.result->clear();
+                rate_ctrl[seq_id].cycle_verified(0, 0);
+            }
+
             n_last[seq_id] = (int) dp.result->size();
 
             // the adaptive controller decides its own depth, so the generic n_min
@@ -1868,7 +1918,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         // update the adaptive controller only when this implementation produced the
         // accepted draft; on is_other the stats belong to a different speculator
-        if (adaptive && !is_other) {
+        if (rate_mode && !is_other) {
+            rate_ctrl[seq_id].cycle_verified(n_last[seq_id], n_accepted);
+        } else if (adaptive && !is_other) {
             const int depth_before = adaptive_ctrl[seq_id].n_cur;
             adaptive_ctrl[seq_id].update(n_last[seq_id], n_accepted, params.n_max, params.n_min_adaptive);
             if (adaptive_ctrl[seq_id].n_cur != depth_before) {
