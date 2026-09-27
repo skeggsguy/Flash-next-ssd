@@ -15,6 +15,11 @@
 // while the reference does the whole batch at once (LLAMA_QSA_SLICE=0). A slice's tensors are named
 // <name>-<layer>-s<slice>; the observer joins them in slice order into the whole batch's tensor, and
 // the run fails unless the sliced contexts really built sliced layers and the observer saw the slices.
+//
+// SHARE-PARTS-PLAN.md phase 6: with QSA_KEEP_UNION=bias as well, the keep and check contexts build the
+// picker's block bias on the GPU from small tables (LLAMA_QSA_UNION=bias) while the reference uploads it
+// from the CPU (LLAMA_QSA_UNION=0): the same bytes everywhere, and the run fails unless the keep and check
+// contexts built layers on that route (and the reference none).
 
 #include "arg.h"
 #include "common.h"
@@ -51,6 +56,10 @@ struct observer {
 
 // QSA_KEEP_SLICE's rows a slice, 0 for the plain runs
 static uint32_t g_slice = 0;
+
+// QSA_KEEP_UNION=bias: the keep and check contexts build the bias on the GPU; and the layers they built so
+static bool     g_union = false;
+static uint64_t g_union_built[3] = {};
 
 // "indexer_score-3-s2" -> base "indexer_score-3", slice 2, and a view of it, "indexer_top_k-3-s2 (view)",
 // -> "indexer_top_k-3 (view)"; -1 for a name without a slice suffix
@@ -146,6 +155,7 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     // written in every run, "0" included: unset slices at 512 since the Q-slice rung, and the runs without
     // QSA_KEEP_SLICE check the whole batch at once
     setenv("LLAMA_QSA_SLICE", v == VARIANT_REF ? "0" : std::to_string(g_slice).c_str(), 1);
+    setenv("LLAMA_QSA_UNION", v != VARIANT_REF && g_union ? "bias" : "0", 1);
 
     auto cparams = common_context_params_to_llama(params);
     cparams.n_ctx      = cfg.n_ctx;
@@ -165,6 +175,7 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     unsetenv("LLAMA_QSA_KEEP");
     unsetenv("LLAMA_QSA_KEEP_CHECK");
     unsetenv("LLAMA_QSA_SLICE");
+    unsetenv("LLAMA_QSA_UNION");
 
     return ctx;
 }
@@ -197,6 +208,7 @@ struct trio {
     // QSA_KEEP_SLICE: layers built sliced when the contexts were made (the reserve's graphs), and whether
     // the scenario has a batch to slice (one sequence per stream and more than a slice of tokens)
     uint64_t slice_builds0[VARIANT_COUNT] = {};
+    uint64_t union_builds0[VARIANT_COUNT] = {};
     bool     slices_expected = true;
 
     trio(const char * name, const common_params & params, llama_model * model, const ctx_cfg & cfg) : name(name) {
@@ -228,6 +240,13 @@ struct trio {
                             variant_name[v], get_mem(ctx[v])->qsa_slice(), want);
                 }
                 slice_builds0[v] = get_mem(ctx[v])->qsa_slice_builds();
+
+                const llama_qsa_union_mode want_union = v != VARIANT_REF && g_union ? LLAMA_QSA_UNION_BIAS : LLAMA_QSA_UNION_OFF;
+                if (get_mem(ctx[v])->qsa_union() != want_union) {
+                    fail("LLAMA_QSA_UNION not picked up per context: %s has %d, expected %d",
+                            variant_name[v], (int) get_mem(ctx[v])->qsa_union(), (int) want_union);
+                }
+                union_builds0[v] = get_mem(ctx[v])->qsa_union_bias_builds();
             }
         }
     }
@@ -395,6 +414,14 @@ struct trio {
                         (unsigned long long) n_built[VARIANT_KEEP], (unsigned long long) n_built[VARIANT_CHECK], n_joined);
             }
             sliced = ", sliced layers built " + std::to_string(n_built[VARIANT_KEEP]) + ", slices joined " + std::to_string(n_joined);
+        }
+
+        // the GPU bias (after the reserve: the layers this scenario's own batches built on that route)
+        for (int v = 0; v < VARIANT_COUNT; ++v) {
+            g_union_built[v] += get_mem(ctx[v])->qsa_union_bias_builds() - union_builds0[v];
+        }
+        if (g_union) {
+            sliced += ", gpu-bias layers built " + std::to_string(get_mem(ctx[VARIANT_KEEP])->qsa_union_bias_builds() - union_builds0[VARIANT_KEEP]);
         }
 
         fprintf(stderr, "%s%s: %s: %d decodes, LEGACY %llu, FULL %llu, INCR %llu, check sums%s%s\n",
@@ -841,6 +868,14 @@ int main(int argc, char ** argv) {
         g_slice = (uint32_t) atoi(e);
         fprintf(stderr, "%s: slice runs: the keep and check contexts slice %u rows at a time, at ubatch %u\n", __func__, g_slice, 4*g_slice);
     }
+    if (const char * e = getenv("QSA_KEEP_UNION")) {
+        g_union = strcmp(e, "bias") == 0;
+        if (!g_union) {
+            fprintf(stderr, "%s: QSA_KEEP_UNION takes only \"bias\" (union attention is not byte-identical)\n", __func__);
+            return 1;
+        }
+        fprintf(stderr, "%s: union runs: the keep and check contexts build the block bias on the GPU\n", __func__);
+    }
 
     ggml_backend_load_all();
 
@@ -879,6 +914,14 @@ int main(int argc, char ** argv) {
     }
 
     llama_model_free(model);
+
+    // the GPU bias must have run in the keep and check contexts, and never in the reference
+    if (g_union_built[VARIANT_REF] != 0 || (g_union && (g_union_built[VARIANT_KEEP] == 0 || g_union_built[VARIANT_CHECK] == 0))) {
+        fprintf(stderr, "%s: the GPU bias did not run where asked (layers built on it: ref %llu, keep %llu, check %llu)\n",
+                __func__, (unsigned long long) g_union_built[VARIANT_REF], (unsigned long long) g_union_built[VARIANT_KEEP],
+                (unsigned long long) g_union_built[VARIANT_CHECK]);
+        ok = false;
+    }
 
     fprintf(stderr, "%s: %s\n", __func__, ok ? "all scenarios bit-identical" : "FAILED");
 

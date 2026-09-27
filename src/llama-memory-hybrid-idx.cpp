@@ -134,6 +134,29 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
                     "(LLAMA_QSA_SLICE=512 does 512 rows at a time)\n", __func__);
         }
     }
+
+    // LLAMA_QSA_UNION: the picks go straight to attention (SHARE-PARTS-PLAN.md phase 6)
+    bool union_bad = false;
+    qunion.mode = llama_qsa_union_parse(std::getenv("LLAMA_QSA_UNION"), &union_bad);
+
+    // the startup line itself waits for the first QSA layer built (qsa_union_log): only there is the route
+    // known, and "1" in a context that cannot take union attention must say it builds "bias"
+    if (mem_idx != nullptr && union_bad) {
+        LLAMA_LOG_WARN("%s: qsa union: LLAMA_QSA_UNION=%s is not 0, bias or 1; taken as 0\n", __func__,
+                std::getenv("LLAMA_QSA_UNION"));
+    }
+}
+
+void llama_memory_hybrid_idx::qsa_union_log(const llama_qsa_union_gate & gate) const {
+    const std::string line = llama_qsa_union_describe(gate.mode, llama_qsa_union_fallback(gate));
+
+    // once, and again only if the context's own conditions change (flash attention settled from auto)
+    if (line == qunion.logged) {
+        return;
+    }
+    qunion.logged = line;
+
+    LLAMA_LOG_WARN("llama_memory_hybrid_idx: qsa union: %s\n", line.c_str());
 }
 
 llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
@@ -410,7 +433,8 @@ void llama_memory_hybrid_idx::set_input_qsa(
         uint32_t ratio,
         int64_t n_kv,
         bool blk_bias,
-        const llama_qsa_keep_inputs & keep) const {
+        const llama_qsa_keep_inputs & keep,
+        const llama_qsa_union_tables & tables) const {
     const llama_qsa_keep_mode mode = keep.plan == nullptr ? LLAMA_QSA_KEEP_LEGACY : keep.plan->mode;
 
     const bool keep_full = mode == LLAMA_QSA_KEEP_FULL;
@@ -419,8 +443,12 @@ void llama_memory_hybrid_idx::set_input_qsa(
     GGML_ASSERT(ratio > 0);
     GGML_ASSERT(n_kv > 0);
     GGML_ASSERT(get_mem_idx() != nullptr);
-    GGML_ASSERT(bias != nullptr);
     GGML_ASSERT(cell_blk != nullptr || blk_bias);
+
+    // LLAMA_QSA_UNION: the block bias is built on the GPU from four small tables instead of this input
+    const bool gpu_bias = tables.on();
+    GGML_ASSERT(gpu_bias == (bias == nullptr));
+    GGML_ASSERT(!gpu_bias || (blk_bias && cell_blk == nullptr && tables.blk_hi && tables.q_idx));
 
     // today's pooling reads blk_cells and blk_pos; INCR pools its own rows and may leave both out
     GGML_ASSERT(keep_incr || (blk_cells != nullptr && blk_pos != nullptr));
@@ -430,11 +458,12 @@ void llama_memory_hybrid_idx::set_input_qsa(
     GGML_ASSERT(keep.plan == nullptr || keep.plan->ratio == ratio);
 
     for (const ggml_tensor * t : { cell_blk, blk_cells, blk_pos, bias,
-            keep.fresh_cells, keep.fresh_pos, keep.fresh_dst, keep.blk_src, keep.blk_dst }) {
+            keep.fresh_cells, keep.fresh_pos, keep.fresh_dst, keep.blk_src, keep.blk_dst,
+            tables.blk_lo, tables.blk_hi, tables.cell_pos, tables.q_idx }) {
         GGML_ASSERT(t == nullptr || ggml_backend_buffer_is_host(t->buffer));
     }
 
-    const int64_t n_ns     = bias->ne[2];             // streams in this ubatch
+    const int64_t n_ns     = gpu_bias ? 1 : bias->ne[2]; // streams in this ubatch (the GPU bias: one)
     const int64_t n_tokens = ubatch->n_tokens;
     const int64_t r        = ratio;
     const int64_t n_blocks = (n_kv + r - 1)/r;
@@ -445,8 +474,10 @@ void llama_memory_hybrid_idx::set_input_qsa(
     GGML_ASSERT(blk_cells == nullptr || (blk_cells->ne[0] == r*n_blocks && blk_cells->ne[1] == n_ns));
     GGML_ASSERT(blk_pos   == nullptr || blk_pos->ne[0] == 4*n_blocks*n_ns);
     GGML_ASSERT(cell_blk  == nullptr || (cell_blk->ne[0] == n_kv && cell_blk->ne[1] == n_ns));
-    GGML_ASSERT(bias->ne[0] == (blk_bias ? n_blocks : n_kv));
-    GGML_ASSERT(bias->ne[1] == n_tps);
+    GGML_ASSERT(gpu_bias || bias->ne[0] == (blk_bias ? n_blocks : n_kv));
+    GGML_ASSERT(gpu_bias || bias->ne[1] == n_tps);
+    GGML_ASSERT(!gpu_bias || (tables.blk_lo->ne[0] == n_blocks && tables.blk_hi->ne[0] == n_blocks &&
+                              (!tables.cell_pos || tables.cell_pos->ne[0] == n_kv) && tables.q_idx->ne[0] == n_tokens));
 
     // INCR still needs today's member lists and positions, to copy the rows it pools from them
     std::vector<int32_t> blk_cells_buf;
@@ -462,7 +493,7 @@ void llama_memory_hybrid_idx::set_input_qsa(
     int32_t * dst_cell_blk  = cell_blk == nullptr ? nullptr : (int32_t *) cell_blk->data;
     int32_t * dst_blk_cells = blk_cells == nullptr ? blk_cells_buf.data() : (int32_t *) blk_cells->data;
     int32_t * dst_blk_pos   = blk_pos   == nullptr ? blk_pos_buf.data()   : (int32_t *) blk_pos->data;
-    float   * dst_bias      = (float   *) bias->data;
+    float   * dst_bias      = gpu_bias ? nullptr : (float *) bias->data;
 
     // FULL and INCR: the store's rows (the position buckets, then the spares), and the rows INCR pools
     const int64_t n_buckets = keep_full || keep_incr ? qsa_keep_n_buckets(ratio) : 0;
@@ -531,7 +562,9 @@ void llama_memory_hybrid_idx::set_input_qsa(
     std::fill(dst_blk_pos, dst_blk_pos + 4*n_blocks*n_ns, 0);
 
     // block top-k picks before the attention mask, so only it can waste a pick (llama-qsa-picks.h)
-    const bool    count_picks = blk_bias && cell_blk == nullptr;
+    // with the GPU bias (LLAMA_QSA_UNION) the host never sees a row's bias, so it counts only when asked
+    // to print (LLAMA_QSA_PICK_STATS=1), from the bounds, rather than add a per-(row, block) loop back
+    const bool    count_picks = blk_bias && cell_blk == nullptr && (!gpu_bias || picks.log);
     const int64_t n_pick      = llama_qsa_n_block_picks(n_kv, r, hparams_idx.indexer_top_k);
 
     llama_qsa_pick_count pick_count;
@@ -856,6 +889,37 @@ void llama_memory_hybrid_idx::set_input_qsa(
         // a stream shared by several sequences keeps the old rule
         const bool causal = picks.causal && one_seq;
 
+        // LLAMA_QSA_UNION: each block's bounds and each cell's index, once for the batch (llama-qsa-picks.h);
+        // the graph routes here only with the causal rule on a stream holding one sequence
+        std::vector<llama_qsa_bounds> bounds;
+
+        if (gpu_bias) {
+            GGML_ASSERT(causal && !oor && "qsa union: the GPU bias needs the causal rule on one sequence");
+
+            bounds.resize(n_blocks, llama_qsa_no_block_bounds());
+            for (int32_t b = 0; b < n_bid; ++b) {
+                bounds[b] = llama_qsa_block_bounds(bid_idx[b], r);
+            }
+            if (have_dead) {
+                bounds[dead_bid] = llama_qsa_spare_bounds(spare_min);
+            }
+
+            float * lo = (float *) tables.blk_lo->data;
+            float * hi = (float *) tables.blk_hi->data;
+            for (int64_t b = 0; b < n_blocks; ++b) {
+                lo[b] = llama_qsa_lo_f32(bounds[b]);
+                hi[b] = llama_qsa_hi_f32(bounds[b]);
+            }
+
+            // union attention only
+            if (tables.cell_pos != nullptr) {
+                float * cp = (float *) tables.cell_pos->data;
+                for (int64_t j = 0; j < n_kv; ++j) {
+                    cp[j] = cells.is_empty(j) ? LLAMA_QSA_CELL_EMPTY_F32 : (float) (ranked ? rank[j] : cells.pos_get(j));
+                }
+            }
+        }
+
         for (int64_t ii = 0; ii < n_tps; ++ii) {
             const int64_t      i      = s*n_tps + ii;
             const llama_seq_id seq_id = ubatch->seq_id[i][0];
@@ -887,6 +951,24 @@ void llama_memory_hybrid_idx::set_input_qsa(
 
             // the tail is an incomplete block and is always visible, as in the reference
             const int64_t tail_start = (q + 1)/r*r;
+
+            if (gpu_bias) {
+                // every live cell is this row's sequence, so a block's bias depends on its bounds alone
+                GGML_ASSERT(cells.seq_pos_min(seq_id) >= 0);
+
+                ((float *) tables.q_idx->data)[i] = (float) q;
+
+                if (count_picks) {
+                    llama_qsa_row_tally tally;
+                    for (int64_t b = 0; b < n_blocks; ++b) {
+                        const bool spare = have_dead && b == dead_bid;
+                        tally.add(llama_qsa_bounds_bias(bounds[b], q), spare ? spare_min > q : (b < n_bid && bid_idx[b] > q));
+                    }
+                    tally.finish(n_pick, pick_count);
+                }
+
+                continue;
+            }
 
             if (blk_bias) {
                 // a block sits wholly inside or outside the tail, so one value covers it.
@@ -1484,6 +1566,26 @@ void llama_memory_hybrid_idx_context::note_qsa_sliced() const {
     }
 }
 
+llama_qsa_union_mode llama_memory_hybrid_idx_context::get_qsa_union() const {
+    return mem != nullptr ? mem->qsa_union() : LLAMA_QSA_UNION_OFF;
+}
+
+bool llama_memory_hybrid_idx_context::get_qsa_causal_picks() const {
+    return mem != nullptr && mem->qsa_causal_picks();
+}
+
+void llama_memory_hybrid_idx_context::note_qsa_union(llama_qsa_union_mode route) const {
+    if (mem != nullptr) {
+        mem->qsa_union_note(route);
+    }
+}
+
+void llama_memory_hybrid_idx_context::log_qsa_union(const llama_qsa_union_gate & gate) const {
+    if (mem != nullptr) {
+        mem->qsa_union_log(gate);
+    }
+}
+
 const llama_kv_cache_context * llama_memory_hybrid_idx_context::get_idx() const {
     return static_cast<const llama_kv_cache_context *>(ctx_idx.get());
 }
@@ -1509,10 +1611,11 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
         uint32_t ratio,
         int64_t n_kv,
         bool blk_bias,
-        const llama_qsa_keep_inputs & keep) const {
+        const llama_qsa_keep_inputs & keep,
+        const llama_qsa_union_tables & tables) const {
     GGML_ASSERT(mem != nullptr);
 
-    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias, keep);
+    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias, keep, tables);
 }
 
 const llama_qsa_keep_plan & llama_memory_hybrid_idx_context::get_qsa_plan(uint32_t ratio) const {

@@ -57,6 +57,56 @@ inline float llama_qsa_spare_bias(int64_t spare_min, int64_t q, bool causal) {
     return 1e9f;
 }
 
+// LLAMA_QSA_UNION (models/qwen4exp-qsa-union.h): the same causal rule as two bounds per block, so the
+// bias of every (token, block) pair can be built on the GPU from one small table per block instead of
+// an [n_blocks x n_tokens] host input:
+//   bias(q) = q >= lo ? (q < hi ? 1e9 : 0) : -inf
+// A full block starting at s: lo = s, hi = s + r - 1 (the tail rule: s >= (q + 1)/r*r <=> q <= s + r - 2).
+// The spare block with smallest index m: lo = m, hi = never (1e9 from m on). A padding block id, or an
+// empty spare: lo = never (-inf for every row). Causal rule, one sequence a stream, only.
+static const int64_t LLAMA_QSA_BOUND_NEVER = int64_t(1) << 40; // past any index
+
+struct llama_qsa_bounds {
+    int64_t lo;
+    int64_t hi;
+};
+
+inline llama_qsa_bounds llama_qsa_block_bounds(int64_t blk_start, int64_t r) {
+    return { blk_start, blk_start + r - 1 };
+}
+
+inline llama_qsa_bounds llama_qsa_spare_bounds(int64_t spare_min) {
+    return { spare_min == LLAMA_QSA_SPARE_EMPTY ? LLAMA_QSA_BOUND_NEVER : spare_min, LLAMA_QSA_BOUND_NEVER };
+}
+
+inline llama_qsa_bounds llama_qsa_no_block_bounds() {
+    return { LLAMA_QSA_BOUND_NEVER, LLAMA_QSA_BOUND_NEVER };
+}
+
+inline float llama_qsa_bounds_bias(const llama_qsa_bounds & b, int64_t q) {
+    return q >= b.lo ? (q < b.hi ? 1e9f : 0.0f) : -INFINITY;
+}
+
+// the bounds as the GPU tables hold them, so the graph needs only step(): [q >= lo] = step(q + lo_f) with
+// lo_f = -(lo - 0.5), and [q < hi] = step(hi_f - q) with hi_f = hi - 0.5. Every index is an integer below
+// 2^22, so q, lo - 0.5 and hi - 0.5 are exact in F32 (LLAMA_QSA_BOUND_NEVER rounds, harmlessly: it is
+// only compared with indices far below it)
+inline float llama_qsa_lo_f32(const llama_qsa_bounds & b) { return -((float) b.lo - 0.5f); }
+inline float llama_qsa_hi_f32(const llama_qsa_bounds & b) { return (float) b.hi - 0.5f; }
+
+// the most cells the F32 tables can index exactly (see above)
+static const int64_t LLAMA_QSA_UNION_MAX_KV = int64_t(1) << 22;
+
+// a cell's index as the per-cell table holds it; an empty cell is after every token
+static const float LLAMA_QSA_CELL_EMPTY_F32 = 3e38f;
+
+// what the graph computes from those tables, op for op (step: 1 where x > 0), for the unit test
+inline float llama_qsa_bias_from_f32(float lo_f, float hi_f, float q) {
+    const float vis  = (lo_f + q) > 0.0f ? 1.0f : 0.0f;
+    const float tail = (hi_f - q) > 0.0f ? 1.0f : 0.0f;
+    return std::log(vis) + tail*1e9f;
+}
+
 // what one ubatch's rows did with their picks, counted from the bias alone (block top-k only)
 struct llama_qsa_pick_count {
     int64_t n_rows         = 0;

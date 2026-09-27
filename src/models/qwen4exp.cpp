@@ -1,5 +1,6 @@
 #include "models.h"
 #include "qwen4exp-qsa-slice.h"
+#include "qwen4exp-qsa-union.h"
 #include "llama-impl.h"
 #include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
@@ -911,9 +912,9 @@ static bool qwen4exp_sparse_fa() {
 class llama_model_qwen4exp::llm_graph_input_qsa : public llm_graph_input_i {
 public:
     llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, int64_t n_kv, bool blk_bias, bool block_topk,
-            const llama_qsa_keep_plan & plan) :
+            const llama_qsa_keep_plan & plan, llama_qsa_union_mode route = LLAMA_QSA_UNION_OFF) :
         mctx(mctx), ratio(ratio), n_kv(n_kv), blk_bias(blk_bias), block_topk(block_topk),
-        keep_mode(plan.mode), keep_n_slots(plan.n_slots), keep_s0(plan.s0) {}
+        keep_mode(plan.mode), keep_n_slots(plan.n_slots), keep_s0(plan.s0), route(route) {}
     virtual ~llm_graph_input_qsa() = default;
 
     void set_input(const llama_ubatch * ubatch) override {
@@ -932,7 +933,7 @@ public:
             GGML_ASSERT(keep.plan->mode == keep_mode && keep.plan->n_slots == keep_n_slots && keep.plan->s0 == keep_s0);
         }
 
-        mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias, keep);
+        mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, n_kv, blk_bias, keep, tables);
     }
 
     bool can_reuse(const llm_graph_params & params) override {
@@ -971,8 +972,17 @@ public:
         if (blk_pos != nullptr) {
             res &= blk_pos->ne[0] == 4*n_blocks*n_stream;
         }
-        res &= bias->ne[0]      == (blk_bias ? n_blocks : n_kv);
-        res &= bias->ne[1]      == params.ubatch.n_tokens/n_stream;
+        // LLAMA_QSA_UNION: the tables stand in for the bias; the route follows from the shapes checked here
+        res &= (bias == nullptr) == tables.on();
+        if (bias != nullptr) {
+            res &= bias->ne[0]  == (blk_bias ? n_blocks : n_kv);
+            res &= bias->ne[1]  == params.ubatch.n_tokens/n_stream;
+        }
+        if (tables.on()) {
+            res &= n_stream == 1;
+            res &= tables.blk_lo->ne[0] == n_blocks && (tables.cell_pos == nullptr || tables.cell_pos->ne[0] == n_kv);
+            res &= tables.q_idx->ne[0]  == params.ubatch.n_tokens;
+        }
 
         if (blk_src != nullptr) {
             res &= blk_src->ne[0] == n_blocks && blk_src->ne[1] == n_stream;
@@ -992,7 +1002,10 @@ public:
     ggml_tensor * cell_blk  = nullptr;   // I32 [n_kv, n_stream]
     ggml_tensor * blk_cells = nullptr;   // I32 [ratio*n_blocks, n_stream], not with INCR alone
     ggml_tensor * blk_pos   = nullptr;   // I32 [4*n_blocks*n_stream], not with INCR alone
-    ggml_tensor * bias      = nullptr;   // F32 [n_blocks or n_kv, n_tokens/n_stream, n_stream]
+    ggml_tensor * bias      = nullptr;   // F32 [n_blocks or n_kv, n_tokens/n_stream, n_stream]; null with tables
+
+    // LLAMA_QSA_UNION (qwen4exp-qsa-union.h): the block bias built on the GPU from these
+    llama_qsa_union_tables tables;
 
     // patch 4i, see llama_qsa_keep_inputs
     ggml_tensor * fresh_cells = nullptr; // I32 [ratio*F, n_stream]
@@ -1012,6 +1025,9 @@ public:
     const llama_qsa_keep_mode keep_mode;
     const uint32_t            keep_n_slots;
     const uint32_t            keep_s0;
+
+    // LLAMA_QSA_UNION: OFF (the host bias), BIAS or ATTN, decided from shapes and switches when built
+    const llama_qsa_union_mode route;
 };
 
 ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
@@ -1067,6 +1083,22 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
 
     GGML_ASSERT(!(keep_full || keep_incr) || (keep_plan.ns == n_stream && keep_plan.s0 == mctx_hyb->get_stream0()));
 
+    // LLAMA_QSA_UNION: the block bias from small tables on the GPU (qwen4exp-qsa-union.h), from shapes and switches
+    llama_qsa_union_gate ugate;
+    ugate.mode       = mctx_hyb->get_qsa_union();
+    ugate.block_topk = block_topk && qwen4exp_qsa_gather();
+    ugate.causal     = mctx_hyb->get_qsa_causal_picks();
+    ugate.one_seq    = !cparams.kv_unified || cparams.n_seq_max == 1;
+    ugate.gather     = gather;
+    ugate.n_stream   = n_stream;
+    ugate.n_tokens   = n_tokens;
+    ugate.n_kv       = n_kv;
+    ugate.flash_attn = cparams.flash_attn;
+    ugate.kv_f16     = mctx_hyb->get_attn()->type_k() == GGML_TYPE_F16 && mctx_hyb->get_attn()->type_v() == GGML_TYPE_F16;
+    ugate.same_head  = hparams.n_embd_head_k() == hparams.n_embd_head_v();
+    const llama_qsa_union_mode route = llama_qsa_union_route(ugate);
+    mctx_hyb->log_qsa_union(ugate); // the startup line, once
+
     // nothing above depends on the layer, so the layers sharing a ratio share one input set
     llm_graph_input_qsa * inp = nullptr;
 
@@ -1074,8 +1106,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     if (it != qsa_inps.end()) {
         inp = it->second;
         GGML_ASSERT(inp->blk_bias == blk_bias && inp->block_topk == block_topk && inp->keep_mode == keep_plan.mode);
+        GGML_ASSERT(inp->route == route);
     } else {
-        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, n_kv, blk_bias, block_topk, keep_plan);
+        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, n_kv, blk_bias, block_topk, keep_plan, route);
 
         qsa->k_idxs    = mctx_idx->build_input_k_idxs(ctx0, ubatch);
         qsa->cell_blk  = block_topk ? nullptr : ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
@@ -1084,7 +1117,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
 
         qsa->blk_cells = pool_all || blk_table ? ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, r*n_blocks, n_stream) : nullptr;
         qsa->blk_pos   = pool_all ? ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 4*n_blocks*n_stream) : nullptr;
-        qsa->bias      = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, blk_bias ? n_blocks : n_kv, n_tps, n_stream);
+        if (route == LLAMA_QSA_UNION_OFF) {
+            qsa->bias = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, blk_bias ? n_blocks : n_kv, n_tps, n_stream);
+        } else {
+            qsa->tables.blk_lo   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
+            qsa->tables.blk_hi   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
+            qsa->tables.q_idx    = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+        }
 
         if (keep_incr) {
             qsa->fresh_cells = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, r*n_fresh, n_stream);
@@ -1097,7 +1136,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
         }
 
         for (ggml_tensor * t : { qsa->cell_blk, qsa->blk_cells, qsa->blk_pos, qsa->bias,
-                qsa->fresh_cells, qsa->fresh_pos, qsa->fresh_dst, qsa->blk_src, qsa->blk_dst }) {
+                qsa->fresh_cells, qsa->fresh_pos, qsa->fresh_dst, qsa->blk_src, qsa->blk_dst,
+                qsa->tables.blk_lo, qsa->tables.blk_hi, qsa->tables.cell_pos, qsa->tables.q_idx }) {
             if (t != nullptr) {
                 ggml_set_input(t);
             }
@@ -1207,7 +1247,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     // SHARE-PARTS-PLAN.md phase 3: the score, picks and attention go slice by slice (qwen4exp-qsa-slice.h)
     if (slice != nullptr && inp->block_topk && n_stream == 1 && qwen4exp_qsa_gather()) {
         *slice = { pooled, q, inp->bias, inp->blk_cells, r, n_blocks,
-            llama_qsa_n_block_picks(n_kv, r, hparams.indexer_top_k), qwen4exp_sparse_fa(), mctx_hyb->get_qsa_slice() };
+            llama_qsa_n_block_picks(n_kv, r, hparams.indexer_top_k), qwen4exp_sparse_fa(), mctx_hyb->get_qsa_slice(),
+            inp->tables };
         return nullptr;
     }
 
@@ -1230,8 +1271,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     cb(score, "indexer_score", il);
 
     // one value per block, so it is cheaper to bias here than after the cells are expanded
+    // (LLAMA_QSA_UNION: the same values, built on the GPU from the tables)
     if (blk_bias) {
-        score = ggml_add(ctx0, score, inp->bias);
+        score = ggml_add(ctx0, score, inp->bias ? inp->bias : llama_qsa_union_bias(ctx0, inp->tables, 0, n_tokens));
     }
 
     if (inp->block_topk) {
@@ -1500,6 +1542,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
     ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, gather,
             slice_ask ? &slice : nullptr) : nullptr;
+    if (qsa) {
+        mctx_hyb->note_qsa_union(qsa_inps.at((uint32_t) hparams.dsv4_compress_ratios[il])->route);
+    }
 
     // Qwen3Next uses a single Q projection that outputs query + gate
     ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]

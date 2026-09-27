@@ -93,7 +93,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_sliced(
     const int64_t width   = r*parts.n_blk_sel; // cells a row may see
 
     GGML_ASSERT(kq_mask->ne[1] == n_tokens && kq_mask->ne[2] == 1 && kq_mask->ne[3] == 1);
-    GGML_ASSERT(parts.q->ne[2] == n_tokens && parts.bias->ne[1] == n_tokens);
+    GGML_ASSERT(parts.q->ne[2] == n_tokens && (parts.bias ? parts.bias->ne[1] == n_tokens : parts.tables.on()));
     GGML_ASSERT(ggml_is_contiguous(q_cur) && ggml_is_contiguous(parts.q));
 
     // the one source of zeros every slice's picks are written from, as long as the longest slice
@@ -138,8 +138,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_sliced(
         score = summed;
         name(score, "indexer_score", i);
 
-        ggml_tensor * bias = ggml_view_3d(ctx0, parts.bias, parts.n_blocks, n, 1,
-                parts.bias->nb[1], parts.bias->nb[2], t0*parts.bias->nb[1]);
+        // LLAMA_QSA_UNION: the same values, built on the GPU for these rows only (qwen4exp-qsa-union.h)
+        ggml_tensor * bias = parts.bias
+            ? ggml_view_3d(ctx0, parts.bias, parts.n_blocks, n, 1, parts.bias->nb[1], parts.bias->nb[2], t0*parts.bias->nb[1])
+            : llama_qsa_union_bias(ctx0, parts.tables, t0, n);
         score = ggml_add(ctx0, score, bias);
 
         ggml_tensor * blk_top = ggml_top_k(ctx0, score, parts.n_blk_sel);

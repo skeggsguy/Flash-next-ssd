@@ -1,4 +1,5 @@
-// The block top-k picker's bias rule and its counter (src/llama-qsa-picks.h), worked by hand.
+// The block top-k picker's bias rule and its counter (src/llama-qsa-picks.h), worked by hand, and the
+// same rule as two bounds a block (LLAMA_QSA_UNION), brute-forced against it.
 // The graph side is tests/test-qsa-causal.cpp.
 
 #include "../src/llama-qsa-picks.h"
@@ -110,11 +111,55 @@ static void test_tally() {
     CHECK(sum.n_rows == 11 && sum.n_picks_future == o.n_picks_future + 3 && sum.n_rows_blind == 1);
 }
 
+// LLAMA_QSA_UNION: the bounds give every row the causal rule's bias, brute force over every (q, block, r)
+// and every spare, both as integers and through the F32 tables and the graph's step() ops
+static void test_bounds() {
+    int64_t n_cases = 0;
+    const auto both = [&](const llama_qsa_bounds & b, int64_t q, float want) {
+        const float got   = llama_qsa_bounds_bias(b, q);
+        const float got_f = llama_qsa_bias_from_f32(llama_qsa_lo_f32(b), llama_qsa_hi_f32(b), (float) q);
+        const bool  ok    = std::isinf(want) ? (std::isinf(got) && got < 0 && std::isinf(got_f) && got_f < 0)
+                                             : (got == want && got_f == want);
+        if (!ok) {
+            fprintf(stderr, "  lo %lld hi %lld q %lld: want %g, got %g / %g\n",
+                    (long long) b.lo, (long long) b.hi, (long long) q, want, got, got_f);
+        }
+        CHECK(ok);
+        n_cases++;
+    };
+    for (int64_t r = 1; r <= 8; ++r) {
+        for (int64_t q = 0; q < 12*r; ++q) {
+            const int64_t tail_start = (q + 1)/r*r;
+            for (int64_t start = 0; start < 12*r; start += r) {
+                both(llama_qsa_block_bounds(start, r), q, llama_qsa_block_bias(start, q, tail_start, true));
+            }
+        }
+    }
+    for (int64_t q = 0; q < 64; ++q) {
+        for (int64_t m = 0; m < 64; ++m) {
+            both(llama_qsa_spare_bounds(m), q, llama_qsa_spare_bias(m, q, true));
+        }
+        both(llama_qsa_spare_bounds(LLAMA_QSA_SPARE_EMPTY), q, llama_qsa_spare_bias(LLAMA_QSA_SPARE_EMPTY, q, true));
+        both(llama_qsa_no_block_bounds(), q, -INFINITY);
+    }
+    // near the top of the index range the F32 tables must still be exact (ratio 4, 2^22 cells)
+    for (int64_t q : { (int64_t) 4194300, (int64_t) 4194301, (int64_t) 4194302, (int64_t) 4194303 }) {
+        for (int64_t start : { (int64_t) 4194296, (int64_t) 4194300 }) {
+            both(llama_qsa_block_bounds(start, 4), q, llama_qsa_block_bias(start, q, (q + 1)/4*4, true));
+        }
+        both(llama_qsa_spare_bounds(4194302), q, llama_qsa_spare_bias(4194302, q, true));
+    }
+    // an empty cell is after every token
+    CHECK(LLAMA_QSA_CELL_EMPTY_F32 - 4194303.0f > 0.0f);
+    CHECK(n_cases > 3000);
+}
+
 int main() {
     test_block_bias();
     test_spare_bias();
     test_n_block_picks();
     test_tally();
+    test_bounds();
 
     fprintf(stderr, "test-qsa-picks: %s\n", n_fail == 0 ? "all tests OK" : "FAILED");
     return n_fail == 0 ? 0 : 1;

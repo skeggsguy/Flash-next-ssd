@@ -20,6 +20,8 @@
 // applies only where the block picker runs on one stream and the batch is longer than a slice;
 // everything else (writing, the decode gather, several streams, the per-cell picker) is today's graph.
 
+#include "qwen4exp-qsa-union.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -52,7 +54,7 @@ std::vector<llama_qsa_slice_span> llama_qsa_slice_plan(int64_t n_tokens, uint32_
 struct llama_qsa_slice_parts {
     ggml_tensor * pooled    = nullptr; // F32 [idx_dim, n_blocks, 1]     the block summaries
     ggml_tensor * q         = nullptr; // F32 [idx_dim, n_idx_h, n_tokens] the indexer's queries
-    ggml_tensor * bias      = nullptr; // F32 [n_blocks, n_tokens, 1]    the block bias (llama-qsa-picks.h)
+    ggml_tensor * bias      = nullptr; // F32 [n_blocks, n_tokens, 1]    the block bias (llama-qsa-picks.h); null: tables
     ggml_tensor * blk_cells = nullptr; // I32 [r*n_blocks, 1]            each block's cells
 
     int64_t r         = 0;     // cells a block
@@ -60,4 +62,6 @@ struct llama_qsa_slice_parts {
     int64_t n_blk_sel = 0;     // blocks picked per row
     bool    sparse_fa = false; // pass the selection width to flash attention (qwen4exp_sparse_fa)
     uint32_t rows     = 0;     // LLAMA_QSA_SLICE
+
+    llama_qsa_union_tables tables; // LLAMA_QSA_UNION: each slice builds its rows of the bias from these
 };

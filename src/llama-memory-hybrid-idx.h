@@ -3,6 +3,7 @@
 #include "llama-memory-hybrid.h"
 #include "llama-ple-trace.h"
 #include "llama-qsa-picks.h"
+#include "models/qwen4exp-qsa-union.h"
 
 #include <map>
 #include <memory>
@@ -146,9 +147,12 @@ public:
     // llama-qsa-picks.h (blocks after the token -inf, so block top-k never picks them)
     // the caller then adds the attention mask, the only part of the bias that varies within a block
     // blk_cells and blk_pos may be null when INCR pools without them; keep carries the store's inputs
+    // LLAMA_QSA_UNION (models/qwen4exp-qsa-union.h): with `tables`, bias is null and the block bias is
+    // built on the GPU from them instead (block top-k, causal rule, one stream holding one sequence)
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio, int64_t n_kv,
-                       bool blk_bias, const llama_qsa_keep_inputs & keep) const;
+                       bool blk_bias, const llama_qsa_keep_inputs & keep,
+                       const llama_qsa_union_tables & tables = {}) const;
 
     // patch 4i. the switches are read when the memory is made, so each context has its own
     bool qsa_keep()       const { return keep.enabled; }
@@ -190,6 +194,19 @@ public:
     uint32_t qsa_slice()        const { return slice.rows; }
     uint64_t qsa_slice_builds() const { return slice.n_builds; }
     void     qsa_slice_note()   const { slice.n_builds++; }
+
+    // LLAMA_QSA_UNION (models/qwen4exp-qsa-union.h), read when the memory is made; and the layers built
+    // on each route so far (graph builds, the reserve's included): the GPU bias, and union attention
+    llama_qsa_union_mode qsa_union()              const { return qunion.mode; }
+    uint64_t             qsa_union_bias_builds()  const { return qunion.n_bias; }
+    uint64_t             qsa_union_attn_builds()  const { return qunion.n_attn; }
+    void                 qsa_union_note(llama_qsa_union_mode route) const {
+        qunion.n_bias += route != LLAMA_QSA_UNION_OFF;
+        qunion.n_attn += route == LLAMA_QSA_UNION_ATTN;
+    }
+
+    // the startup line, printed by the first QSA layer built (the reserve's), where the route is known
+    void qsa_union_log(const llama_qsa_union_gate & gate) const;
 
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
@@ -262,6 +279,15 @@ private:
         mutable uint64_t n_builds = 0;
     } slice;
 
+    struct {
+        llama_qsa_union_mode mode = LLAMA_QSA_UNION_OFF;
+
+        mutable uint64_t n_bias = 0;
+        mutable uint64_t n_attn = 0;
+
+        mutable std::string logged; // the startup line printed so far (empty: none yet)
+    } qunion;
+
     void qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch);
 
     // a plan in flight never finished its compute: whatever it wrote into the store cannot be trusted
@@ -321,7 +347,8 @@ public:
 
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio, int64_t n_kv,
-                       bool blk_bias, const llama_qsa_keep_inputs & keep) const;
+                       bool blk_bias, const llama_qsa_keep_inputs & keep,
+                       const llama_qsa_union_tables & tables = {}) const;
 
     // patch 4i: how the current ubatch makes the block summaries of this ratio (LEGACY with the switch off)
     const llama_qsa_keep_plan & get_qsa_plan(uint32_t ratio) const;
@@ -334,6 +361,11 @@ public:
 
     uint32_t get_qsa_slice()    const; // LLAMA_QSA_SLICE's rows a slice, 0 off
     void     note_qsa_sliced()  const; // a layer was built sliced
+
+    llama_qsa_union_mode get_qsa_union() const;                            // LLAMA_QSA_UNION, off without a memory
+    bool                 get_qsa_causal_picks() const;                     // LLAMA_QSA_CAUSAL_PICKS
+    void                 note_qsa_union(llama_qsa_union_mode route) const; // a layer was built on this route
+    void                 log_qsa_union(const llama_qsa_union_gate & gate) const; // the startup line, once the route is known
 
 private:
     llama_memory_hybrid_idx * mem = nullptr;

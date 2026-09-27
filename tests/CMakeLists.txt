@@ -170,6 +170,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-top-k-determinism.cpp)
     llama_build_and_test(test-qsa-picks.cpp)
     llama_build_and_test(test-qsa-slice.cpp)
+    llama_build_and_test(test-qsa-union.cpp)
     llama_build_and_test(test-speculative-record-only.cpp)
 
     if (GGML_METAL)
@@ -447,6 +448,23 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         test-qsa-keep-slice-rot PROPERTIES ENVIRONMENT "QSA_KEEP_SLICE=128")
     set_tests_properties(test-qsa-keep-slice test-qsa-keep-slice-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
     set_tests_properties(test-qsa-keep-slice-e64 test-qsa-keep-slice-e64-cpu test-qsa-keep-slice-rot PROPERTIES
+        FIXTURES_REQUIRED generate-models-e64)
+
+    # SHARE-PARTS-PLAN phase 6a: the picker's block bias built on the GPU from small tables (LLAMA_QSA_UNION=bias)
+    # writes every byte the host bias does: the whole batch (batches of the scenarios' own sizes) and sliced 128
+    # rows at a time, on the GPU and the CPU, both fixtures; the run fails unless the GPU bias really ran
+    llama_test(test-qsa-keep NAME test-qsa-keep-union           LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-qsa-keep NAME test-qsa-keep-union-cpu       LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    llama_test(test-qsa-keep NAME test-qsa-keep-union-slice     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-qsa-keep NAME test-qsa-keep-union-slice-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    llama_test(test-qsa-keep NAME test-qsa-keep-union-slice-e64     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf")
+    llama_test(test-qsa-keep NAME test-qsa-keep-union-slice-e64-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf" -ngl 0)
+    set_tests_properties(test-qsa-keep-union test-qsa-keep-union-cpu PROPERTIES ENVIRONMENT "QSA_KEEP_UNION=bias")
+    set_tests_properties(test-qsa-keep-union-slice test-qsa-keep-union-slice-cpu test-qsa-keep-union-slice-e64
+        test-qsa-keep-union-slice-e64-cpu PROPERTIES ENVIRONMENT "QSA_KEEP_UNION=bias;QSA_KEEP_SLICE=128")
+    set_tests_properties(test-qsa-keep-union test-qsa-keep-union-cpu test-qsa-keep-union-slice test-qsa-keep-union-slice-cpu
+        PROPERTIES FIXTURES_REQUIRED generate-models)
+    set_tests_properties(test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu PROPERTIES
         FIXTURES_REQUIRED generate-models-e64)
 
     # SHARE-PARTS-PLAN phase 1: the block top-k picker never picks a block after the token. The block
