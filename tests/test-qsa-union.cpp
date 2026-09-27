@@ -16,7 +16,7 @@ static int n_fail = 0;
 static void test_parse() {
     bool bad = true;
     CHECK(llama_qsa_union_parse(nullptr, &bad) == LLAMA_QSA_UNION_DEFAULT && !bad);
-    CHECK(LLAMA_QSA_UNION_DEFAULT == LLAMA_QSA_UNION_OFF); // off until the U-union rung
+    CHECK(LLAMA_QSA_UNION_DEFAULT == LLAMA_QSA_UNION_BIAS); // "bias" since the U-union rung; an off arm writes "0"
     CHECK(llama_qsa_union_parse("0", &bad) == LLAMA_QSA_UNION_OFF && !bad);
     CHECK(llama_qsa_union_parse("bias", &bad) == LLAMA_QSA_UNION_BIAS && !bad);
     CHECK(llama_qsa_union_parse("1", &bad) == LLAMA_QSA_UNION_ATTN && !bad);
