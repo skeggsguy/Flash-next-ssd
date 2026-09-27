@@ -3079,7 +3079,7 @@ llama_model_params llama_model_default_params() {
         /*.moe_stream_room_value       =*/ 0.0f,
         /*.moe_stream_room_parts       =*/ 4,
         /*.moe_stream_room_ubatch      =*/ 0, // not known: common and llama-bench pass their -ub
-        /*.ple_shelf_mib               =*/ 0, // off until the PS-shelf rung
+        /*.ple_shelf_mib               =*/ -1, // auto (128 MiB) since the PS-shelf rung; 0 = off
         /*.moe_stream_direct           =*/ false,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,

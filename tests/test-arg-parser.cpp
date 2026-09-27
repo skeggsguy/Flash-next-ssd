@@ -332,11 +332,13 @@ static void test(void) {
     }
 
     {
-        // the phrasebook shelf (SHARE-PARTS-PLAN.md phase 5): off unless asked for, auto its own value (-1, the
-        // engine's 128 MiB), sizes in MiB or GiB; a size read in the wrong unit would still load, 1,024 times off
+        // the phrasebook shelf (SHARE-PARTS-PLAN.md phase 5): on at auto unless set to 0 (after the PS-shelf rung;
+        // auto is its own value, -1, the engine's 128 MiB), sizes in MiB or GiB; a size read in the wrong unit would
+        // still load, 1,024 times off
         common_params p0;
-        assert(p0.ple_shelf_mib == 0);
-        assert(llama_model_default_params().ple_shelf_mib == 0);
+        assert(p0.ple_shelf_mib == -1);
+        assert(llama_model_default_params().ple_shelf_mib == -1);
+        assert(common_model_params_to_llama(p0).ple_shelf_mib == -1);
         struct shelf_case { const char * arg; int32_t mib; };
         for (const shelf_case & sc : std::vector<shelf_case>{
                 { "auto", -1 }, { "AUTO", -1 }, { "0", 0 }, { "128", 128 }, { "128M", 128 }, { "96mib", 96 },

@@ -2897,7 +2897,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--ple-shelf"}, "auto|0|<MiB>|<GiB>G",
         "the phrasebook shelf: keeps the n-gram phrasebook's rows (a table read a few rows a token) in a fixed "
         "buffer, read past the OS file cache, instead of leaving the whole pages they sit on in that cache. "
-        "auto = 128 MiB, <N> or <N>M = N MiB, <N>G = N GiB, 0 = off (default: 0)",
+        "auto = 128 MiB, <N> or <N>M = N MiB, <N>G = N GiB, 0 = off (default: auto)",
         [](common_params & params, const std::string & value) {
             std::string v = value;
             for (auto & c : v) {
