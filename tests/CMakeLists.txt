@@ -344,6 +344,23 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
     endforeach()
 
+    # The room under union attention (LLAMA_QSA_UNION=1, the default since the study's WRITING-PLAN step 1) on
+    # the h256 fixture, whose heads of 256 the Metal union attention kernel takes; the harness's own scenarios
+    # hold "bias" (on the e64 fixtures union attention runs on the CPU beside a Metal graph, and the resident
+    # and streamed models place the neighbouring ops differently)
+    llama_build(test-moe-room-union.cpp)
+    foreach (E64_NGL 99 0)
+        llama_test(
+            test-moe-room-union
+            NAME test-moe-room-union-h256-ngl${E64_NGL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/h256/qwen4exp-moe-h256.gguf" -ngl ${E64_NGL}
+        )
+        set_tests_properties(test-moe-room-union-h256-ngl${E64_NGL} PROPERTIES
+            FIXTURES_REQUIRED generate-models-h256
+        )
+    endforeach()
+
     llama_test(
         test-recurrent-state-rollback
         LABEL main

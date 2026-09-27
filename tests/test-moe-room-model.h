@@ -11,6 +11,7 @@
 #include "common.h"
 #include "llama.h"
 
+#include "../src/llama-memory-hybrid-idx.h"
 #include "../src/llama-model.h"
 #include "../src/llama-moe-room.h"
 #include "../src/llama-moe-stream.h"
@@ -54,8 +55,11 @@ struct outputs {
 const char * const G_SWEEP_MIN_TOKENS = "35"; // the threshold the scenarios run at (setup says why)
 
 int g_ngl = 99;
+const bool g_forward_debug = getenv("GGML_SCHED_DEBUG") != nullptr; // pass ggml's debug lines through the silent log
 std::string g_summary;  // the last "reading room =" line print_stats wrote
 std::string g_room_log; // every log line about the room (startup line, warnings, the belt's allocation)
+std::string g_union_log; // every "qsa union:" startup line (one per context; test-moe-room-union.cpp)
+int64_t     g_union_attn_builds = 0; // union attention floors built by every context run() made so far
 std::string g_path;
 
 bool capture_moe_out(ggml_tensor * t, bool ask, void * user_data) {
@@ -148,6 +152,9 @@ bool run(llama_model * model, uint32_t n_ubatch, const std::vector<segment> & se
         }
     }
     g_n_reused = llama_perf_context(ctx).n_reused;
+    if (auto * mem = dynamic_cast<llama_memory_hybrid_idx *>(llama_get_memory(ctx))) {
+        g_union_attn_builds += (int64_t) mem->qsa_union_attn_builds();
+    }
     llama_batch_free(batch);
     llama_free(ctx);
     return ok;
@@ -266,11 +273,17 @@ llama_model * setup(int argc, char ** argv) {
     // silent, except that the run's room summary (print_stats) and what loading said about the room are
     // caught, to check they are written
     llama_log_set([](ggml_log_level, const char * text, void *) {
+        if (g_forward_debug) {
+            fputs(text, stderr); // GGML_SCHED_DEBUG's splits and the like, else silent
+        }
         if (strstr(text, "moe stream: reading room = ") != nullptr) {
             g_summary = text;
         }
         if (strstr(text, "reading room") != nullptr || strstr(text, "moe-stream-room") != nullptr) {
             g_room_log += text;
+        }
+        if (strstr(text, "qsa union:") != nullptr) {
+            g_union_log += text;
         }
     }, nullptr);
     ggml_backend_load_all();
@@ -280,6 +293,13 @@ llama_model * setup(int argc, char ** argv) {
     // a floor under the threshold beside room floors, so they run at the old 35 through the rung's own
     // override, read at each model load; test-moe-room-model.cpp's "default threshold" unsets it.
     setenv("LLAMA_MOE_ROOM_SWEEP_MIN_TOKENS", G_SWEEP_MIN_TOKENS, 1);
+    // The room's promise is the resident model's bytes under the same graph. Union attention (LLAMA_QSA_UNION
+    // unset = "1" since the study's WRITING-PLAN step 1) takes no Metal kernel at the fixtures' heads of 128,
+    // so it runs on the CPU, and there the resident and streamed models round it differently (streamed
+    // against streamed stays byte-identical). These scenarios hold the exact GPU-bias route, as before;
+    // test-moe-room-union.cpp asks for union attention itself, on the h256 fixture, whose heads of 256 the
+    // Metal kernel takes.
+    setenv("LLAMA_QSA_UNION", "bias", 1);
 
     config ref_cfg;
     ref_cfg.stream = false;

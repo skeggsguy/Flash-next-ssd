@@ -60,7 +60,8 @@ std::string llama_qsa_union_describe(llama_qsa_union_mode mode, const char * fal
                    "(exact; LLAMA_QSA_UNION=0 uploads it from the CPU, =1 also hands attention the picks)";
         case LLAMA_QSA_UNION_ATTN:
             return "on, reading in hands attention each token's picks directly (union attention, no mask "
-                   "input) and builds the block bias on the GPU (LLAMA_QSA_UNION=0 is the masked path)";
+                   "input) and builds the block bias on the GPU (LLAMA_QSA_UNION=bias keeps the mask and writes "
+                   "the masked path's exact words, LLAMA_QSA_UNION=0 also uploads the bias from the CPU)";
         case LLAMA_QSA_UNION_OFF:
         default:
             return "off, reading in uploads the picker's block bias and the attention mask from the CPU "

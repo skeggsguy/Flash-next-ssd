@@ -16,7 +16,7 @@ static int n_fail = 0;
 static void test_parse() {
     bool bad = true;
     CHECK(llama_qsa_union_parse(nullptr, &bad) == LLAMA_QSA_UNION_DEFAULT && !bad);
-    CHECK(LLAMA_QSA_UNION_DEFAULT == LLAMA_QSA_UNION_BIAS); // "bias" since the U-union rung; an off arm writes "0"
+    CHECK(LLAMA_QSA_UNION_DEFAULT == LLAMA_QSA_UNION_ATTN); // union attention since WRITING-PLAN step 1; "bias" and "0" are written
     CHECK(llama_qsa_union_parse("0", &bad) == LLAMA_QSA_UNION_OFF && !bad);
     CHECK(llama_qsa_union_parse("bias", &bad) == LLAMA_QSA_UNION_BIAS && !bad);
     CHECK(llama_qsa_union_parse("1", &bad) == LLAMA_QSA_UNION_ATTN && !bad);
@@ -33,6 +33,8 @@ static void test_parse() {
     CHECK(off.rfind("off,", 0) == 0 && off.find("LLAMA_QSA_UNION=bias") != std::string::npos);
     CHECK(bias.rfind("bias,", 0) == 0 && bias.find("exact") != std::string::npos && bias.find("LLAMA_QSA_UNION=0") != std::string::npos);
     CHECK(attn.rfind("on,", 0) == 0 && attn.find("no mask") != std::string::npos && attn.find("LLAMA_QSA_UNION=0") != std::string::npos);
+    // union attention is the default, so its line names the exact route to ask for instead
+    CHECK(attn.find("LLAMA_QSA_UNION=bias") != std::string::npos && attn.find("exact words") != std::string::npos);
 
     // "1" in a context that cannot take union attention: the line says bias, and why
     const std::string fell = llama_qsa_union_describe(LLAMA_QSA_UNION_ATTN, "this context has no flash attention");

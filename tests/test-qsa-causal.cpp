@@ -74,12 +74,16 @@ struct run {
 
     run(const common_params & params, llama_model * model, bool causal, uint32_t n_ubatch, uint32_t n_seq = 1) {
         setenv("LLAMA_QSA_CAUSAL_PICKS", causal ? "1" : "0", 1);
+        // the whole-batch picks this test reads (indexer_top_blk-<il>); union attention, the default since the
+        // study's WRITING-PLAN step 1, always slices and names them per slice, so the exact GPU-bias route is written
+        setenv("LLAMA_QSA_UNION", "bias", 1);
         auto cparams = common_context_params_to_llama(params);
         cparams.n_ctx = 1024; cparams.n_batch = 1024; cparams.n_ubatch = n_ubatch;
         cparams.n_seq_max = n_seq; cparams.kv_unified = true;
         cparams.cb_eval = observe; cparams.cb_eval_user_data = &obs;
         ctx = llama_init_from_model(model, cparams);
         unsetenv("LLAMA_QSA_CAUSAL_PICKS");
+        unsetenv("LLAMA_QSA_UNION");
         if (ctx == nullptr || mem()->qsa_causal_picks() != causal) {
             fprintf(stderr, "FAIL: the rule switch was not picked up per context (asked %d)\n", causal);
             ok = false;

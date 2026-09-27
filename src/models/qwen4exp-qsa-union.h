@@ -36,9 +36,10 @@ enum llama_qsa_union_mode : uint8_t {
     LLAMA_QSA_UNION_ATTN = 2, // "1": the bias built on the GPU, union attention, no mask
 };
 
-// "bias" by default after the U-union rung (Tom, 2026-09-28): exact and 1.2 GiB lighter at 160K; union attention
-// ("1") reads in +5.5% faster and frees 3.7 GiB but changes words at long contexts, so it waits in the backlog
-#define LLAMA_QSA_UNION_DEFAULT LLAMA_QSA_UNION_BIAS
+// union attention by default (Tom, 2026-09-28, the study's WRITING-PLAN.md step 1): reading in +5.5% and 3.7 GiB
+// lighter at 160K than "0" (2.5 GiB lighter than "bias"), level on perplexity at 8K and 32K, but a different
+// rounding path that moves words at long contexts; "bias" writes the masked path's exact words
+#define LLAMA_QSA_UNION_DEFAULT LLAMA_QSA_UNION_ATTN
 
 // the fewest rows a batch takes the route with: every slice has at least this many (qwen4exp-qsa-slice.h),
 // and union attention needs 8 or more; shorter batches (a written token, the apprentice's check batches)
