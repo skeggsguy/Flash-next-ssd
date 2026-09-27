@@ -18,6 +18,7 @@ struct ggml_context;
 struct ggml_tensor;
 
 struct llama_lazy_reader;
+class llama_ple_trace;
 struct llama_cparams;
 struct llama_layer;
 
@@ -108,6 +109,10 @@ public:
     void set_rows(const int32_t * idx, int64_t n);
 
     bool can_reuse(int64_t n_rows) const;
+
+    // LLAMA_PLE_TRACE (llama-ple-trace.h): set_rows() also hands its row ids to the trace; null when off
+    llama_ple_trace * trace        = nullptr;
+    bool              trace_warmup = false; // these rows are the warm-up's (cparams.warmup)
 
 private:
     const llama_lazy_reader * reader = nullptr;

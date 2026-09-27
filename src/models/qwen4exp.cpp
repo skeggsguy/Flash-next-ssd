@@ -1742,6 +1742,7 @@ public:
 
     bool can_reuse(const llm_graph_params & params) override {
         mctx = static_cast<const llama_memory_hybrid_idx_context *>(params.mctx)->get_attn();
+        rows.trace_warmup = params.cparams.warmup; // LLAMA_PLE_TRACE: a reused graph may follow the warm-up
         return rows.can_reuse((int64_t) pmodel.hparams.ple_n_heads * params.ubatch.n_tokens);
     }
 
@@ -1891,6 +1892,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_inp_ple(
 
     ggml_tensor * emb = ple_inp->rows.build(ctx0, model.per_layer_tok_embd,
             model.lazy_reader(model.per_layer_tok_embd), n_heads * n_tokens);
+    // LLAMA_PLE_TRACE: the context's phrasebook trace sees every row this graph reads (llama-ple-trace.h)
+    llama_ple_trace_attach(ple_inp->rows, mctx_hyb->get_ple_trace(), model.per_layer_tok_embd,
+            hparams.ple_n_heads, hparams.ple_ngram_size, cparams.warmup);
     res->add_input(std::move(ple_inp));
 
     // flatten the heads: the gather lays the head dimension out slowest, as the reference does

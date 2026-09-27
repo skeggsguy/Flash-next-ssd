@@ -432,6 +432,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-qsa-causal-per-cell test-qsa-causal-per-cell-cpu
         PROPERTIES ENVIRONMENT "LLAMA_QWEN4EXP_BLOCK_TOPK=0")
 
+    # SHARE-PARTS-PLAN phase 2: the phrasebook trace (LLAMA_PLE_TRACE). The writer's bytes by hand, then the tiny
+    # qwen4exp fixture read the default way and with direct reads: the rows are the n-gram hash's, the logits do not move
+    llama_build(test-ple-trace.cpp)
+    llama_test(test-ple-trace NAME test-ple-trace     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-ple-trace NAME test-ple-trace-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    set_tests_properties(test-ple-trace test-ple-trace-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
+
     llama_build(test-fusion.cpp)
 endif()
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama-memory-hybrid.h"
+#include "llama-ple-trace.h"
 #include "llama-qsa-picks.h"
 
 #include <map>
@@ -181,6 +182,9 @@ public:
     bool                 qsa_causal_picks() const { return picks.causal; }
     llama_qsa_pick_stats qsa_pick_stats()   const { return picks.stats; }
 
+    // LLAMA_PLE_TRACE (llama-ple-trace.h), read when the memory is made: null when off
+    llama_ple_trace * get_ple_trace() const { return ple_trace.get(); }
+
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
     // seq_id < 0 drops the whole context, as the caches themselves do on a failed restore
@@ -241,6 +245,9 @@ private:
         // set_input_qsa is const: the counter is bookkeeping, not state
         mutable llama_qsa_pick_stats stats;
     } picks;
+
+    // the phrasebook trace lives here because the memory is made once per context
+    std::unique_ptr<llama_ple_trace> ple_trace;
 
     void qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch);
 
@@ -309,6 +316,8 @@ public:
     bool          get_qsa_keep_check()       const;
     ggml_tensor * get_qsa_keep_rows(int32_t il) const;
     ggml_tensor * get_qsa_keep_sum (int32_t il) const;
+
+    llama_ple_trace * get_ple_trace() const; // null when LLAMA_PLE_TRACE is off
 
 private:
     llama_memory_hybrid_idx * mem = nullptr;

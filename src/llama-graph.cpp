@@ -7,6 +7,7 @@
 #include "llama-cparams.h"
 #include "llama-sampler.h"
 #include "llama-moe-stream.h"
+#include "llama-ple-trace.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -87,6 +88,10 @@ ggml_tensor * llm_graph_lazy_rows::build(ggml_context * ctx0, ggml_tensor * tabl
 
 void llm_graph_lazy_rows::set_rows(const int32_t * idx, int64_t n) {
     GGML_ASSERT(can_reuse(n));
+
+    if (trace) {
+        trace->record(idx, n, trace_warmup);
+    }
 
     if (!reader) {
         ggml_backend_tensor_set(t, idx, 0, n*ggml_element_size(t));

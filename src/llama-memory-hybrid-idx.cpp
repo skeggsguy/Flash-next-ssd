@@ -117,6 +117,9 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
                 ? "causal, a token never picks a block after it (LLAMA_QSA_CAUSAL_PICKS=0 restores the old rule)"
                 : "old rule (LLAMA_QSA_CAUSAL_PICKS=0), blocks after a token share its tail's bias and can fill its picks");
     }
+
+    // LLAMA_PLE_TRACE: the phrasebook trace, per context like the switches above (SHARE-PARTS-PLAN.md phase 2)
+    ple_trace = llama_ple_trace::from_env();
 }
 
 llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
@@ -1451,6 +1454,10 @@ bool llama_memory_hybrid_idx_context::apply() {
     }
 
     return res;
+}
+
+llama_ple_trace * llama_memory_hybrid_idx_context::get_ple_trace() const {
+    return mem != nullptr ? mem->get_ple_trace() : nullptr;
 }
 
 const llama_kv_cache_context * llama_memory_hybrid_idx_context::get_idx() const {
