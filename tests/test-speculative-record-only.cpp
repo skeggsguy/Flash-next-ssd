@@ -19,6 +19,7 @@ static std::string g_log;
 
 static void test_parse() {
     CHECK(llama_mtp_record_only_parse(nullptr) == LLAMA_MTP_RECORD_ONLY_DEFAULT);
+    CHECK(llama_mtp_record_only_parse(nullptr) == true); // on since the A-record rung; "0" is the whole floor
     CHECK(llama_mtp_record_only_parse("1")   == true);
     CHECK(llama_mtp_record_only_parse("2")   == true);
     CHECK(llama_mtp_record_only_parse("0")   == false); // today's graph
@@ -56,8 +57,12 @@ static void test_init() {
     CHECK(g_log.find("apprentice: reading in runs the whole floor") != std::string::npos);
     CHECK(g_log.find("LLAMA_MTP_RECORD_ONLY=1") != std::string::npos);
 
-    // unset: the default
+    // unset: the default, on since the A-record rung, and the line says how to turn it off
+    g_log.clear();
     CHECK(llama_mtp_record_only_init(nullptr, true, LLM_ARCH_QWEN4EXP) == LLAMA_MTP_RECORD_ONLY_DEFAULT);
+    CHECK(llama_mtp_record_only_init(nullptr, true, LLM_ARCH_QWEN4EXP));
+    CHECK(g_log.find("apprentice: reading in records K/V only") != std::string::npos);
+    CHECK(g_log.find("LLAMA_MTP_RECORD_ONLY=0") != std::string::npos);
 
     // asked for on an arch without the graph: off, and the line says why
     g_log.clear();

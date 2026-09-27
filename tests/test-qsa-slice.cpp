@@ -13,6 +13,7 @@ static int n_fail = 0;
 
 static void test_parse() {
     CHECK(llama_qsa_slice_parse(nullptr) == LLAMA_QSA_SLICE_DEFAULT);
+    CHECK(llama_qsa_slice_parse(nullptr) == 512u); // on since the Q-slice rung; "0" is the whole batch
     CHECK(llama_qsa_slice_parse("0")     == 0);
     CHECK(llama_qsa_slice_parse("")      == 0);   // not a number: off, like the other QSA switches
     CHECK(llama_qsa_slice_parse("off")   == 0);

@@ -25,8 +25,9 @@
 
 struct ggml_tensor;
 
-// 0 until the Q-slice rung has measured reading in and writing with it (then 512)
-#define LLAMA_QSA_SLICE_DEFAULT 0u
+// 512 since the Q-slice rung (reading in and writing level with the whole batch, 4.7 GiB less working
+// space at 160K); "0" still does the whole batch at once
+#define LLAMA_QSA_SLICE_DEFAULT 512u
 
 // the smallest LLAMA_QSA_SLICE, and the fewest rows a slice of the plan has: see above
 #define LLAMA_QSA_SLICE_MIN      128u

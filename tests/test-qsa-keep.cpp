@@ -143,9 +143,9 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     if (v == VARIANT_CHECK) {
         setenv("LLAMA_QSA_KEEP_CHECK", "1", 1);
     }
-    if (g_slice > 0) {
-        setenv("LLAMA_QSA_SLICE", v == VARIANT_REF ? "0" : std::to_string(g_slice).c_str(), 1);
-    }
+    // written in every run, "0" included: unset slices at 512 since the Q-slice rung, and the runs without
+    // QSA_KEEP_SLICE check the whole batch at once
+    setenv("LLAMA_QSA_SLICE", v == VARIANT_REF ? "0" : std::to_string(g_slice).c_str(), 1);
 
     auto cparams = common_context_params_to_llama(params);
     cparams.n_ctx      = cfg.n_ctx;
