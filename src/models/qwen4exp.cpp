@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 #include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
+#include "llama-mtp-record.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -411,7 +412,9 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     res->add_input(std::move(inp));
 
     ggml_tensor * inp_pos     = build_inp_pos();
-    ggml_tensor * inp_out_ids = build_inp_out_ids();
+    // a batch that asks for no outputs (reading in, a checked batch) only records its K/V (llama-mtp-record.h)
+    const bool record_only    = llama_mtp_records_only(cparams.mtp_record_only, n_outputs);
+    ggml_tensor * inp_out_ids = record_only ? nullptr : build_inp_out_ids();
 
     auto * inp_attn = build_attn_inp_kv();
 
@@ -529,6 +532,12 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
             n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
             ext_factor, attn_factor, beta_fast, beta_slow);
+
+    if (record_only) {
+        // no attention, no books, no head: t_logits and t_h_nextn stay null (the unused mask is never allocated)
+        llama_mtp_record_kv(*this, inp_attn, Kcur, Vcur, il);
+        return;
+    }
 
     const float kq_scale = hparams.f_attention_scale == 0.0f
             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;

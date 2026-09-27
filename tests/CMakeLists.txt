@@ -170,6 +170,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-top-k-determinism.cpp)
     llama_build_and_test(test-qsa-picks.cpp)
     llama_build_and_test(test-qsa-slice.cpp)
+    llama_build_and_test(test-speculative-record-only.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -254,6 +255,19 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     )
     set_tests_properties(test-generate-models-qwen4exp-e64l4 PROPERTIES
         FIXTURES_SETUP generate-models-e64l4
+    )
+    # the apprentice's floor: qwen4exp with one MTP block after its two trunk floors (SHARE-PARTS-PLAN phase 4). In a
+    # folder of its own: test-save-load-state loads every model in MODEL_DIR without the MTP block (load_mtp off), and
+    # a file carrying the block's tensors then fails the loader's tensor count
+    file(MAKE_DIRECTORY "${MODEL_DIR}/mtp")
+    llama_test(
+        test-llama-archs
+        NAME test-generate-models-qwen4exp-e64mtp
+        LABEL main
+        ARGS -a qwen4exp --n-expert 64 --n-expert-used 8 --nextn --suffix -e64mtp --unit-scales -s 42 -o "${MODEL_DIR}/mtp"
+    )
+    set_tests_properties(test-generate-models-qwen4exp-e64mtp PROPERTIES
+        FIXTURES_SETUP generate-models-e64mtp
     )
 
     # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
@@ -454,6 +468,15 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-ple-trace NAME test-ple-trace     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
     llama_test(test-ple-trace NAME test-ple-trace-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
     set_tests_properties(test-ple-trace test-ple-trace-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
+
+    # SHARE-PARTS-PLAN phase 4: the apprentice records only (LLAMA_MTP_RECORD_ONLY). Its records and every guess
+    # byte-identical to the whole floor's, no attention, books or head built while reading in, a smaller working
+    # space that stays so after a memory update (the reserve there asks for no outputs too), and the library's
+    # graph still reused through the reading room when the apprentice reads in between
+    llama_build(test-qwen4exp-mtp-record.cpp)
+    llama_test(test-qwen4exp-mtp-record NAME test-qwen4exp-mtp-record     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-qwen4exp-mtp-record NAME test-qwen4exp-mtp-record-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-qwen4exp-mtp-record test-qwen4exp-mtp-record-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
     llama_build(test-fusion.cpp)
 endif()

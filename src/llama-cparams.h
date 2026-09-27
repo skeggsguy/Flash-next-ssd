@@ -53,6 +53,7 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool mtp_record_only = false; // the apprentice's batches without outputs record K/V only (llama-mtp-record.h)
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 

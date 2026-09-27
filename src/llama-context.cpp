@@ -14,6 +14,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-moe-stream.h"
+#include "llama-mtp-record.h"
 #include "llama-ext.h"
 #include "llama-sampler.h"
 #include "llama.h"
@@ -131,6 +132,9 @@ llama_context::llama_context(
     embd_layer_inp.resize(hparams.n_layer() + 1);
 
     cparams.ctx_type          = params.ctx_type;
+    // the apprentice's reading in records K/V only (LLAMA_MTP_RECORD_ONLY, per context; llama-mtp-record.h)
+    cparams.mtp_record_only   = llama_mtp_record_only_init(getenv("LLAMA_MTP_RECORD_ONLY"),
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP, model.arch);
     cparams.rope_scaling_type = params.rope_scaling_type;
     cparams.pooling_type      = params.pooling_type;
 
@@ -682,7 +686,8 @@ void llama_context::sched_reserve() {
     int n_splits_tg = -1;
     int n_nodes_tg  = -1;
 
-    const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
+    // a record-only apprentice reserves its big graph without outputs, i.e. the graph its reading in builds
+    const uint32_t n_outputs_pp = llama_mtp_reserve_outputs(cparams.mtp_record_only, std::min(n_tokens, cparams.n_outputs_max));
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
@@ -895,7 +900,7 @@ bool llama_context::memory_update(bool optimize) {
         const uint32_t n_seqs = cparams.n_seq_max;
         const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
-        const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+        const uint32_t n_outputs_max = llama_mtp_reserve_outputs(cparams.mtp_record_only, std::min(n_tokens, cparams.n_outputs_max));
 
         auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get());
         if (!gf) {
@@ -2514,7 +2519,7 @@ static void ubatch_prepare_reserve(
 ggml_cgraph * llama_context::graph_reserve(
         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
-    GGML_ASSERT(n_outputs >= 1);
+    GGML_ASSERT(n_outputs >= 1 || cparams.mtp_record_only); // a record-only apprentice reserves its reading in
 
     if (n_tokens % n_seqs != 0) {
         n_tokens = ((n_tokens + (n_seqs - 1)) / n_seqs) * n_seqs; // round to next multiple of n_seqs
