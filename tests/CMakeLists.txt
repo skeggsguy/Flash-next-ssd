@@ -270,6 +270,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-generate-models-qwen4exp-e64mtp PROPERTIES
         FIXTURES_SETUP generate-models-e64mtp
     )
+    # qwen4exp at the library's head size of 256, two q heads on one kv head: the shape the Metal union attention
+    # kernel takes (LLAMA_QSA_UNION, SHARE-PARTS-PLAN phase 6); its own folder, like the MTP fixture
+    file(MAKE_DIRECTORY "${MODEL_DIR}/h256")
+    llama_test(
+        test-llama-archs
+        NAME test-generate-models-qwen4exp-h256
+        LABEL main
+        ARGS -a qwen4exp --n-expert 64 --n-expert-used 8 --n-embd 512 --n-head-kv 1 --suffix -h256 --unit-scales -s 42 -o "${MODEL_DIR}/h256"
+    )
+    set_tests_properties(test-generate-models-qwen4exp-h256 PROPERTIES
+        FIXTURES_SETUP generate-models-h256
+    )
 
     # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
     # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
@@ -466,6 +478,17 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         PROPERTIES FIXTURES_REQUIRED generate-models)
     set_tests_properties(test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu PROPERTIES
         FIXTURES_REQUIRED generate-models-e64)
+
+    # SHARE-PARTS-PLAN phase 6b: union attention (LLAMA_QSA_UNION=1) picks what the masked path picks, attends
+    # exactly the cells the masked path leaves visible, and agrees with it within a tolerance; the head-256
+    # fixture runs the Metal union kernel, the default fixture's heads of 128 the CPU op
+    llama_build(test-qsa-union-model.cpp)
+    llama_test(test-qsa-union-model NAME test-qsa-union-model          LABEL main ARGS -m "${MODEL_DIR}/h256/qwen4exp-moe-h256.gguf")
+    llama_test(test-qsa-union-model NAME test-qsa-union-model-cpu      LABEL main ARGS -m "${MODEL_DIR}/h256/qwen4exp-moe-h256.gguf" -ngl 0)
+    llama_test(test-qsa-union-model NAME test-qsa-union-model-e64      LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf")
+    llama_test(test-qsa-union-model NAME test-qsa-union-model-e64-cpu  LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf" -ngl 0)
+    set_tests_properties(test-qsa-union-model test-qsa-union-model-cpu PROPERTIES FIXTURES_REQUIRED generate-models-h256)
+    set_tests_properties(test-qsa-union-model-e64 test-qsa-union-model-e64-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64)
 
     # SHARE-PARTS-PLAN phase 1: the block top-k picker never picks a block after the token. The block
     # path on the GPU and the CPU (the CPU run also holds the picks to one token at a time); the per-cell

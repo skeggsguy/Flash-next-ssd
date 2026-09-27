@@ -2433,7 +2433,8 @@ struct llama_model_qwen4exp : public llama_model_base {
         std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
 
         // QSA: token indices this layer's queries may attend to, or nullptr for dense; with `slice`
-        // (asked for only when the batch is longer than a slice) it may fill that instead and return nullptr
+        // (asked for when the batch is longer than a slice, or with LLAMA_QSA_UNION=1) it may fill that
+        // instead and return nullptr
         ggml_tensor * build_qsa_top_k(
   const llama_memory_hybrid_idx_context * mctx_hyb,
                     ggml_tensor * cur,
@@ -2446,6 +2447,26 @@ struct llama_model_qwen4exp : public llama_model_base {
 
         // build_attn_qsa for a batch too long for one slice: models/qwen4exp-qsa-slice.cpp
         ggml_tensor * build_attn_qsa_sliced(
+        llm_graph_input_attn_kv * inp,
+                    ggml_tensor * q_cur,
+                    ggml_tensor * k_cur,
+                    ggml_tensor * v_cur,
+    const llama_qsa_slice_parts & parts,
+                          float   kq_scale,
+                            int   il);
+
+        // the picker for one slice's rows, shared by the sliced path and build_attn_qsa_union: models/qwen4exp-qsa-slice.cpp
+        ggml_tensor * build_qsa_slice_picks(
+    const llama_qsa_slice_parts & parts,
+                    ggml_tensor * tbl,
+                        int64_t   t0,
+                        int64_t   n,
+                         size_t   i,
+                            int   il);
+
+        // LLAMA_QSA_UNION=1: the picks go straight to attention (union attention), a slice at a time or
+        // the whole batch in one: models/qwen4exp-qsa-union.cpp
+        ggml_tensor * build_attn_qsa_union(
         llm_graph_input_attn_kv * inp,
                     ggml_tensor * q_cur,
                     ggml_tensor * k_cur,

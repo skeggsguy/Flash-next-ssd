@@ -64,4 +64,5 @@ struct llama_qsa_slice_parts {
     uint32_t rows     = 0;     // LLAMA_QSA_SLICE
 
     llama_qsa_union_tables tables; // LLAMA_QSA_UNION: each slice builds its rows of the bias from these
+    bool union_attn = false;       // LLAMA_QSA_UNION=1: attention reads the picks (build_attn_qsa_union)
 };

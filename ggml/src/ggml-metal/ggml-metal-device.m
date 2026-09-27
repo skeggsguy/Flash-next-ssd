@@ -2355,7 +2355,8 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16 &&
                    v->type == GGML_TYPE_F16 && mask->type == GGML_TYPE_F16 &&
                    uids->type == GGML_TYPE_I32 &&
-                   q->ne[0] == 512 && k->ne[0] == 512 && v->ne[0] == 512 &&
+                   // the kernel is instantiated for heads of 512 (DSV4) and 256 (qwen4exp, LLAMA_QSA_UNION)
+                   q->ne[0] == k->ne[0] && k->ne[0] == v->ne[0] && (k->ne[0] == 256 || k->ne[0] == 512) &&
                    q->ne[3] == 1 && k->ne[3] == 1 && v->ne[3] == 1 &&
                    k->ne[1] == v->ne[1] && k->ne[2] == v->ne[2] &&
                    k->ne[2] > 0 && q->ne[2] % k->ne[2] == 0 &&

@@ -88,3 +88,8 @@ struct llama_qsa_union_tables {
 
 // rows [t0, t0 + n) of the block bias, F32 [n_blocks, n]: {-inf, 1e9, 0} exactly as the host fills them
 ggml_tensor * llama_qsa_union_bias(ggml_context * ctx, const llama_qsa_union_tables & tab, int64_t t0, int64_t n);
+
+// the union attention's selection for rows [t0, t0 + n): the picked cells (I32 [width, n]) with every cell
+// after the row's token (or empty) replaced by -1, I32 [width, n]
+ggml_tensor * llama_qsa_union_select(ggml_context * ctx, const llama_qsa_union_tables & tab, ggml_tensor * cells,
+        int64_t t0, int64_t n);

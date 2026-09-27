@@ -7882,16 +7882,20 @@ struct test_flash_attn_union : public test_case {
     const int64_t n_sel;
     const int64_t n_dense;
     const bool uniform;
+    // qwen4exp's selections (LLAMA_QSA_UNION): cells after the token arrive as -1, which union_build
+    // drops, and padding picks repeat cell 0
+    const bool holes;
 
     std::string vars() override {
-        return VARS_TO_STR8(hs, nh, nr2, kv, nb, n_sel, n_dense, uniform);
+        return VARS_TO_STR9(hs, nh, nr2, kv, nb, n_sel, n_dense, uniform, holes);
     }
 
     double max_nmse_err() override { return 5e-4; }
 
     test_flash_attn_union(int64_t hs = 512, int64_t nh = 1, int64_t nr2 = 64, int64_t kv = 2048,
-                          int64_t nb = 64, int64_t n_sel = 128, int64_t n_dense = 0, bool uniform = false)
-        : hs(hs), nh(nh), nr2(nr2), kv(kv), nb(nb), n_sel(n_sel), n_dense(n_dense), uniform(uniform) {}
+                          int64_t nb = 64, int64_t n_sel = 128, int64_t n_dense = 0, bool uniform = false,
+                          bool holes = false)
+        : hs(hs), nh(nh), nr2(nr2), kv(kv), nb(nb), n_sel(n_sel), n_dense(n_dense), uniform(uniform), holes(holes) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, hs, nb, nh*nr2, 1);
@@ -7929,6 +7933,24 @@ struct test_flash_attn_union : public test_case {
                         std::shuffle(pool.begin(), pool.end(), rng);
                     }
                     std::copy_n(pool.begin(), n_sel, data.begin() + row*n_sel);
+                    if (holes) {
+                        // a row sees fewer cells the earlier it is: row r drops about r/nb of its picks,
+                        // and every third row repeats cell 0 in its first slots
+                        for (int64_t i = 0; i < n_sel; ++i) {
+                            if ((i*7 + row*13) % nb < row) {
+                                data[row*n_sel + i] = -1;
+                            }
+                        }
+                        if (row % 3 == 0) {
+                            data[row*n_sel + 0] = 0;
+                            data[row*n_sel + 1] = 0;
+                        }
+                        if (row == 0) {
+                            std::fill_n(data.begin(), n_sel, -1); // a row with no cell but its own repeats
+                            data[0] = 0;
+                            data[5] = 0;
+                        }
+                    }
                 }
                 ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(int32_t));
             } else {
@@ -10385,6 +10407,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_union(512, 1, 64,  65536, 64, 128, 256));
     test_cases.emplace_back(new test_flash_attn_union(512, 1, 64, 131072, 64, 128,   0));
     test_cases.emplace_back(new test_flash_attn_union(512, 4,  4, 1024, 64, 64, 0));
+
+    // qwen4exp's QSA floors (LLAMA_QSA_UNION): heads of 256, 2 kv heads for 24 q heads, 2,052 picked cells
+    // a row (513 blocks of 4; all 2,048 at 2,048 cells), no dense prefix; with holes, the -1 of a cell after
+    // the token and the repeated cell 0 of a padding pick, and a slice's 512 rows
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,   2048, 64, 2048, 0));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,   4096, 64, 2052, 0));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,  16384, 65, 2052, 0));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,  65536, 64, 2052, 0));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12, 131072, 64, 2052, 0));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,   2048, 64, 2048, 0, false, true));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,   4096, 64, 2052, 0, true,  true));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12, 131072, 64, 2052, 0, false, true));
+    test_cases.emplace_back(new test_flash_attn_union(256, 2, 12,  16384, 512, 2052, 0, false, true));
 
     for (int64_t n_csa : {1024, 4096, 32768}) {
         for (int64_t block : {4, 8}) {

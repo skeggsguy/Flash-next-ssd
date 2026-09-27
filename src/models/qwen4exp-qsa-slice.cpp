@@ -49,6 +49,58 @@ std::vector<llama_qsa_slice_span> llama_qsa_slice_plan(int64_t n_tokens, uint32_
     return spans;
 }
 
+// the picker for rows [t0, t0 + n) (build_qsa_top_k's block path from the score on): each row's picked
+// cells, I32 [width, n], named indexer_top_k-<il>-s<i>. Shared by the sliced masked path and union
+// attention (qwen4exp-qsa-union.cpp), so both pick exactly what the whole batch picks
+ggml_tensor * llama_model_qwen4exp::graph::build_qsa_slice_picks(
+        const llama_qsa_slice_parts & parts,
+        ggml_tensor *                 tbl,
+        int64_t                       t0,
+        int64_t                       n,
+        size_t                        i,
+        int                           il) {
+    const int64_t idx_dim = parts.q->ne[0];
+    const int64_t n_idx_h = parts.q->ne[1];
+    const int64_t width   = parts.r*parts.n_blk_sel;
+
+    const auto name = [&](ggml_tensor * t, const char * base) {
+        cb(t, base, il);
+        ggml_format_name(t, "%s-%d-s%zu", base, il, i);
+    };
+
+    ggml_tensor * q = ggml_view_3d(ctx0, parts.q, idx_dim, n_idx_h, n,
+            parts.q->nb[1], parts.q->nb[2], t0*parts.q->nb[2]);
+
+    ggml_tensor * score = ggml_mul_mat(ctx0, parts.pooled, ggml_reshape_3d(ctx0, q, idx_dim, n_idx_h*n, 1));
+    score = ggml_reshape_4d(ctx0, score, parts.n_blocks, n_idx_h, n, 1);
+    score = ggml_relu(ctx0, score);
+
+    ggml_tensor * summed = nullptr;
+    for (int64_t h = 0; h < n_idx_h; ++h) {
+        ggml_tensor * slice = ggml_view_3d(ctx0, score, parts.n_blocks, n, 1,
+                score->nb[2], score->nb[3], h*score->nb[1]);
+        summed = summed ? ggml_add(ctx0, summed, slice) : ggml_cont(ctx0, slice);
+    }
+    score = summed;
+    name(score, "indexer_score");
+
+    // LLAMA_QSA_UNION: the same values, built on the GPU for these rows only (qwen4exp-qsa-union.h)
+    ggml_tensor * bias = parts.bias
+        ? ggml_view_3d(ctx0, parts.bias, parts.n_blocks, n, 1, parts.bias->nb[1], parts.bias->nb[2], t0*parts.bias->nb[1])
+        : llama_qsa_union_bias(ctx0, parts.tables, t0, n);
+    score = ggml_add(ctx0, score, bias);
+
+    ggml_tensor * blk_top = ggml_top_k(ctx0, score, parts.n_blk_sel);
+    name(blk_top, "indexer_top_blk");
+
+    ggml_tensor * sel   = ggml_reshape_3d(ctx0, blk_top, parts.n_blk_sel*n, 1, 1);
+    ggml_tensor * cells = ggml_get_rows(ctx0, tbl, sel);       // [r, n_blk_sel*n, 1]
+    cells = ggml_reshape_4d(ctx0, cells, width, n, 1, 1);
+    name(cells, "indexer_top_k");
+
+    return cells;
+}
+
 // Each slice repeats, for its rows, build_qsa_top_k's block path (from the score on) and
 // build_attn_qsa's masked path, op for op and in the same shapes but for the row count: the bytes of
 // every row are the whole batch's (test-qsa-keep's slice runs compare them). A change to either of
@@ -87,8 +139,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_sliced(
     ggml_tensor * k       = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v       = mctx_cur->get_v(ctx0, il);
 
-    const int64_t idx_dim = parts.q->ne[0];
-    const int64_t n_idx_h = parts.q->ne[1];
     const int64_t r       = parts.r;
     const int64_t width   = r*parts.n_blk_sel; // cells a row may see
 
@@ -122,35 +172,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_sliced(
         const int64_t n  = spans[i].n;
 
         // the picker (build_qsa_top_k from the score on), for these rows
-        ggml_tensor * q = ggml_view_3d(ctx0, parts.q, idx_dim, n_idx_h, n,
-                parts.q->nb[1], parts.q->nb[2], t0*parts.q->nb[2]);
-
-        ggml_tensor * score = ggml_mul_mat(ctx0, parts.pooled, ggml_reshape_3d(ctx0, q, idx_dim, n_idx_h*n, 1));
-        score = ggml_reshape_4d(ctx0, score, parts.n_blocks, n_idx_h, n, 1);
-        score = ggml_relu(ctx0, score);
-
-        ggml_tensor * summed = nullptr;
-        for (int64_t h = 0; h < n_idx_h; ++h) {
-            ggml_tensor * slice = ggml_view_3d(ctx0, score, parts.n_blocks, n, 1,
-                    score->nb[2], score->nb[3], h*score->nb[1]);
-            summed = summed ? ggml_add(ctx0, summed, slice) : ggml_cont(ctx0, slice);
-        }
-        score = summed;
-        name(score, "indexer_score", i);
-
-        // LLAMA_QSA_UNION: the same values, built on the GPU for these rows only (qwen4exp-qsa-union.h)
-        ggml_tensor * bias = parts.bias
-            ? ggml_view_3d(ctx0, parts.bias, parts.n_blocks, n, 1, parts.bias->nb[1], parts.bias->nb[2], t0*parts.bias->nb[1])
-            : llama_qsa_union_bias(ctx0, parts.tables, t0, n);
-        score = ggml_add(ctx0, score, bias);
-
-        ggml_tensor * blk_top = ggml_top_k(ctx0, score, parts.n_blk_sel);
-        name(blk_top, "indexer_top_blk", i);
-
-        ggml_tensor * sel   = ggml_reshape_3d(ctx0, blk_top, parts.n_blk_sel*n, 1, 1);
-        ggml_tensor * cells = ggml_get_rows(ctx0, tbl, sel);       // [r, n_blk_sel*n, 1]
-        cells = ggml_reshape_4d(ctx0, cells, width, n, 1, 1);
-        name(cells, "indexer_top_k", i);
+        ggml_tensor * cells = build_qsa_slice_picks(parts, tbl, t0, n, i, il);
 
         // the mask (build_attn_qsa's masked path), for these rows
         ggml_tensor * mask = ggml_view_4d(ctx0, kq_mask, kq_mask->ne[0], n, 1, 1,
@@ -169,6 +191,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa_sliced(
         mask_top_k = ggml_view_4d(ctx0, mask_top_k, mask_top_k->ne[1], mask_top_k->ne[2], 1, mask_top_k->ne[3],
                 mask_top_k->nb[2], mask_top_k->nb[3], mask_top_k->nb[3], 0);
         mask_top_k = ggml_add(ctx0, mask_top_k, mask);
+        name(mask_top_k, "qsa_mask", i); // test-qsa-union holds union attention's visible set to it
 
         // attention for these rows
         ggml_tensor * q_rows = ggml_view_3d(ctx0, q_cur, q_cur->ne[0], q_cur->ne[1], n,

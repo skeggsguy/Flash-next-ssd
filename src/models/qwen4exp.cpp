@@ -1123,6 +1123,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
             qsa->tables.blk_lo   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
             qsa->tables.blk_hi   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
             qsa->tables.q_idx    = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+            if (route == LLAMA_QSA_UNION_ATTN) {
+                qsa->tables.cell_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_kv);
+            }
         }
 
         if (keep_incr) {
@@ -1245,10 +1248,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     cb(q, "indexer_q", il);
 
     // SHARE-PARTS-PLAN.md phase 3: the score, picks and attention go slice by slice (qwen4exp-qsa-slice.h)
-    if (slice != nullptr && inp->block_topk && n_stream == 1 && qwen4exp_qsa_gather()) {
+    // LLAMA_QSA_UNION=1: union attention takes every batch on its route, one slice or several
+    const bool sliced = mctx_hyb->get_qsa_slice() > 0 && n_tokens > mctx_hyb->get_qsa_slice();
+    if (slice != nullptr && inp->block_topk && n_stream == 1 && qwen4exp_qsa_gather() &&
+            (sliced || inp->route == LLAMA_QSA_UNION_ATTN)) {
         *slice = { pooled, q, inp->bias, inp->blk_cells, r, n_blocks,
             llama_qsa_n_block_picks(n_kv, r, hparams.indexer_top_k), qwen4exp_sparse_fa(), mctx_hyb->get_qsa_slice(),
-            inp->tables };
+            inp->tables, inp->route == LLAMA_QSA_UNION_ATTN };
         return nullptr;
     }
 
@@ -1538,7 +1544,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
     // LLAMA_QSA_SLICE: a batch longer than a slice may be scored and attended slice by slice
     llama_qsa_slice_parts slice;
-    const bool slice_ask = qsa && !gather && mctx_hyb->get_qsa_slice() > 0 && n_tokens > mctx_hyb->get_qsa_slice();
+    const bool slice_ask = qsa && !gather && ((mctx_hyb->get_qsa_slice() > 0 && n_tokens > mctx_hyb->get_qsa_slice()) ||
+            mctx_hyb->get_qsa_union() == LLAMA_QSA_UNION_ATTN);
 
     ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, gather,
             slice_ask ? &slice : nullptr) : nullptr;
@@ -1596,7 +1603,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
-    if (slice.q != nullptr) {
+    if (slice.q != nullptr && slice.union_attn) {
+        cur = build_attn_qsa_union(inp, Qcur, Kcur, Vcur, slice, kq_scale, il);
+    } else if (slice.q != nullptr) {
         mctx_hyb->note_qsa_sliced();
         cur = build_attn_qsa_sliced(inp, Qcur, Kcur, Vcur, slice, kq_scale, il);
     } else if (top_k) {

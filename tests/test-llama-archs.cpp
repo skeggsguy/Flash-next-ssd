@@ -47,6 +47,10 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
 static bool g_unit_scales = false;
 static uint32_t g_n_layer = 0; // --n-layer: more floors than the arch default (0: the default)
 static bool g_nextn = false;    // --nextn: qwen4exp with one MTP block after the trunk (the apprentice's floor)
+// --n-embd / --n-head-kv (0: the arch default): qwen4exp at the library's head size of 256 with shared kv heads,
+// the shape the Metal union attention kernel takes (LLAMA_QSA_UNION, SHARE-PARTS-PLAN phase 6)
+static uint32_t g_n_embd    = 0;
+static uint32_t g_n_head_kv = 0;
 
 static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     size_t seed = *(const size_t *) userdata;
@@ -154,7 +158,11 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe,
         n_layer = 8; // 1 layer per stack x 2 h-cycles x (3 l-cycles + 1) cache slots
     }
 
-    uint32_t n_head_kv = n_head;
+    if (g_n_embd > 0) {
+        n_embd = g_n_embd;
+    }
+
+    uint32_t n_head_kv = g_n_head_kv > 0 ? g_n_head_kv : n_head;
     if (arch == LLM_ARCH_QWEN3) {
         n_head_kv = 1; // MQA coverage
     } else if (arch == LLM_ARCH_MUSE_GLIMMER || arch == LLM_ARCH_AFMOE) {
@@ -1067,6 +1075,15 @@ int main(int argc, char ** argv) {
         }
         if (strcmp(argv[i], "--nextn") == 0) {
             g_nextn = true;
+        }
+        if (strcmp(argv[i], "--n-embd") == 0 || strcmp(argv[i], "--n-head-kv") == 0) {
+            if (i + 1 < argc) {
+                const bool embd = strcmp(argv[i], "--n-embd") == 0;
+                (embd ? g_n_embd : g_n_head_kv) = (uint32_t) std::stoul(argv[++i]);
+            } else {
+                usage(argv);
+                return 1;
+            }
         }
         if (strcmp(argv[i], "--n-layer") == 0) {
             if (i + 1 < argc) {
