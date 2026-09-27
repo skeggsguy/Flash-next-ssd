@@ -469,6 +469,15 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-ple-trace NAME test-ple-trace-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
     set_tests_properties(test-ple-trace test-ple-trace-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
 
+    # SHARE-PARTS-PLAN phase 5: the phrasebook shelf (--ple-shelf). Its bookkeeping against an oracle, its reads on
+    # temporary tables (IQ4_NL rows against ggml_get_rows), then the tiny qwen4exp fixture with and without it
+    llama_build_and_test(test-ple-shelf.cpp)
+    llama_build_and_test(test-ple-shelf-io.cpp)
+    llama_build(test-ple-shelf-model.cpp)
+    llama_test(test-ple-shelf-model NAME test-ple-shelf-model     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-ple-shelf-model NAME test-ple-shelf-model-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    set_tests_properties(test-ple-shelf-model test-ple-shelf-model-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
+
     # SHARE-PARTS-PLAN phase 4: the apprentice records only (LLAMA_MTP_RECORD_ONLY). Its records and every guess
     # byte-identical to the whole floor's, no attention, books or head built while reading in, a smaller working
     # space that stays so after a memory update (the reserve there asks for no outputs too), and the library's

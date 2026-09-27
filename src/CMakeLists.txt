@@ -62,6 +62,9 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-wave-plan.cpp
     llama-moe-stream-wave-stage.cpp
     llama-mtp-record.cpp
+    llama-ple-shelf.cpp
+    llama-ple-shelf-io.cpp
+    llama-ple-shelf-stats.cpp
     llama-ple-trace.cpp
     llama-qsa-picks.cpp
     llama-quant.cpp

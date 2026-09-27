@@ -1716,6 +1716,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.moe_stream_room_mode  = params.moe_stream_room_mode;
     mparams.moe_stream_room_value = params.moe_stream_room_value;
     mparams.moe_stream_room_parts = params.moe_stream_room_parts;
+    mparams.ple_shelf_mib         = params.ple_shelf_mib;
     // the reading-in batch the context will use (llama_context clamps -ub to -b), so the room is only
     // carved out of the desk where a batch can reach its threshold
     mparams.moe_stream_room_ubatch = (uint32_t) std::max(1, params.n_ubatch <= 0 ? params.n_batch : std::min(params.n_batch, params.n_ubatch));

@@ -5,6 +5,7 @@
 #include "llama-hparams.h"
 #include "llama-impl.h"
 #include "llama-lazy-reader.h"
+#include "llama-ple-shelf-io.h"
 #include "llama-mmap.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
@@ -2066,6 +2067,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
 // --lazy-mode on-direct: give a lazily read tensor a reader that gathers its rows with explicit positional reads
 void llama_model_base::add_lazy_reader(llama_model_loader & ml, const ggml_tensor * t) {
+    // --ple-shelf: the phrasebook shelf reads the lazy table's rows, whatever the lazy mode (llama-ple-shelf-io.h)
+    if (params.ple_shelf_mib != 0 && !ml.no_alloc && t && ml.lazy.has(t) && ggml_is_matrix(t) && ml.get_weight(ggml_get_name(t))) {
+        lazy_readers.emplace(t, std::make_unique<llama_lazy_reader>(llama_ple_shelf_make(
+                llama_ple_shelf_table(ml, t, params.moe_stream_alt_path, params.ple_shelf_mib, hparams.ple_n_heads))));
+        return;
+    }
+
     if (ml.lazy.mode != LLAMA_LAZY_MODE_DIRECT || ml.no_alloc || !t || !ml.lazy.has(t)) {
         return;
     }
@@ -3071,6 +3079,7 @@ llama_model_params llama_model_default_params() {
         /*.moe_stream_room_value       =*/ 0.0f,
         /*.moe_stream_room_parts       =*/ 4,
         /*.moe_stream_room_ubatch      =*/ 0, // not known: common and llama-bench pass their -ub
+        /*.ple_shelf_mib               =*/ 0, // off until the PS-shelf rung
         /*.moe_stream_direct           =*/ false,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,

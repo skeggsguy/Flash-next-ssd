@@ -2,6 +2,7 @@
 
 #include "llama-impl.h"
 #include "llama-lazy-reader.h"
+#include "llama-ple-shelf-io.h"
 #include "llama-model.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
@@ -98,10 +99,28 @@ void llm_graph_lazy_rows::set_rows(const int32_t * idx, int64_t n) {
         return;
     }
 
-    staging.resize(n*reader->row_elems()*sizeof(float));
-    reader->gather(idx, n, (float *) staging.data());
+    if (pending.valid()) {
+        GGML_ASSERT(pending_n == n);
+        reader->shelf->wait(pending); // begin_rows() started these rows' gather
+    } else {
+        staging.resize(n*reader->row_elems()*sizeof(float));
+        reader->gather(idx, n, (float *) staging.data());
+    }
 
     ggml_backend_tensor_set(t, staging.data(), 0, staging.size());
+}
+
+void llm_graph_lazy_rows::begin_rows(const int32_t * idx, int64_t n) {
+    if (!reader || !reader->shelf || !can_reuse(n)) {
+        return;
+    }
+    if (pending.valid()) {
+        reader->shelf->wait(pending); // a begin without its set_rows: never leave a gather writing into staging
+    }
+
+    staging.resize(n*reader->row_elems()*sizeof(float));
+    pending   = reader->shelf->begin(idx, n, (float *) staging.data());
+    pending_n = n;
 }
 
 bool llm_graph_lazy_rows::can_reuse(int64_t n_rows) const {
@@ -1400,6 +1419,9 @@ void llm_graph_result::reset() {
 }
 
 void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
+    for (auto & input : inputs) {
+        input->set_input_begin(ubatch);
+    }
     for (auto & input : inputs) {
         input->set_input(ubatch);
     }

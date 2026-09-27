@@ -8,10 +8,15 @@
 #include <string>
 #include <vector>
 
+class llama_ple_shelf_io;
+
 struct llama_lazy_reader {
     // path holds the table, whose row 0 starts at file offset offs
     llama_lazy_reader(const std::string & path, size_t offs, enum ggml_type type,
                       int64_t row_elems, int64_t n_rows, int n_readers);
+
+    // --ple-shelf: the rows come from the phrasebook shelf (llama-ple-shelf-io.h), which reads its own files
+    explicit llama_lazy_reader(std::unique_ptr<llama_ple_shelf_io> shelf);
 
     llama_lazy_reader(const llama_lazy_reader &) = delete;
     llama_lazy_reader & operator=(const llama_lazy_reader &) = delete;
@@ -25,6 +30,9 @@ struct llama_lazy_reader {
     int64_t row_elems() const { return relems; }
     size_t  row_size()  const { return rsize;  }
     int     n_readers() const { return (int) files.size(); }
+
+    // set by the shelf constructor, null otherwise; gather() then reads through it
+    const std::unique_ptr<llama_ple_shelf_io> shelf;
 
 private:
     // read the rows of pairs[begin, end) through files[fi], writing each to its slot

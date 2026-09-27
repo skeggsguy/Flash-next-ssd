@@ -331,6 +331,29 @@ static void test(void) {
         }
     }
 
+    {
+        // the phrasebook shelf (SHARE-PARTS-PLAN.md phase 5): off unless asked for, auto its own value (-1, the
+        // engine's 128 MiB), sizes in MiB or GiB; a size read in the wrong unit would still load, 1,024 times off
+        common_params p0;
+        assert(p0.ple_shelf_mib == 0);
+        assert(llama_model_default_params().ple_shelf_mib == 0);
+        struct shelf_case { const char * arg; int32_t mib; };
+        for (const shelf_case & sc : std::vector<shelf_case>{
+                { "auto", -1 }, { "AUTO", -1 }, { "0", 0 }, { "128", 128 }, { "128M", 128 }, { "96mib", 96 },
+                { "1G", 1024 }, { "0.5gib", 512 }, { "1.5", 1 } }) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "--ple-shelf", sc.arg};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.ple_shelf_mib == sc.mib);
+            assert(common_model_params_to_llama(p).ple_shelf_mib == sc.mib);
+        }
+        for (const char * bad : {"x", "-1", "", "1q", "0.5", "nan", "inf", ".", "2000G", "1gg"}) {
+            common_params p;
+            argv = {"binary_name", "-m", "model_file.gguf", "--ple-shelf", bad};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+        }
+    }
+
     // --draft cannot be used outside llama-speculative
     argv = {"binary_name", "--spec-draft-n-max", "123"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SPECULATIVE));

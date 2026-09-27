@@ -29,6 +29,8 @@ struct llama_file {
 
     // positional read, bypassing any buffering; not thread-safe and not valid on a direct I/O file
     void read_at(size_t offset, void * dst, size_t len) const;
+    // read_at that is also valid on a macOS direct I/O file (F_NOCACHE takes any offset and length); elsewhere read_at
+    void read_at_nocache(size_t offset, void * dst, size_t len) const;
 
     void seek(size_t offset, int whence) const;
 

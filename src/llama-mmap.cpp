@@ -144,6 +144,8 @@ struct llama_file::impl {
         }
     }
 
+    void read_at_nocache(size_t offset, void * ptr, size_t len) const { read_at(offset, ptr, len); }
+
     void read_at(size_t offset, void * ptr, size_t len) const {
         size_t bytes_read = 0;
         while (bytes_read < len) {
@@ -400,7 +402,17 @@ struct llama_file::impl {
 
     void read_at(size_t offset, void * ptr, size_t len) const {
         GGML_ASSERT(!has_direct_io()); // a single row read meets none of O_DIRECT's alignment rules
+        pread_all(offset, ptr, len);
+    }
 
+    void read_at_nocache(size_t offset, void * ptr, size_t len) const {
+#if !defined(__APPLE__)
+        GGML_ASSERT(!has_direct_io()); // O_DIRECT's alignment rules again; macOS's F_NOCACHE has none
+#endif
+        pread_all(offset, ptr, len);
+    }
+
+    void pread_all(size_t offset, void * ptr, size_t len) const {
         const int rfd = fd != -1 ? fd : fileno(fp);
 
         size_t bytes_read = 0;
@@ -476,6 +488,7 @@ bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
 const std::string & llama_file::name() const { return pimpl->fname; }
 
 void llama_file::read_at(size_t offset, void * dst, size_t len) const { pimpl->read_at(offset, dst, len); }
+void llama_file::read_at_nocache(size_t offset, void * dst, size_t len) const { pimpl->read_at_nocache(offset, dst, len); }
 
 int llama_file::file_id() const {
 #ifdef _WIN32

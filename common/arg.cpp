@@ -2893,6 +2893,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.moe_stream_room_parts = value;
         }
     ).set_env("LLAMA_ARG_MOE_STREAM_ROOM_PARTS"));
+    add_opt(common_arg(
+        {"--ple-shelf"}, "auto|0|<MiB>|<GiB>G",
+        "the phrasebook shelf: keeps the n-gram phrasebook's rows (a table read a few rows a token) in a fixed "
+        "buffer, read past the OS file cache, instead of leaving the whole pages they sit on in that cache. "
+        "auto = 128 MiB, <N> or <N>M = N MiB, <N>G = N GiB, 0 = off (default: 0)",
+        [](common_params & params, const std::string & value) {
+            std::string v = value;
+            for (auto & c : v) {
+                c = (char) std::tolower((unsigned char) c);
+            }
+            if (v == "auto") {
+                params.ple_shelf_mib = -1;
+                return;
+            }
+            char * end = nullptr;
+            const double x = v.empty() || !(std::isdigit((unsigned char) v[0]) || v[0] == '.') ? -1.0 : std::strtod(v.c_str(), &end);
+            const std::string suffix = end ? std::string(end) : std::string();
+            const bool gib = suffix == "g" || suffix == "gb" || suffix == "gib";
+            const double mib = gib ? x * 1024.0 : x;
+            if (!(x >= 0.0) || !std::isfinite(x) || !(gib || suffix.empty() || suffix == "m" || suffix == "mb" || suffix == "mib")
+                    || (x > 0.0 && mib < 1.0) || mib > 1048576.0) {
+                throw std::invalid_argument("--ple-shelf takes auto, 0, or a size from 1 MiB to 1024 GiB");
+            }
+            params.ple_shelf_mib = (int32_t) mib;
+        }
+    ).set_env("LLAMA_ARG_PLE_SHELF"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

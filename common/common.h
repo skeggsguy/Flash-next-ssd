@@ -601,6 +601,7 @@ struct common_params {
     int32_t  moe_stream_room_mode  = LLAMA_MOE_ROOM_DEFAULT; // the reading room: on (auto) unless it cannot be made
     float    moe_stream_room_value = 0.0f;  // its GiB or floors, by mode
     int32_t  moe_stream_room_parts = 4;     // parts a floor's books on the belt are cut into
+    int32_t  ple_shelf_mib         = 0;     // --ple-shelf: the phrasebook shelf, -1 auto, 0 off, else MiB
     bool     moe_stream_direct     = false; // use O_DIRECT for expert reads (bypass page cache)
 
     bool single_turn       = false; // single turn chat conversation

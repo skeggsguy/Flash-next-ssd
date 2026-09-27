@@ -1766,6 +1766,13 @@ public:
 
     void set_input(const llama_ubatch * ubatch) override;
 
+    // --ple-shelf: the rows are known before the other inputs are filled, so their gather starts here
+    void set_input_begin(const llama_ubatch * ubatch) override {
+        fill_idx(ubatch);
+        idx_ready = true;
+        rows.begin_rows(idx.data(), (int64_t) idx.size());
+    }
+
     bool can_reuse(const llm_graph_params & params) override {
         mctx = static_cast<const llama_memory_hybrid_idx_context *>(params.mctx)->get_attn();
         rows.trace_warmup = params.cparams.warmup; // LLAMA_PLE_TRACE: a reused graph may follow the warm-up
@@ -1781,9 +1788,24 @@ public:
 
     // scratch, reused across set_input() calls
     std::vector<llama_token> prev;
+
+    // this ubatch's rows, from set_input_begin() (idx_ready) or set_input()
+    std::vector<int32_t> idx;
+    bool idx_ready = false;
+
+    void fill_idx(const llama_ubatch * ubatch);
 };
 
 void llm_graph_input_ple::set_input(const llama_ubatch * ubatch) {
+    if (!idx_ready) {
+        fill_idx(ubatch);
+    }
+    idx_ready = false;
+
+    rows.set_rows(idx.data(), (int64_t) idx.size());
+}
+
+void llm_graph_input_ple::fill_idx(const llama_ubatch * ubatch) {
     const auto & hp = pmodel.hparams;
 
     // an image arrives as an embd batch, so ubatch->token is null, but every position still needs a row for ggml_get_rows
@@ -1803,7 +1825,7 @@ void llm_graph_input_ple::set_input(const llama_ubatch * ubatch) {
     const int64_t eos      = hp.ple_eos_token_id;
     const int64_t n_prev   = n_gram - 1;
 
-    std::vector<int32_t> idx(n_heads * n_tokens);
+    idx.assign(n_heads * n_tokens, 0);
 
     GGML_ASSERT(mctx != nullptr);
 
@@ -1842,8 +1864,6 @@ void llm_graph_input_ple::set_input(const llama_ubatch * ubatch) {
             }
         }
     }
-
-    rows.set_rows(idx.data(), (int64_t) idx.size());
 }
 
 // Read a conv history out of its own recurrent row and write the new tail back.

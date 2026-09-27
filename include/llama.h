@@ -384,6 +384,11 @@ extern "C" {
         // any context exists, which is why the model has to be told.
         uint32_t     moe_stream_room_ubatch;
 
+        // The phrasebook shelf (--ple-shelf): a fixed buffer of the lazily read row table's raw rows
+        // (qwen4exp's n-gram phrasebook), filled by reads that bypass the OS file cache. -1 = auto
+        // (128 MiB), 0 = off (the rows are read as before), else MiB.
+        int32_t      ple_shelf_mib;
+
         bool     moe_stream_direct;     // use O_DIRECT for expert reads (bypass page cache); falls back if unsupported
 
         // Keep the booleans together to avoid misalignment during copy-by-value.

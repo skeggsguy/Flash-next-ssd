@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
+#include <future>
 #include <memory>
 #include <set>
 #include <functional>
@@ -108,6 +109,10 @@ public:
 
     void set_rows(const int32_t * idx, int64_t n);
 
+    // --ple-shelf: start the gather of these rows in the background (set_input_begin); the set_rows() of
+    // the same rows finishes it. A no-op unless the reader is the phrasebook shelf
+    void begin_rows(const int32_t * idx, int64_t n);
+
     bool can_reuse(int64_t n_rows) const;
 
     // LLAMA_PLE_TRACE (llama-ple-trace.h): set_rows() also hands its row ids to the trace; null when off
@@ -122,6 +127,10 @@ private:
 
     // host side of t in direct mode, reused across set_rows() calls
     std::vector<uint8_t> staging;
+
+    // begin_rows()'s gather into staging, declared after it so that it is waited for before staging goes
+    std::future<void> pending;
+    int64_t           pending_n = 0;
 };
 
 class llm_graph_input_i {
@@ -134,6 +143,10 @@ public:
     virtual ~llm_graph_input_i() = default;
 
     virtual void set_input(const llama_ubatch * ubatch) = 0;
+
+    // called for every input before any set_input(): start slow host work there (the phrasebook shelf's
+    // disk reads) that this input's set_input() finishes, so it overlaps the other inputs' filling
+    virtual void set_input_begin(const llama_ubatch * ubatch) { GGML_UNUSED(ubatch); }
 
     // return true if the resulting input tensors using the provided graph parameters would be
     //   the same as the previous input tensors that we have currently stored in the object

@@ -1,6 +1,7 @@
 #include "llama-lazy-reader.h"
 
 #include "llama-impl.h"
+#include "llama-ple-shelf-io.h"
 
 #include <algorithm>
 #include <cstring>
@@ -26,6 +27,15 @@ llama_lazy_reader::llama_lazy_reader(const std::string & path, size_t offs, enum
     for (int i = 0; i < n_readers; ++i) {
         files.emplace_back(std::make_unique<llama_file>(path.c_str(), "rb", /*use_direct_io =*/ false));
     }
+}
+
+llama_lazy_reader::llama_lazy_reader(std::unique_ptr<llama_ple_shelf_io> sh) :
+    shelf(std::move(sh)),
+    offs(0),
+    rsize(shelf->row_size()),
+    relems(shelf->row_elems()),
+    nrows(shelf->n_rows()),
+    to_float(nullptr) {
 }
 
 llama_lazy_reader::~llama_lazy_reader() = default;
@@ -58,6 +68,11 @@ void llama_lazy_reader::read_range(const std::pair<int32_t, int32_t> * pairs, in
 }
 
 void llama_lazy_reader::gather(const int32_t * rows, int64_t n, float * dst) const {
+    if (shelf) {
+        shelf->gather(rows, n, dst);
+        return;
+    }
+
     std::vector<std::pair<int32_t, int32_t>> pairs;
     pairs.reserve(n);
     for (int64_t i = 0; i < n; ++i) {
