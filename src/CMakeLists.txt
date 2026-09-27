@@ -61,6 +61,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-wave-ops.cpp
     llama-moe-stream-wave-plan.cpp
     llama-moe-stream-wave-stage.cpp
+    llama-qsa-picks.cpp
     llama-quant.cpp
     llama-sampler.cpp
     llama-vocab.cpp

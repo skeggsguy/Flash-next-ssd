@@ -107,9 +107,21 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             nullptr, filter_idx, nullptr, nullptr, "idx_");
     }()) {
     qsa_keep_init(model, offload, n_ubatch);
+
+    // the picker's rule, read here so that each context has its own (SHARE-PARTS-PLAN.md phase 1)
+    picks.causal = llama_qsa_keep_env("LLAMA_QSA_CAUSAL_PICKS", true);
+    picks.log    = mem_idx != nullptr && llama_qsa_keep_env("LLAMA_QSA_PICK_STATS");
+
+    if (mem_idx != nullptr) {
+        LLAMA_LOG_WARN("%s: qsa picks: %s\n", __func__, picks.causal
+                ? "causal, a token never picks a block after it (LLAMA_QSA_CAUSAL_PICKS=0 restores the old rule)"
+                : "old rule (LLAMA_QSA_CAUSAL_PICKS=0), blocks after a token share its tail's bias and can fill its picks");
+    }
 }
 
 llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
+    llama_qsa_pick_log_total(picks.stats, picks.causal);
+
     if (!keep.enabled) {
         return;
     }
@@ -501,6 +513,12 @@ void llama_memory_hybrid_idx::set_input_qsa(
 
     std::fill(dst_blk_pos, dst_blk_pos + 4*n_blocks*n_ns, 0);
 
+    // block top-k picks before the attention mask, so only it can waste a pick (llama-qsa-picks.h)
+    const bool    count_picks = blk_bias && cell_blk == nullptr;
+    const int64_t n_pick      = llama_qsa_n_block_picks(n_kv, r, hparams_idx.indexer_top_k);
+
+    llama_qsa_pick_count pick_count;
+
     for (int64_t s = 0; s < n_ns; ++s) {
         // ubatch index s*n_tps belongs to this stream; ask which cells array it uses
         const llama_seq_id seq_of_stream = ubatch->seq_id[s*n_tps][0];
@@ -677,10 +695,17 @@ void llama_memory_hybrid_idx::set_input_qsa(
         const bool     have_dead = n_bid < n_blocks;
         const int32_t  dead_bid  = have_dead ? n_bid : n_blocks - 1;
 
+        // the spare block's first cell: the causal rule shows it only to tokens at or after it
+        int64_t spare_min = LLAMA_QSA_SPARE_EMPTY;
+
         for (int64_t j = 0; j < n_kv; ++j) {
             const int32_t g = cell_grp[j];
 
             blk_of[j] = g < 0 ? -1 : grp_bid[g];
+
+            if (blk_of[j] < 0 && !cells.is_empty(j)) {
+                spare_min = std::min<int64_t>(spare_min, ranked ? rank[j] : cells.pos_get(j));
+            }
 
             if (blk_of[j] >= 0) {
                 const int64_t idx = ranked ? rank[j] : cells.pos_get(j);
@@ -811,6 +836,9 @@ void llama_memory_hybrid_idx::set_input_qsa(
             }
         }
 
+        // a stream shared by several sequences keeps the old rule
+        const bool causal = picks.causal && one_seq;
+
         for (int64_t ii = 0; ii < n_tps; ++ii) {
             const int64_t      i      = s*n_tps + ii;
             const llama_seq_id seq_id = ubatch->seq_id[i][0];
@@ -844,9 +872,13 @@ void llama_memory_hybrid_idx::set_input_qsa(
             const int64_t tail_start = (q + 1)/r*r;
 
             if (blk_bias) {
-                // a block sits wholly inside or outside the tail, so one value covers it
-                // the caller adds the attention mask, which drops empty, foreign and future cells
+                // a block sits wholly inside or outside the tail, so one value covers it.
+                // the caller adds the attention mask, which drops empty, foreign and future cells,
+                // but block top-k picks before that mask: the causal rule keeps the blocks after
+                // the token out of the picks, the old one gave them the tail's 1e9 (llama-qsa-picks.h)
                 float * cur_blk_bias = dst_bias + i*n_blocks;
+
+                llama_qsa_row_tally tally;
 
                 for (int64_t b = 0; b < n_blocks; ++b) {
                     if (b >= n_bid || !cells.seq_has((uint32_t) bid_cell[b], seq_id)) {
@@ -854,15 +886,18 @@ void llama_memory_hybrid_idx::set_input_qsa(
                         continue;
                     }
 
-                    // finite, so it can never meet a -inf and produce a nan
-                    cur_blk_bias[b] = bid_idx[b] >= tail_start ? 1e9f : 0.0f;
+                    cur_blk_bias[b] = llama_qsa_block_bias(bid_idx[b], q, tail_start, causal);
+                    tally.add(cur_blk_bias[b], bid_idx[b] > q);
                 }
 
-                // the spare block holds the unpooled cells, which are the incomplete tail, so
-                // it gets the tail value. it must stay finite: a sequence with fewer than
-                // `ratio` cells owns no full block, and a row of -inf only gives a nan.
+                // the spare block holds the unpooled cells: the incomplete tail, for one sequence
                 if (have_dead) {
-                    cur_blk_bias[dead_bid] = 1e9f;
+                    cur_blk_bias[dead_bid] = llama_qsa_spare_bias(spare_min, q, causal);
+                    tally.add(cur_blk_bias[dead_bid], spare_min > q);
+                }
+
+                if (count_picks) {
+                    tally.finish(n_pick, pick_count);
                 }
 
                 continue;
@@ -884,6 +919,16 @@ void llama_memory_hybrid_idx::set_input_qsa(
 
                 cur_bias[j] = v;
             }
+        }
+    }
+
+    if (count_picks) {
+        picks.stats.n_ubatch++;
+        picks.stats.total.add(pick_count);
+        picks.stats.last = pick_count;
+
+        if (picks.log) {
+            llama_qsa_pick_log(pick_count, n_blocks, n_pick, picks.causal);
         }
     }
 }

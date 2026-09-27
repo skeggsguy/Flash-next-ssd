@@ -1219,8 +1219,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     if (inp->block_topk) {
         // Scores and bias are already block-granular. Selecting here avoids expanding an
         // [n_blocks, n_tps] surface to [n_kv, n_tps] before top-k.
-        const int64_t width_cells = std::min<int64_t>(n_kv, (int64_t) hparams.indexer_top_k + r - 1);
-        const int64_t n_blk_sel   = std::min<int64_t>(n_blocks, (width_cells + r - 1)/r);
+        const int64_t n_blk_sel = llama_qsa_n_block_picks(n_kv, r, hparams.indexer_top_k);
 
         ggml_tensor * blk_top = ggml_top_k(ctx0, score, n_blk_sel);
         cb(blk_top, "indexer_top_blk", il);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama-memory-hybrid.h"
+#include "llama-qsa-picks.h"
 
 #include <map>
 #include <memory>
@@ -140,7 +141,8 @@ public:
     //   blk_cells I32 [ratio*n_blocks, ns] cells making up each block
     //   blk_pos   I32 [4*n_blocks*ns]      mrope position rows of each block's first token
     //   bias      F32 [n_kv, n_tokens/ns, ns] -inf where invisible, large where always visible
-    // blk_bias asks for the bias per block instead: [n_blocks, n_tokens/ns, ns]
+    // blk_bias asks for the bias per block instead: [n_blocks, n_tokens/ns, ns], by the rule in
+    // llama-qsa-picks.h (blocks after the token -inf, so block top-k never picks them)
     // the caller then adds the attention mask, the only part of the bias that varies within a block
     // blk_cells and blk_pos may be null when INCR pools without them; keep carries the store's inputs
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
@@ -173,6 +175,11 @@ public:
     void qsa_keep_commit();
 
     llama_qsa_keep_stats qsa_keep_stats() const;
+
+    // the block top-k picker's rule (llama-qsa-picks.h), read when the memory is made:
+    // LLAMA_QSA_CAUSAL_PICKS (on unless 0), LLAMA_QSA_PICK_STATS=1 prints a line per batch
+    bool                 qsa_causal_picks() const { return picks.causal; }
+    llama_qsa_pick_stats qsa_pick_stats()   const { return picks.stats; }
 
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
@@ -226,6 +233,14 @@ private:
 
         std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
     } keep;
+
+    struct {
+        bool causal = true;
+        bool log    = false;
+
+        // set_input_qsa is const: the counter is bookkeeping, not state
+        mutable llama_qsa_pick_stats stats;
+    } picks;
 
     void qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch);
 

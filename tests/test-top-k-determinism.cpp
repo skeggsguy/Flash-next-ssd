@@ -5,10 +5,11 @@
 // Metal answers with the radix-select kernel (ggml_metal_op_top_k_radix), which used to write its picks
 // through an atomic counter: the order of the picks, and which of the values tied at the threshold filled
 // the last places, changed from run to run. The indexer's scores are relu'd sums, so many blocks tie at
-// 0 (and future blocks at -inf); a ~10K-token prompt at temperature 0 gave five different answers in
-// five runs (T4 rerun, 2026-09-26). Reading in only unmasks the picked cells, so there the tie fill
-// matters; the writing path gathers K/V in pick order and attends over them in that order, so there
-// the order matters too.
+// 0 (and blocks after the query at -inf, since the causal-picks rule, llama-qsa-picks.h: before it they
+// carried the tail's +1e9 while reading in and filled the picks); a ~10K-token prompt at temperature 0
+// gave five different answers in five runs (T4 rerun, 2026-09-26). Reading in only unmasks the picked
+// cells, so there the tie fill matters; the writing path gathers K/V in pick order and attends over them
+// in that order, so there the order matters too.
 //
 // The kernel now promises a stated result: every value above the k-th largest, then the lowest-index
 // values equal to it, all in ascending index order. That is what this test holds it to, row by row,

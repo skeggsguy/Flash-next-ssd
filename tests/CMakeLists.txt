@@ -168,6 +168,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-moe-room-lend.cpp)
     llama_build_and_test(test-moe-room-plan.cpp)
     llama_build_and_test(test-top-k-determinism.cpp)
+    llama_build_and_test(test-qsa-picks.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -417,6 +418,19 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             set_tests_properties(${QSA_KEEP_NAME} ${QSA_KEEP_NAME}-cpu PROPERTIES ENVIRONMENT "${QSA_KEEP_ENV}")
         endif()
     endforeach()
+
+    # SHARE-PARTS-PLAN phase 1: the block top-k picker never picks a block after the token. The block
+    # path on the GPU and the CPU (the CPU run also holds the picks to one token at a time); the per-cell
+    # path (LLAMA_QWEN4EXP_BLOCK_TOPK=0, read once per process) must not move a byte either way
+    llama_build(test-qsa-causal.cpp)
+    llama_test(test-qsa-causal NAME test-qsa-causal              LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-qsa-causal NAME test-qsa-causal-cpu          LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    llama_test(test-qsa-causal NAME test-qsa-causal-per-cell     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-qsa-causal NAME test-qsa-causal-per-cell-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    set_tests_properties(test-qsa-causal test-qsa-causal-cpu test-qsa-causal-per-cell test-qsa-causal-per-cell-cpu
+        PROPERTIES FIXTURES_REQUIRED generate-models)
+    set_tests_properties(test-qsa-causal-per-cell test-qsa-causal-per-cell-cpu
+        PROPERTIES ENVIRONMENT "LLAMA_QWEN4EXP_BLOCK_TOPK=0")
 
     llama_build(test-fusion.cpp)
 endif()
