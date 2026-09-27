@@ -185,6 +185,12 @@ public:
     // LLAMA_PLE_TRACE (llama-ple-trace.h), read when the memory is made: null when off
     llama_ple_trace * get_ple_trace() const { return ple_trace.get(); }
 
+    // LLAMA_QSA_SLICE (models/qwen4exp-qsa-slice.h), read when the memory is made: rows a slice, 0 off;
+    // and the layers built sliced so far (graph builds, the reserve's included)
+    uint32_t qsa_slice()        const { return slice.rows; }
+    uint64_t qsa_slice_builds() const { return slice.n_builds; }
+    void     qsa_slice_note()   const { slice.n_builds++; }
+
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
     // seq_id < 0 drops the whole context, as the caches themselves do on a failed restore
@@ -248,6 +254,13 @@ private:
 
     // the phrasebook trace lives here because the memory is made once per context
     std::unique_ptr<llama_ple_trace> ple_trace;
+
+    struct {
+        uint32_t rows = 0;
+
+        // graph building is const: the count is bookkeeping, not state
+        mutable uint64_t n_builds = 0;
+    } slice;
 
     void qsa_keep_init(const llama_model & model, bool offload, uint32_t n_ubatch);
 
@@ -318,6 +331,9 @@ public:
     ggml_tensor * get_qsa_keep_sum (int32_t il) const;
 
     llama_ple_trace * get_ple_trace() const; // null when LLAMA_PLE_TRACE is off
+
+    uint32_t get_qsa_slice()    const; // LLAMA_QSA_SLICE's rows a slice, 0 off
+    void     note_qsa_sliced()  const; // a layer was built sliced
 
 private:
     llama_memory_hybrid_idx * mem = nullptr;

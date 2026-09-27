@@ -1,4 +1,5 @@
 #include "models.h"
+#include "qwen4exp-qsa-slice.h"
 #include "llama-impl.h"
 #include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
@@ -1011,7 +1012,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
         ggml_tensor *                           kq_mask,
         int *                                   sections,
         int                                     il,
-        bool                                    gather) {
+        bool                                    gather,
+        llama_qsa_slice_parts *                 slice) {
     const llama_kv_cache_context * mctx_idx = mctx_hyb->get_idx();
 
     const int64_t idx_dim  = hparams.indexer_head_size;
@@ -1192,6 +1194,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
             n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
             ext_factor, attn_factor, beta_fast, beta_slow);
     cb(q, "indexer_q", il);
+
+    // SHARE-PARTS-PLAN.md phase 3: the score, picks and attention go slice by slice (qwen4exp-qsa-slice.h)
+    if (slice != nullptr && inp->block_topk && n_stream == 1 && qwen4exp_qsa_gather()) {
+        *slice = { pooled, q, inp->bias, inp->blk_cells, r, n_blocks,
+            llama_qsa_n_block_picks(n_kv, r, hparams.indexer_top_k), qwen4exp_sparse_fa(), mctx_hyb->get_qsa_slice() };
+        return nullptr;
+    }
 
     // rectify each head dot product before the sum, as in the DeepSeek lightning indexer
     // mul_mat matches ne[2], so the queries of stream s only meet the blocks of stream s
@@ -1476,7 +1485,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
         gather = n_tokens == n_stream && n_kv >= 4*width;
     }
 
-    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, gather) : nullptr;
+    // LLAMA_QSA_SLICE: a batch longer than a slice may be scored and attended slice by slice
+    llama_qsa_slice_parts slice;
+    const bool slice_ask = qsa && !gather && mctx_hyb->get_qsa_slice() > 0 && n_tokens > mctx_hyb->get_qsa_slice();
+
+    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, gather,
+            slice_ask ? &slice : nullptr) : nullptr;
 
     // Qwen3Next uses a single Q projection that outputs query + gate
     ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
@@ -1528,7 +1542,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
-    if (top_k) {
+    if (slice.q != nullptr) {
+        mctx_hyb->note_qsa_sliced();
+        cur = build_attn_qsa_sliced(inp, Qcur, Kcur, Vcur, slice, kq_scale, il);
+    } else if (top_k) {
         ggml_tensor * qsa_bias = gather ? qsa_inps.at((uint32_t) hparams.dsv4_compress_ratios[il])->bias : nullptr;
 
         cur = build_attn_qsa(inp, Qcur, Kcur, Vcur, top_k, qsa_bias, kq_scale, il, gather);

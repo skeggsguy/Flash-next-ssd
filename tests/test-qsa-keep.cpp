@@ -9,6 +9,12 @@
 // residual stream and the logits do not move even when every block summary is garbage. Each scenario
 // therefore runs a second time with the eval callback capturing the indexer's own tensors - the block
 // summaries, their scores, the selection and the attention output - and compares those bit for bit.
+//
+// SHARE-PARTS-PLAN.md phase 3: with QSA_KEEP_SLICE=<rows> in the environment, every scenario runs at
+// ubatch 4*<rows> and the keep and check contexts also slice the picker and attention (LLAMA_QSA_SLICE=<rows>)
+// while the reference does the whole batch at once (LLAMA_QSA_SLICE=0). A slice's tensors are named
+// <name>-<layer>-s<slice>; the observer joins them in slice order into the whole batch's tensor, and
+// the run fails unless the sliced contexts really built sliced layers and the observer saw the slices.
 
 #include "arg.h"
 #include "common.h"
@@ -37,7 +43,37 @@ static const char * variant_name[VARIANT_COUNT] = { "ref", "keep", "check" };
 struct observer {
     std::vector<std::string>          names;
     std::vector<std::vector<uint8_t>> data;
+
+    // QSA_KEEP_SLICE: slices joined onto an earlier entry, and the first slice seen out of order
+    int         n_joined = 0;
+    std::string bad;
 };
+
+// QSA_KEEP_SLICE's rows a slice, 0 for the plain runs
+static uint32_t g_slice = 0;
+
+// "indexer_score-3-s2" -> base "indexer_score-3", slice 2, and a view of it, "indexer_top_k-3-s2 (view)",
+// -> "indexer_top_k-3 (view)"; -1 for a name without a slice suffix
+static int slice_of(std::string name, std::string & base) {
+    static const std::string view = " (view)";
+
+    const bool is_view = name.size() > view.size() && name.compare(name.size() - view.size(), view.size(), view) == 0;
+    if (is_view) {
+        name.resize(name.size() - view.size());
+    }
+
+    const size_t dash = name.rfind('-');
+    if (dash == std::string::npos || dash + 2 >= name.size() || name[dash + 1] != 's') {
+        return -1;
+    }
+    for (size_t i = dash + 2; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') {
+            return -1;
+        }
+    }
+    base = name.substr(0, dash) + (is_view ? view : "");
+    return std::atoi(name.c_str() + dash + 2);
+}
 
 static bool observed_name(const char * name) {
     for (const char * prefix : { "indexer_k-", "indexer_score-", "indexer_top_k-", "attn_pregate-" }) {
@@ -55,7 +91,29 @@ static bool observe(ggml_tensor * t, bool ask, void * user_data) {
 
     auto * obs = (observer *) user_data;
 
-    obs->names.emplace_back(t->name);
+    // a slice after the first is the next rows of the entry its first slice made
+    std::string base;
+    const int k = slice_of(t->name, base);
+    if (k > 0) {
+        int e = (int) obs->names.size() - 1;
+        while (e >= 0 && obs->names[e] != base) {
+            e--;
+        }
+        const int64_t n_seen = e >= 0 && ggml_is_contiguous(t) && ggml_nbytes(t) > 0 ? (int64_t) obs->data[e].size() : -1;
+        if (n_seen <= 0) {
+            if (obs->bad.empty()) {
+                obs->bad = std::string(t->name) + " has no first slice before it";
+            }
+            return true;
+        }
+        const size_t n = ggml_nbytes(t);
+        obs->data[e].resize(obs->data[e].size() + n);
+        ggml_backend_tensor_get(t, obs->data[e].data() + n_seen, 0, n);
+        obs->n_joined++;
+        return true;
+    }
+
+    obs->names.emplace_back(k == 0 ? base : std::string(t->name));
     obs->data.emplace_back();
 
     // a view that is not contiguous is read as a mismatch of its own, below
@@ -85,11 +143,14 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     if (v == VARIANT_CHECK) {
         setenv("LLAMA_QSA_KEEP_CHECK", "1", 1);
     }
+    if (g_slice > 0) {
+        setenv("LLAMA_QSA_SLICE", v == VARIANT_REF ? "0" : std::to_string(g_slice).c_str(), 1);
+    }
 
     auto cparams = common_context_params_to_llama(params);
     cparams.n_ctx      = cfg.n_ctx;
     cparams.n_batch    = cfg.n_ctx;
-    cparams.n_ubatch   = cfg.n_ubatch;
+    cparams.n_ubatch   = g_slice > 0 ? 4*g_slice : cfg.n_ubatch; // a slice run needs batches longer than a slice
     cparams.n_seq_max  = cfg.n_seq_max;
     cparams.n_rs_seq   = cfg.n_rs_seq;
     cparams.kv_unified = cfg.unified;
@@ -103,8 +164,13 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
 
     unsetenv("LLAMA_QSA_KEEP");
     unsetenv("LLAMA_QSA_KEEP_CHECK");
+    unsetenv("LLAMA_QSA_SLICE");
 
     return ctx;
+}
+
+static llama_memory_hybrid_idx * get_mem(llama_context * ctx) {
+    return dynamic_cast<llama_memory_hybrid_idx *>(llama_get_memory(ctx));
 }
 
 static llama_qsa_keep_stats get_stats(llama_context * ctx) {
@@ -128,6 +194,11 @@ struct trio {
 
     int n_decode = 0;
 
+    // QSA_KEEP_SLICE: layers built sliced when the contexts were made (the reserve's graphs), and whether
+    // the scenario has a batch to slice (one sequence per stream and more than a slice of tokens)
+    uint64_t slice_builds0[VARIANT_COUNT] = {};
+    bool     slices_expected = true;
+
     trio(const char * name, const common_params & params, llama_model * model, const ctx_cfg & cfg) : name(name) {
         n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
 
@@ -148,6 +219,15 @@ struct trio {
             if (keep[VARIANT_REF] || !keep[VARIANT_KEEP] || !keep[VARIANT_CHECK]) {
                 fail("switches not picked up per context (ref %d, keep %d, check %d)",
                         keep[VARIANT_REF], keep[VARIANT_KEEP], keep[VARIANT_CHECK]);
+            }
+
+            for (int v = 0; v < VARIANT_COUNT; ++v) {
+                const uint32_t want = v == VARIANT_REF ? 0 : g_slice;
+                if (get_mem(ctx[v])->qsa_slice() != want) {
+                    fail("LLAMA_QSA_SLICE not picked up per context: %s has %u, expected %u",
+                            variant_name[v], get_mem(ctx[v])->qsa_slice(), want);
+                }
+                slice_builds0[v] = get_mem(ctx[v])->qsa_slice_builds();
             }
         }
     }
@@ -199,6 +279,13 @@ struct trio {
             if (obs[VARIANT_REF].names.empty()) {
                 fail("decode %d: the eval callback saw no indexer tensor", n_decode);
                 return;
+            }
+
+            for (int v = 0; v < VARIANT_COUNT; ++v) {
+                if (!obs[v].bad.empty()) {
+                    fail("decode %d: %s: %s", n_decode, variant_name[v], obs[v].bad.c_str());
+                    return;
+                }
             }
 
             for (int v = VARIANT_KEEP; v < VARIANT_COUNT; ++v) {
@@ -286,10 +373,34 @@ struct trio {
             fail("the check context reported no layers");
         }
 
-        fprintf(stderr, "%s%s: %s: %d decodes, LEGACY %llu, FULL %llu, INCR %llu, check sums%s\n",
+        // the sliced contexts must have sliced something since they were made (nothing, where the scenario
+        // has no batch to slice), and the reference nothing; in the observed pass the observer must have
+        // joined slices (the plain pass has no observer)
+        std::string sliced;
+        if (g_slice > 0) {
+            uint64_t n_built[VARIANT_COUNT];
+            for (int v = 0; v < VARIANT_COUNT; ++v) {
+                n_built[v] = get_mem(ctx[v])->qsa_slice_builds() - slice_builds0[v];
+            }
+            const int n_joined = obs[VARIANT_KEEP].n_joined + obs[VARIANT_CHECK].n_joined;
+            if (get_mem(ctx[VARIANT_REF])->qsa_slice_builds() != 0 || obs[VARIANT_REF].n_joined != 0) {
+                fail("the reference sliced");
+            }
+            if (!slices_expected && (n_built[VARIANT_KEEP] != 0 || n_built[VARIANT_CHECK] != 0 || n_joined != 0)) {
+                fail("sliced where nothing may be sliced (layers built sliced: keep %llu, check %llu; slices joined %d)",
+                        (unsigned long long) n_built[VARIANT_KEEP], (unsigned long long) n_built[VARIANT_CHECK], n_joined);
+            }
+            if (slices_expected && (n_built[VARIANT_KEEP] == 0 || n_built[VARIANT_CHECK] == 0 || (g_observe && n_joined == 0))) {
+                fail("slicing did not run (layers built sliced: keep %llu, check %llu; slices joined %d)",
+                        (unsigned long long) n_built[VARIANT_KEEP], (unsigned long long) n_built[VARIANT_CHECK], n_joined);
+            }
+            sliced = ", sliced layers built " + std::to_string(n_built[VARIANT_KEEP]) + ", slices joined " + std::to_string(n_joined);
+        }
+
+        fprintf(stderr, "%s%s: %s: %d decodes, LEGACY %llu, FULL %llu, INCR %llu, check sums%s%s\n",
                 name, g_observe ? " (observed)" : "", ok ? "ok" : "FAILED", n_decode,
                 (unsigned long long) keep.n_legacy, (unsigned long long) keep.n_full, (unsigned long long) keep.n_incr,
-                sums.c_str());
+                sums.c_str(), sliced.c_str());
 
         return ok;
     }
@@ -444,8 +555,9 @@ static bool test_state_save_load(const common_params & params, llama_model * mod
         return a.finish();
     }
 
-    // into a fresh context
+    // into a fresh context, which then only writes one token at a time: nothing to slice
     trio b("state_save_load/fresh", params, model, ctx_cfg());
+    b.slices_expected = false;
 
     for (int v = 0; v < VARIANT_COUNT && b.ok; ++v) {
         const size_t n = llama_state_set_data(b.ctx[v], state[v].data(), state[v].size());
@@ -587,6 +699,7 @@ static bool test_two_seqs(const common_params & params, llama_model * model) {
         cfg.unified   = false;
 
         trio t("two_seqs/streams", params, model, cfg);
+        t.slices_expected = false; // two streams in a batch: never sliced
 
         std::vector<tok_row> rows;
         for (llama_pos p = 0; p < 100; ++p) {
@@ -656,6 +769,7 @@ static bool test_repeat_while_shared(const common_params & params, llama_model *
     cfg.unified   = true;
 
     trio t("repeat_while_shared", params, model, cfg);
+    t.slices_expected = false; // batches of 100 tokens at most, never longer than a slice (128 or more)
 
     decode_range(t, 0, 0, 100);
 
@@ -721,6 +835,11 @@ int main(int argc, char ** argv) {
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON)) {
         return 1;
+    }
+
+    if (const char * e = getenv("QSA_KEEP_SLICE")) {
+        g_slice = (uint32_t) atoi(e);
+        fprintf(stderr, "%s: slice runs: the keep and check contexts slice %u rows at a time, at ubatch %u\n", __func__, g_slice, 4*g_slice);
     }
 
     ggml_backend_load_all();

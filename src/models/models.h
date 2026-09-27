@@ -2379,6 +2379,8 @@ struct llama_model_qwen35 : public llama_model_base {
 };
 
 
+struct llama_qsa_slice_parts; // models/qwen4exp-qsa-slice.h
+
 struct llama_model_qwen4exp : public llama_model_base {
     llama_model_qwen4exp(const struct llama_model_params & params) : llama_model_base(params) {}
 
@@ -2430,7 +2432,8 @@ struct llama_model_qwen4exp : public llama_model_base {
         // so the layers sharing a ratio share one input set
         std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
 
-        // QSA: token indices this layer's queries may attend to, or nullptr for dense
+        // QSA: token indices this layer's queries may attend to, or nullptr for dense; with `slice`
+        // (asked for only when the batch is longer than a slice) it may fill that instead and return nullptr
         ggml_tensor * build_qsa_top_k(
   const llama_memory_hybrid_idx_context * mctx_hyb,
                     ggml_tensor * cur,
@@ -2438,7 +2441,18 @@ struct llama_model_qwen4exp : public llama_model_base {
                     ggml_tensor * kq_mask,
                             int * sections,
                             int   il,
-                           bool   gather = false);
+                           bool   gather = false,
+          llama_qsa_slice_parts * slice  = nullptr);
+
+        // build_attn_qsa for a batch too long for one slice: models/qwen4exp-qsa-slice.cpp
+        ggml_tensor * build_attn_qsa_sliced(
+        llm_graph_input_attn_kv * inp,
+                    ggml_tensor * q_cur,
+                    ggml_tensor * k_cur,
+                    ggml_tensor * v_cur,
+    const llama_qsa_slice_parts & parts,
+                          float   kq_scale,
+                            int   il);
 
         ggml_tensor * build_layer_attn_linear(
              llm_graph_input_rs * inp,

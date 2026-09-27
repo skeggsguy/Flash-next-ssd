@@ -169,6 +169,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-moe-room-plan.cpp)
     llama_build_and_test(test-top-k-determinism.cpp)
     llama_build_and_test(test-qsa-picks.cpp)
+    llama_build_and_test(test-qsa-slice.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -418,6 +419,21 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             set_tests_properties(${QSA_KEEP_NAME} ${QSA_KEEP_NAME}-cpu PROPERTIES ENVIRONMENT "${QSA_KEEP_ENV}")
         endif()
     endforeach()
+
+    # SHARE-PARTS-PLAN phase 3: the picker and attention sliced 128 rows at a time (batches of 512) write every
+    # byte the whole batch does, on the GPU and the CPU; the run fails unless slicing really ran. The unit-scale
+    # fixture is the one whose attention output depends on the queries (N(0, 0.01) weights leave it flat)
+    llama_test(test-qsa-keep NAME test-qsa-keep-slice         LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf")
+    llama_test(test-qsa-keep NAME test-qsa-keep-slice-cpu     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0)
+    llama_test(test-qsa-keep NAME test-qsa-keep-slice-e64     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf")
+    llama_test(test-qsa-keep NAME test-qsa-keep-slice-e64-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf" -ngl 0)
+    # and with a quantized cache, whose rotation is applied once to the whole batch's q and undone after the join
+    llama_test(test-qsa-keep NAME test-qsa-keep-slice-rot     LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf" -ctk q8_0 -ctv q8_0 -fa on)
+    set_tests_properties(test-qsa-keep-slice test-qsa-keep-slice-cpu test-qsa-keep-slice-e64 test-qsa-keep-slice-e64-cpu
+        test-qsa-keep-slice-rot PROPERTIES ENVIRONMENT "QSA_KEEP_SLICE=128")
+    set_tests_properties(test-qsa-keep-slice test-qsa-keep-slice-cpu PROPERTIES FIXTURES_REQUIRED generate-models)
+    set_tests_properties(test-qsa-keep-slice-e64 test-qsa-keep-slice-e64-cpu test-qsa-keep-slice-rot PROPERTIES
+        FIXTURES_REQUIRED generate-models-e64)
 
     # SHARE-PARTS-PLAN phase 1: the block top-k picker never picks a block after the token. The block
     # path on the GPU and the CPU (the CPU run also holds the picks to one token at a time); the per-cell

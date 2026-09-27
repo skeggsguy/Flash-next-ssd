@@ -4,6 +4,7 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-model.h"
+#include "models/qwen4exp-qsa-slice.h"
 
 
 #include <algorithm>
@@ -120,6 +121,19 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
 
     // LLAMA_PLE_TRACE: the phrasebook trace, per context like the switches above (SHARE-PARTS-PLAN.md phase 2)
     ple_trace = llama_ple_trace::from_env();
+
+    // LLAMA_QSA_SLICE: the picker and attention a slice of a long batch at a time (SHARE-PARTS-PLAN.md phase 3)
+    slice.rows = llama_qsa_slice_parse(std::getenv("LLAMA_QSA_SLICE"));
+
+    if (mem_idx != nullptr) {
+        if (slice.rows > 0) {
+            LLAMA_LOG_WARN("%s: qsa slice: reading in picks and attends %u rows of a batch at a time "
+                    "(LLAMA_QSA_SLICE=0 does the whole batch at once)\n", __func__, slice.rows);
+        } else {
+            LLAMA_LOG_WARN("%s: qsa slice: off, reading in picks and attends the whole batch at once "
+                    "(LLAMA_QSA_SLICE=512 does 512 rows at a time)\n", __func__);
+        }
+    }
 }
 
 llama_memory_hybrid_idx::~llama_memory_hybrid_idx() {
@@ -1458,6 +1472,16 @@ bool llama_memory_hybrid_idx_context::apply() {
 
 llama_ple_trace * llama_memory_hybrid_idx_context::get_ple_trace() const {
     return mem != nullptr ? mem->get_ple_trace() : nullptr;
+}
+
+uint32_t llama_memory_hybrid_idx_context::get_qsa_slice() const {
+    return mem != nullptr ? mem->qsa_slice() : 0;
+}
+
+void llama_memory_hybrid_idx_context::note_qsa_sliced() const {
+    if (mem != nullptr) {
+        mem->qsa_slice_note();
+    }
 }
 
 const llama_kv_cache_context * llama_memory_hybrid_idx_context::get_idx() const {
