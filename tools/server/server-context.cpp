@@ -1,5 +1,6 @@
 #include "server-context.h"
 #include "server-chat.h"
+#include "server-ckpt-pin.h"
 #include "server-common.h"
 #include "server-http.h"
 #include "server-task.h"
@@ -569,6 +570,9 @@ struct server_slot {
     std::vector<common_adapter_lora_info> lora;
     int32_t alora_invocation_start = -1;
 
+    // the bookmark pin: where this prompt's read-in pins a copy of the fixed summary (a new chat's split), or -1
+    int64_t pin_target = -1;
+
     // sampling
     json json_schema;
 
@@ -628,6 +632,8 @@ struct server_slot {
 
         // clear alora start
         alora_invocation_start = -1;
+
+        pin_target = -1;
 
         // clear multimodal state
         mbatch.reset();
@@ -1141,6 +1147,7 @@ private:
     int trace = 0;        // env: LLAMA_TRACE
     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
+    bool ckpt_pin = true; // env: LLAMA_CKPT_PIN, the bookmark pin (server-ckpt-pin.h), on unless set to 0
 
     int n_empty_consecutive = 0;
 
@@ -1573,6 +1580,19 @@ private:
 
             if (slots_n_diff) {
                 SRV_WRN("LLAMA_SERVER_SLOTS_N_DIFF = %d\n", slots_n_diff);
+            }
+        }
+
+        {
+            ckpt_pin = server_ckpt_pin_parse(getenv("LLAMA_CKPT_PIN"));
+
+            if (ckpt_pin && params_base.n_ctx_checkpoints >= 2) {
+                SRV_WRN("bookmark pin: on, 1 of the %d copies stays where the latest two chats split (LLAMA_CKPT_PIN=0 turns it off)\n",
+                        params_base.n_ctx_checkpoints);
+            } else if (ckpt_pin) {
+                SRV_WRN("bookmark pin: off, it needs 2 or more copies (-ctxcp %d)\n", params_base.n_ctx_checkpoints);
+            } else {
+                SRV_WRN("%s", "bookmark pin: off (LLAMA_CKPT_PIN=0), upstream's copies\n");
             }
         }
 
@@ -2542,59 +2562,41 @@ private:
     }
 
     // n_tokens_cur: the number of tokens added to the batch for the current slot
-    void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
+    // pin: this copy becomes the bookmark pin (the batch starts at slot.pin_target)
+    void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max, bool pin = false) {
         const int id_task = slot.task->id;
 
-        // evict checkpoints within min-step of a previous checkpoint, unless they were
-        // created by the current task
-        // only when the list is full, otherwise short prompts keep just the oldest checkpoint
-        int64_t last = -1;
-        for (auto it = slot.prompt.checkpoints.begin();
-                slot.prompt.checkpoints.size() + 1 >= (size_t) params_base.n_ctx_checkpoints &&
-                it != slot.prompt.checkpoints.end(); ) {
-            if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
-                SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                        it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+        // the old pin becomes an ordinary rolling copy before room is made, so it is the first thrown out if needed
+        const int64_t pin_was = pin ? server_ckpt_unpin(slot.prompt.checkpoints) : -1;
 
-                it = slot.prompt.checkpoints.erase(it);
-                continue;
+        const auto on_erase = [&slot](const common_prompt_checkpoint & cur, server_ckpt_erase_why why) {
+            switch (why) {
+                case SERVER_CKPT_ERASE_TOO_CLOSE:
+                    SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                            cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+                    break;
+                case SERVER_CKPT_ERASE_OLDEST:
+                    SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                            cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+                    break;
+                case SERVER_CKPT_ERASE_SUPERSEDED:
+                    SLT_TRC(slot, "superseding context checkpoint at n_tokens = %" PRId64 "\n", cur.n_tokens);
+                    break;
+                case SERVER_CKPT_ERASE_INVALIDATED:
+                    break; // server_ckpt_add never invalidates
             }
-
-            last = it->n_tokens;
-            ++it;
-        }
-
-        while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
-            // make room for the new checkpoint, if needed
-            const auto & cur = slot.prompt.checkpoints.front();
-
-            SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                    cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
-
-            slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
-        }
-
-        // replace an existing checkpoint at the same n_tokens instead of appending a duplicate
-        {
-            const int64_t n_tokens_new = slot.prompt.n_tokens() - n_tokens_cur;
-            for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
-                if (it->n_tokens == n_tokens_new) {
-                    SLT_TRC(slot, "superseding context checkpoint at n_tokens = %" PRId64 "\n", it->n_tokens);
-                    it = slot.prompt.checkpoints.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-
-        auto & cur = slot.prompt.checkpoints.emplace_back();
-
-        cur.id_task = id_task;
+        };
 
         // [TAG_CHECKPOINTS_FIX_POS_MIN]
         // TODO: here we incorrectly deterimne that the saved checkpoint data covers the [pos_min, pos_max] range
         //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
-        cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
+        auto & cur = server_ckpt_add(slot.prompt.checkpoints, ckpt_pin, params_base.n_ctx_checkpoints,
+                params_base.checkpoint_min_step, id_task, slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max,
+                pin, on_erase);
+
+        if (pin) {
+            SLT_WRN(slot, "bookmark pin: split at %" PRId64 " (was %" PRId64 ")\n", cur.n_tokens, pin_was);
+        }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -3489,6 +3491,8 @@ private:
                                 return;
                             }
 
+                            slot.pin_target = -1;
+
                             if (slot.task->params.cache_prompt && !force_spec_prefill) {
                                 // reuse any previously computed tokens that are common with the new prompt
                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
@@ -3498,6 +3502,11 @@ private:
                                     SLT_DBG(slot, "only caching to alora invocation start (n_past = %d, alora_invocation_start = %d)\n", n_past, slot.alora_invocation_start);
                                     n_past = std::min(n_past, slot.alora_invocation_start - 1);
                                 }
+
+                                // the bookmark pin: a new chat's split, before any copy is restored, is where
+                                // the read-in below pins a copy (server-ckpt-pin.h)
+                                slot.pin_target = server_ckpt_pin_target(ckpt_pin, params_base.n_ctx_checkpoints,
+                                        slot.task->params.message_spans, n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
 
                                 const auto n_cache_reuse = slot.task->params.n_cache_reuse;
 
@@ -3661,15 +3670,20 @@ private:
                             }
 
                             {
-                                // erase any checkpoints with pos_max > pos_next
-                                for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
-                                    const auto & cur = *it;
-                                    if (cur.pos_max > pos_next) {
+                                // erase any checkpoints with pos_max > pos_next (a pin beyond the split goes too)
+                                server_ckpt_invalidate(slot.prompt.checkpoints, pos_next,
+                                    [&](const common_prompt_checkpoint & cur, server_ckpt_erase_why) {
                                         SLT_TRC(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
-                                        it = slot.prompt.checkpoints.erase(it);
-                                    } else {
-                                        ++it;
-                                    }
+                                    });
+                            }
+
+                            // a copy already at the split (a chat that splits where the one before did, from the
+                            // copy just restored) takes the pin as it is: nothing new to save
+                            if (slot.pin_target >= 0) {
+                                int64_t pin_was = -1;
+                                if (server_ckpt_pin_existing(slot.prompt.checkpoints, slot.pin_target, &pin_was)) {
+                                    SLT_WRN(slot, "bookmark pin: split at %" PRId64 " (was %" PRId64 ")\n", slot.pin_target, pin_was);
+                                    slot.pin_target = -1;
                                 }
                             }
                         }
@@ -3831,6 +3845,11 @@ private:
                             }
                         }
 
+                        // break at the bookmark pin's split, so the next batch starts there and saves the pinned copy
+                        if (do_checkpoint && slot.prompt.n_tokens() == slot.pin_target) {
+                            break;
+                        }
+
                         // process the last few tokens of the prompt separately in order to allow for a checkpoint to be created.
                         // create checkpoints that many tokens before the end of the prompt:
                         //  - 4 + n_ubatch
@@ -3881,6 +3900,9 @@ private:
                     const bool is_user_start = spans.is_user_start(n_tokens_start);
                     const bool is_last_user_message = n_tokens_start == last_user_pos;
 
+                    // the batch that starts at the bookmark pin's split always saves a copy, and it is the pin
+                    const bool is_pin_start = slot.pin_target >= 0 && n_tokens_start == slot.pin_target;
+
                     // entire prompt has been processed
                     if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
                         slot.state = SLOT_STATE_DONE_PROMPT;
@@ -3897,7 +3919,7 @@ private:
                     } else {
                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
                         // message or we are near the end of the prompt
-                        if (!is_user_start && !near_prompt_end) {
+                        if (!is_user_start && !near_prompt_end && !is_pin_start) {
                             do_checkpoint = false;
                         }
                     }
@@ -3917,14 +3939,17 @@ private:
                     // no need to create checkpoints that are too close together, unless it's the last user message
                     do_checkpoint = do_checkpoint && (
                             slot.prompt.checkpoints.empty() ||
-                            is_last_user_message || near_prompt_end ||
+                            is_last_user_message || near_prompt_end || is_pin_start ||
                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
                     //       yet processed and therefore it is not part of the checkpoint.
                     if (do_checkpoint) {
-                        create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
+                        create_checkpoint(slot, n_tokens_cur, pos_min, pos_max, is_pin_start);
+                    }
+                    if (is_pin_start) {
+                        slot.pin_target = -1; // one chance: a batch past the split never pins
                     }
                 }
 

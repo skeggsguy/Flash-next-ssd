@@ -1190,6 +1190,10 @@ struct common_prompt_checkpoint {
     // (optional) id of the task that created the checkpoint
     int id_task = -1;
 
+    // the bookmark pin (tools/server/server-ckpt-pin.h): this copy sits where the latest two chats split and is
+    // never thrown out to make room; server state only, a slot restored from a file starts with no pin
+    bool pinned = false;
+
     llama_pos pos_min;
     llama_pos pos_max;
 
