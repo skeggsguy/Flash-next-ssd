@@ -78,6 +78,14 @@ void test_restore_pick() {
     server_ckpt_add(wide, true, 5, 8192, 1, 20000, 100, 19999, false, no_log);
     CHECK(server_ckpt_restore_pick(wide, 15000, 15000) == nullptr);
     CHECK(server_ckpt_restore_pick(wide, 20000, 20000) != nullptr);
+    // a copy whose window starts at 0 (a plain attention memory, no recurrent part) fits however low the threshold
+    // falls; one starting at 1 does not (upstream's `pos_min == 0` alternative, cleric's MD)
+    server_ckpt_list plain;
+    server_ckpt_add(plain, true, 5, 8192, 1, 100, 0, 99, false, no_log);
+    CHECK(server_ckpt_restore_pick(plain, 100, 0) != nullptr);
+    server_ckpt_list from_one;
+    server_ckpt_add(from_one, true, 5, 8192, 1, 100, 1, 99, false, no_log);
+    CHECK(server_ckpt_restore_pick(from_one, 100, 0) == nullptr);
     // looked at newest first
     std::vector<int64_t> seen;
     server_ckpt_restore_pick(ckpts, 12913, 12913, [&](const common_prompt_checkpoint & c) { seen.push_back(c.n_tokens); });
