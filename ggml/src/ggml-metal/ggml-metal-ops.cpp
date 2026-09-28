@@ -9,6 +9,7 @@
 #include "ggml-metal-device.h"
 #include "ggml-metal-fusion.h"
 #include "ggml-metal-fusion-fn.h"
+#include "ggml-metal-mv-ext.h"
 #include "ggml-metal-tuning.h"
 
 #include <cassert>
@@ -2561,6 +2562,9 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     const int16_t r2 = ne12/ne02;
     const int16_t r3 = ne13/ne03;
 
+    // the most columns the small-batch kernels take (8 upstream; up to 16, ggml-metal-mv-ext.h)
+    const int mv_ext_limit = ggml_metal_mv_ext_limit(ne01, props_dev->mv_ext_max);
+
     // first try to use small-batch mat-mv kernels
     // these should be efficient for BS [2, ~8]
     if (op->src[1]->type == GGML_TYPE_F32 && (ne00%128 == 0) &&
@@ -2579,7 +2583,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
            op->src[0]->type == GGML_TYPE_Q8_0 ||
            op->src[0]->type == GGML_TYPE_MXFP4 ||
            op->src[0]->type == GGML_TYPE_IQ4_NL ||
-           false) && (ne11 >= 2 && ne11 <= 8)
+           false) && (ne11 >= 2 && ne11 <= mv_ext_limit)
          ) ||
          (
           (
@@ -2588,7 +2592,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
            op->src[0]->type == GGML_TYPE_Q6_K ||
            op->src[0]->type == GGML_TYPE_Q2_K ||
            op->src[0]->type == GGML_TYPE_Q3_K ||
-           false) && (ne11 >= 4 && ne11 <= 8)
+           false) && (ne11 >= 4 && ne11 <= mv_ext_limit)
          )
         )
        ) {
@@ -2630,7 +2634,10 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             case 5:
                 r1ptg = 5; break;
             default:
-                GGML_ABORT("unsupported ne11");
+                r1ptg = ggml_metal_mv_ext_r1ptg_wide(ne11); // 9-16 columns (GGML_METAL_MV_EXT_MAX)
+                if (r1ptg == 0) {
+                    GGML_ABORT("unsupported ne11");
+                }
         };
 
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);

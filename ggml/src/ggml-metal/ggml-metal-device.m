@@ -5,6 +5,7 @@
 #import "ggml-backend-impl.h"
 #import "ggml-metal-impl.h"
 #import "ggml-metal-common.h"
+#import "ggml-metal-mv-ext.h"
 
 #include <Foundation/Foundation.h>
 
@@ -1692,6 +1693,14 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
 
                 dev->props.op_offload_min_batch_size  = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
 
+                {
+                    bool bad = false;
+                    dev->props.mv_ext_max = ggml_metal_mv_ext_max_parse(getenv("GGML_METAL_MV_EXT_MAX"), &bad);
+                    if (bad) {
+                        GGML_LOG_WARN("%s: GGML_METAL_MV_EXT_MAX=%s is not a whole number: using %d\n", __func__, getenv("GGML_METAL_MV_EXT_MAX"), dev->props.mv_ext_max);
+                    }
+                }
+
                 dev->props.max_buffer_size            = dev->mtl_device.maxBufferLength;
                 dev->props.max_theadgroup_memory_size = dev->mtl_device.maxThreadgroupMemoryLength;
                 if (@available(macOS 10.12, iOS 16.0, *)) {
@@ -1764,6 +1773,7 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                 GGML_LOG_INFO("%s: has tensor            = %s\n", __func__, dev->props.has_tensor              ? "true" : "false");
                 GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
                 GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
+                GGML_LOG_INFO("%s: small-batch mat-vec   = up to %d columns (GGML_METAL_MV_EXT_MAX)\n", __func__, dev->props.mv_ext_max);
 
 #if TARGET_OS_OSX || (TARGET_OS_IOS && __clang_major__ >= 15)
                 if (@available(macOS 10.12, iOS 16.0, *)) {

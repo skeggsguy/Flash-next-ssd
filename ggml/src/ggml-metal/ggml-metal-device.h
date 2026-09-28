@@ -339,6 +339,8 @@ struct ggml_metal_device_props {
     int gpu_family;
 
     int op_offload_min_batch_size;
+
+    int mv_ext_max; // the most columns the small-batch mat-vec takes (GGML_METAL_MV_EXT_MAX, ggml-metal-mv-ext.h)
 };
 
 typedef struct ggml_metal_event * ggml_metal_event_t;

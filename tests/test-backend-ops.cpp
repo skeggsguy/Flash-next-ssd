@@ -10132,6 +10132,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  8, 16*256, { 1,  1}, {1, 1}));
     }
 
+    // Metal's small-batch mat-vec to 16 columns (GGML_METAL_MV_EXT_MAX, ggml-metal-mv-ext.h): every column
+    // count 2-16 for each of the kernel's types, rows not a multiple of a threadgroup's, k long enough that
+    // the loop wraps, and a broadcast batch (r2 = 2)
+    for (ggml_type type_a : { GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q1_0, GGML_TYPE_Q2_0,
+                              GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0,
+                              GGML_TYPE_MXFP4, GGML_TYPE_IQ4_NL, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K,
+                              GGML_TYPE_Q5_K, GGML_TYPE_Q6_K }) {
+        for (int n = 2; n <= 16; ++n) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 33, n, 4*256, { 1, 1 }, { 1, 1 }));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 16, n, 1*256, { 2, 1 }, { 1, 1 }));
+        }
+    }
+
     // Multi-column MMVQ coverage for the Q4_K weight-reuse path and a Q5_K control.
     for (ggml_type type_a : { GGML_TYPE_Q4_K, GGML_TYPE_Q5_K }) {
         for (int n = 1; n <= 8; ++n) {
@@ -11376,6 +11389,37 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q5_1, GGML_TYPE_F32, 512, 10, false, 2560, 1,  640));
         test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, {2560, 4, 1, 1}));
         test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {2560, 1, 1, 1}, {1, 1, 1, 1}));
+    }
+
+    // Qwen3.8-Flash-Next's check batches (WRITING-PLAN.md step 3b): n = 8..16 at the library's staff shapes
+    // (Q8_0, the F32 routers, the BF16 indexer), the apprentice's K-quants, and the small-batch mat-vec's
+    // other types at two shapes; run with GGML_METAL_MV_EXT_MAX=8 and unset to see mul_mm against mul_mv_ext
+    {
+        struct { int64_t m, k; ggml_type t; } check[] = {
+            { 10240, 2560, GGML_TYPE_Q8_0 }, {  6144, 2560, GGML_TYPE_Q8_0 }, {  2560, 6144, GGML_TYPE_Q8_0 },
+            { 12288, 2560, GGML_TYPE_Q8_0 }, {   512, 2560, GGML_TYPE_Q8_0 }, {   640, 2560, GGML_TYPE_Q8_0 },
+            {   320,10240, GGML_TYPE_Q8_0 }, {248320, 2560, GGML_TYPE_Q8_0 },
+            {  3072, 2560, GGML_TYPE_Q8_0 }, {  4096, 2560, GGML_TYPE_Q8_0 }, // either side of the 4,096-row cap
+            {   512, 2560, GGML_TYPE_F32  }, {    48, 2560, GGML_TYPE_F32  },
+            {   512, 2560, GGML_TYPE_BF16 }, {   128, 2560, GGML_TYPE_BF16 },
+            { 12288, 2560, GGML_TYPE_Q4_K }, {  2560, 6144, GGML_TYPE_Q4_K }, {   512, 2560, GGML_TYPE_Q4_K },
+            {   640, 2560, GGML_TYPE_Q4_K }, {  2560, 2560, GGML_TYPE_Q4_K }, {   320,10240, GGML_TYPE_Q4_K },
+            {   512, 2560, GGML_TYPE_Q6_K }, {   320,10240, GGML_TYPE_Q6_K }, {  6144, 2560, GGML_TYPE_Q6_K },
+            {  6144, 2560, GGML_TYPE_Q5_K }, {  2560, 6144, GGML_TYPE_Q5_K },
+            {  6144, 2560, GGML_TYPE_Q3_K }, {  6144, 2560, GGML_TYPE_Q2_K },
+        };
+        for (const auto & c : check) {
+            for (int n : { 8, 9, 10, 11, 12, 13, 14, 15, 16 }) {
+                test_cases.emplace_back(new test_mul_mat(c.t, GGML_TYPE_F32, c.m, n, c.k, {1, 1}, {1, 1}));
+            }
+        }
+        for (ggml_type t : { GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
+                             GGML_TYPE_MXFP4, GGML_TYPE_IQ4_NL, GGML_TYPE_Q1_0, GGML_TYPE_Q2_0 }) {
+            for (int n = 8; n <= 16; n++) {
+                test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 6144, n, 2560, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, 2560, n, 6144, {1, 1}, {1, 1}));
+            }
+        }
     }
 
     // Expert-GEMM kernel survey at the two target models' routed-expert shapes, across every quant

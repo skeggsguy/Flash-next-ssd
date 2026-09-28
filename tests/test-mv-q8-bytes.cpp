@@ -18,6 +18,10 @@
 // (DYLD_LIBRARY_PATH wins over the executable's rpath, so the second run computes with the old build's
 // ggml and Metal libraries; DYLD_PRINT_LIBRARIES=1 shows which loaded.) Under ctest, with no old build to
 // hand, it holds the outputs to being nonzero and the same bytes on every repeat.
+//
+// WRITING-PLAN.md step 3b (the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX) adds MUL_MAT at
+// n = 2..16 for the small-batch kernel's types: against the build before it, 2-8 columns must list the same
+// hashes with the switch unset, and every line with GGML_METAL_MV_EXT_MAX=8 (today's route).
 
 #include "testing.h"
 
@@ -41,12 +45,13 @@ constexpr int64_t N_EXPERT = 16;
 constexpr int64_t N_USED = 4;
 
 struct mv_case {
-    bool    id; // MUL_MAT_ID rather than MUL_MAT
-    int64_t k;
-    int64_t n;  // tokens
+    bool      id; // MUL_MAT_ID rather than MUL_MAT
+    int64_t   k;
+    int64_t   n;  // tokens
+    ggml_type type = GGML_TYPE_Q8_0;
 
     std::string name() const {
-        return std::string(id ? "mul_mat_id" : "mul_mat") + " q8_0 k=" + std::to_string(k) + " n=" + std::to_string(n);
+        return std::string(id ? "mul_mat_id " : "mul_mat ") + ggml_type_name(type) + " k=" + std::to_string(k) + " n=" + std::to_string(n);
     }
 };
 
@@ -57,6 +62,16 @@ std::vector<mv_case> all_cases() {
         for (int64_t n : { 1, 3, 8 }) {
             cases.push_back({ false, k, n });
             cases.push_back({ true,  k, n });
+        }
+    }
+    // step 3b: the small-batch kernel's column counts, today's 2-8 and the new 9-16
+    for (ggml_type type : { GGML_TYPE_Q8_0, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q4_0,
+                            GGML_TYPE_IQ4_NL, GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
+        for (int64_t n = 2; n <= 16; n++) {
+            if (type == GGML_TYPE_Q8_0 && (n == 3 || n == 8)) {
+                continue; // listed above
+            }
+            cases.push_back({ false, 1024, n, type });
         }
     }
     return cases;
@@ -70,8 +85,8 @@ uint64_t fnv1a(const std::vector<uint8_t> & b) {
     return h;
 }
 
-// quantized on the CPU from a seeded fill, so both builds see the same bytes
-void fill_q8_0(ggml_tensor * t, std::mt19937 & rng) {
+// quantized (or converted) on the CPU from a seeded fill, so both builds see the same bytes
+void fill_src0(ggml_tensor * t, std::mt19937 & rng) {
     const int64_t k     = t->ne[0];
     const int64_t nrows = ggml_nrows(t);
     std::uniform_real_distribution<float> u(-1.0f, 1.0f);
@@ -79,8 +94,12 @@ void fill_q8_0(ggml_tensor * t, std::mt19937 & rng) {
     for (float & v : f) {
         v = u(rng);
     }
+    if (t->type == GGML_TYPE_F32) {
+        ggml_backend_tensor_set(t, f.data(), 0, ggml_nbytes(t));
+        return;
+    }
     std::vector<uint8_t> q(ggml_nbytes(t));
-    ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, nrows, k, nullptr);
+    ggml_quantize_chunk(t->type, f.data(), q.data(), 0, nrows, k, nullptr);
     ggml_backend_tensor_set(t, q.data(), 0, q.size());
 }
 
@@ -123,7 +142,7 @@ std::vector<uint8_t> run(ggml_backend_t backend, const mv_case & c) {
         ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32,  N_USED, c.n);
         out = ggml_mul_mat_id(ctx, a, b, ids);
     } else {
-        a   = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, c.k, M);
+        a   = ggml_new_tensor_2d(ctx, c.type, c.k, M);
         b   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32,  c.k, c.n);
         out = ggml_mul_mat(ctx, a, b);
     }
@@ -131,8 +150,8 @@ std::vector<uint8_t> run(ggml_backend_t backend, const mv_case & c) {
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
     GGML_ASSERT(buf != nullptr);
 
-    std::mt19937 rng(1234u + (uint32_t) (2*c.k + c.n + (c.id ? 100000 : 0)));
-    fill_q8_0(a, rng);
+    std::mt19937 rng(1234u + (uint32_t) (2*c.k + c.n + (c.id ? 100000 : 0)) + (c.type == GGML_TYPE_Q8_0 ? 0u : 7919u*(uint32_t) c.type));
+    fill_src0(a, rng);
     fill_f32(b, rng);
     if (ids) {
         fill_ids(ids, rng);
@@ -181,7 +200,7 @@ int main(int argc, char ** argv) {
     }
 
     testing t;
-    t.test("q8_0 mat-vec: nonzero, the same bytes every run", [&](testing & t) {
+    t.test("small-batch mat-vecs: nonzero, the same bytes every run", [&](testing & t) {
         for (const mv_case & c : all_cases()) {
             const std::vector<uint8_t> first = run(backend, c);
             t.assert_true(c.name() + ": nonzero", any_nonzero(first));

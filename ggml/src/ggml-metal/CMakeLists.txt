@@ -12,6 +12,7 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-context.m
                          ggml-metal-fusion.cpp
                          ggml-metal-fusion-fn.cpp
+                         ggml-metal-mv-ext.cpp
                          ggml-metal-ops.cpp
                          ggml-metal-ops-fn.cpp
                          ggml-metal-tuning.cpp
