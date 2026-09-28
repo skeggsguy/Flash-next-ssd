@@ -11,6 +11,7 @@
 #include "sampling.h"
 #include "speculative-adaptive.h"
 #include "speculative-rate.h"
+#include "speculative-rate-trace.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
 
@@ -1413,6 +1414,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<llama_token> shadow_tok;           // [n_seq] the shadow guess awaiting the real token
     std::vector<uint8_t>     shadow_pending;       // [n_seq]
 
+    // LLAMA_SPEC_RATE_TRACE=<path>: one numbers-only line per checking cycle (speculative-rate-trace.h)
+    std::unique_ptr<common_speculative_rate_trace> rate_trace;
+
     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq, bool adaptive = false)
         : common_speculative_impl(adaptive ? COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE : COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq, params.draft.n_max)
         , params(params.draft)
@@ -1532,6 +1536,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
+        rate_trace = common_speculative_rate_trace::open_from_env("LLAMA_SPEC_RATE_TRACE", n_seq,
+                this->params.n_max, this->params.p_min, adaptive, rate_mode);
+
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
         i_last.assign(n_seq, -1);
@@ -1576,6 +1583,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         if (rate_mode) {
             rate_ctrl[seq_id].restart_timer(); // keeps what it learnt; the wait between answers is not work
             shadow_pending[seq_id] = 0;
+        }
+        if (rate_trace) {
+            rate_trace->answer_begin(seq_id, N, common_speculative_rate_trace::now_us(),
+                    common_speculative_rate_trace::wall_now_us());
         }
 
         auto * ctx_dft = this->params.ctx_dft;
@@ -1735,11 +1746,17 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
+        const int64_t t_trace = rate_trace ? common_speculative_rate_trace::now_us() : 0;
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
 
             if (!dp.drafting) {
                 continue;
+            }
+
+            if (rate_trace) {
+                rate_trace->draft_begin(seq_id, dp.pos0, t_trace);
             }
 
             n_drafting++;
@@ -1829,6 +1846,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
 
+                if (rate_trace) {
+                    rate_trace->draft_step(seq_id, cur_p->data[0].p);
+                }
+
                 // only collect very high-confidence draft tokens
                 if (cur_p->data[0].p < params.p_min) {
                     drafting[seq_id] = false;
@@ -1891,7 +1912,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 continue;
             }
 
-            if (rate_mode && rate_ctrl[seq_id].k_next == 0) {
+            const int  n_drafted = (int) dp.result->size();
+            const bool shadow    = rate_mode && rate_ctrl[seq_id].k_next == 0;
+
+            if (shadow) {
                 // depth 0: keep the guess to score against the real next token, verify nothing
                 if (!dp.result->empty()) {
                     shadow_tok[seq_id]     = (*dp.result)[0];
@@ -1908,6 +1932,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (!adaptive && dp.result->size() < (size_t) params.n_min) {
                 dp.result->clear();
             }
+
+            if (rate_trace) {
+                rate_trace->draft_end(seq_id, shadow ? 0 : n_cap[seq_id], n_drafted, (int) dp.result->size(),
+                        common_speculative_rate_trace::now_us());
+            }
         }
     }
 
@@ -1918,6 +1947,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         // update the adaptive controller only when this implementation produced the
         // accepted draft; on is_other the stats belong to a different speculator
+        if (rate_trace && !is_other) {
+            rate_trace->accepted(seq_id, n_accepted, common_speculative_rate_trace::now_us());
+        }
+
         if (rate_mode && !is_other) {
             rate_ctrl[seq_id].cycle_verified(n_last[seq_id], n_accepted);
         } else if (adaptive && !is_other) {
