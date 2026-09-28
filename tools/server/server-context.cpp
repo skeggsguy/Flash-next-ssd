@@ -570,8 +570,10 @@ struct server_slot {
     std::vector<common_adapter_lora_info> lora;
     int32_t alora_invocation_start = -1;
 
-    // the bookmark pin: where this prompt's read-in pins a copy of the fixed summary (a new chat's split), or -1
+    // the bookmark pin: where this prompt's read-in pins a copy of the fixed summary (the start of the message
+    // holding a new chat's split), or -1; pin_split is that split, for the log line
     int64_t pin_target = -1;
+    int64_t pin_split  = -1;
 
     // sampling
     json json_schema;
@@ -634,6 +636,7 @@ struct server_slot {
         alora_invocation_start = -1;
 
         pin_target = -1;
+        pin_split  = -1;
 
         // clear multimodal state
         mbatch.reset();
@@ -1587,7 +1590,7 @@ private:
             ckpt_pin = server_ckpt_pin_parse(getenv("LLAMA_CKPT_PIN"));
 
             if (ckpt_pin && params_base.n_ctx_checkpoints >= 2) {
-                SRV_WRN("bookmark pin: on, 1 of the %d copies stays where the latest two chats split (LLAMA_CKPT_PIN=0 turns it off)\n",
+                SRV_WRN("bookmark pin: on, 1 of the %d copies stays at the start of the message where the latest two chats split (LLAMA_CKPT_PIN=0 turns it off)\n",
                         params_base.n_ctx_checkpoints);
             } else if (ckpt_pin) {
                 SRV_WRN("bookmark pin: off, it needs 2 or more copies (-ctxcp %d)\n", params_base.n_ctx_checkpoints);
@@ -2595,7 +2598,7 @@ private:
                 pin, on_erase);
 
         if (pin) {
-            SLT_WRN(slot, "bookmark pin: split at %" PRId64 " (was %" PRId64 ")\n", cur.n_tokens, pin_was);
+            SLT_WRN(slot, "bookmark pin: split at %" PRId64 ", pinned at %" PRId64 " (was %" PRId64 ")\n", slot.pin_split, cur.n_tokens, pin_was);
         }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -3503,8 +3506,9 @@ private:
                                     n_past = std::min(n_past, slot.alora_invocation_start - 1);
                                 }
 
-                                // the bookmark pin: a new chat's split, before any copy is restored, is where
-                                // the read-in below pins a copy (server-ckpt-pin.h)
+                                // the bookmark pin: a new chat's split, before any copy is restored, decides where
+                                // the read-in below pins a copy, the start of the message holding it (server-ckpt-pin.h)
+                                slot.pin_split  = n_past;
                                 slot.pin_target = server_ckpt_pin_target(ckpt_pin, params_base.n_ctx_checkpoints,
                                         slot.task->params.message_spans, n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
 
@@ -3632,21 +3636,13 @@ private:
 
                                 if (pos_min >= pos_min_thold) {
                                     // search for a context checkpoint
-                                    const auto it = std::find_if(
-                                        slot.prompt.checkpoints.rbegin(),
-                                        slot.prompt.checkpoints.rend(),
-                                        [&](const auto & cur) {
-                                            // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
+                                    // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
+                                    auto * it = server_ckpt_restore_pick(slot.prompt.checkpoints, pos_next, pos_min_thold,
+                                        [&](const common_prompt_checkpoint & cur) {
                                             SLT_TRC(slot, "checking checkpoint with [%d, %d] against %d...\n", cur.pos_min, cur.pos_max, pos_min_thold);
-                                            // workaround for [TAG_CHECKPOINTS_FIX_POS_MIN]
-                                            if (cur.pos_max > pos_next) {
-                                                return false;
-                                            }
-                                            return cur.pos_min < pos_min_thold || cur.pos_min == 0;
-                                        }
-                                    );
+                                        });
 
-                                    bool do_reset = it == slot.prompt.checkpoints.rend();
+                                    bool do_reset = it == nullptr;
 
                                     if (!do_reset) {
                                         // restore the context checkpoint
@@ -3677,12 +3673,16 @@ private:
                                     });
                             }
 
-                            // a copy already at the split (a chat that splits where the one before did, from the
-                            // copy just restored) takes the pin as it is: nothing new to save
+                            // a copy already at the target (usually the one just restored: the read-in of the chat
+                            // before saved a copy at its last user message's start) takes the pin as it is: nothing
+                            // new to save. A read-in that starts past the target (a copy between it and the split was
+                            // restored, and none is left at it) cannot pin this time
                             if (slot.pin_target >= 0) {
                                 int64_t pin_was = -1;
                                 if (server_ckpt_pin_existing(slot.prompt.checkpoints, slot.pin_target, &pin_was)) {
-                                    SLT_WRN(slot, "bookmark pin: split at %" PRId64 " (was %" PRId64 ")\n", slot.pin_target, pin_was);
+                                    SLT_WRN(slot, "bookmark pin: split at %" PRId64 ", pinned at %" PRId64 " (was %" PRId64 ")\n", slot.pin_split, slot.pin_target, pin_was);
+                                    slot.pin_target = -1;
+                                } else if (n_past > slot.pin_target) {
                                     slot.pin_target = -1;
                                 }
                             }

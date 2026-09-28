@@ -2,6 +2,8 @@
 //
 // - the split rule: a new chat's split (inside the system prompt or the first user message) counts; a follow-up's
 //   or a tool turn's (at or after an assistant message) and a retry's (no split inside the new prompt) don't
+// - in test-server-ckpt-pin-chats.cpp: the pin target (the start of the message holding the split, the amendment),
+//   upstream's restore choice, and cleric's hand-back played out as chats
 // - the pin survives more -ctxcp new copies than the list holds, moves to each new split, and an old pin becomes
 //   an ordinary rolling copy; a copy superseding the pin inherits it
 // - a pin beyond the split is dropped by the invalidation (its words are gone)
@@ -10,30 +12,13 @@
 // - with the pin on, invariants over generated sequences: never more than -ctxcp copies, at most one pinned,
 //   and the pin is never thrown out to make room
 
-#include "server-ckpt-pin.h"
+#include "test-server-ckpt-pin.h"
 
 #include <cinttypes>
 #include <cstdio>
 #include <random>
 #include <string>
 #include <vector>
-
-static int n_fail = 0;
-
-#define CHECK(cond) do { if (!(cond)) { ++n_fail; std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
-
-static const auto no_log = [](const common_prompt_checkpoint &, server_ckpt_erase_why) {};
-
-// a chat as sidekick renders it: the system block, the first user message (its <memory> block first), then
-// replies and turns; the last span is the generation prompt's assistant opening
-static common_chat_msg_spans spans_of(const std::vector<std::pair<common_chat_role, size_t>> & starts, size_t n) {
-    common_chat_msg_spans spans;
-    for (size_t i = 0; i < starts.size(); i++) {
-        const size_t end = i + 1 < starts.size() ? starts[i + 1].second : n;
-        spans.add(starts[i].first, starts[i].second, end - starts[i].second);
-    }
-    return spans;
-}
 
 static void test_parse() {
     CHECK(server_ckpt_pin_parse(nullptr));
@@ -47,7 +32,7 @@ static void test_split_rule() {
                                       {COMMON_CHAT_ROLE_ASSISTANT, 14790}}, 14800);
     // a new chat splits right after the first user message's opening marker
     CHECK( server_ckpt_split_is_new_chat(first_turn, 12893, 21000, 14800));
-    CHECK(server_ckpt_pin_target(true, 5, first_turn, 12893, 21000, 14800) == 12893);
+    CHECK(server_ckpt_pin_target(true, 5, first_turn, 12893, 21000, 14800) == 12890); // the user message's start
     // an effort or tool-list change splits inside the system prompt: a new chat too (the pin moves there)
     CHECK( server_ckpt_split_is_new_chat(first_turn, 40, 21000, 14800));
 
@@ -84,33 +69,7 @@ static void test_split_rule() {
     // the switch, and a list too short to hold a pin beside a rolling copy
     CHECK(server_ckpt_pin_target(false, 5, first_turn, 12893, 21000, 14800) == -1);
     CHECK(server_ckpt_pin_target(true,  1, first_turn, 12893, 21000, 14800) == -1);
-    CHECK(server_ckpt_pin_target(true,  2, first_turn, 12893, 21000, 14800) == 12893);
-}
-
-static int n_pinned(const server_ckpt_list & ckpts) {
-    int n = 0;
-    for (const auto & cur : ckpts) {
-        n += cur.pinned ? 1 : 0;
-    }
-    return n;
-}
-
-static const common_prompt_checkpoint * find_at(const server_ckpt_list & ckpts, int64_t n_tokens) {
-    for (const auto & cur : ckpts) {
-        if (cur.n_tokens == n_tokens) {
-            return &cur;
-        }
-    }
-    return nullptr;
-}
-
-// what create_checkpoint does to the list: unpin first when this copy is the pin
-static void add(server_ckpt_list & ckpts, bool pin_on, int n_max, int min_step, int id_task, int64_t n_tokens,
-        bool pin = false, const server_ckpt_on_erase & on_erase = no_log) {
-    if (pin) {
-        server_ckpt_unpin(ckpts);
-    }
-    server_ckpt_add(ckpts, pin_on, n_max, min_step, id_task, n_tokens, (llama_pos) n_tokens - 1, (llama_pos) n_tokens - 1, pin, on_erase);
+    CHECK(server_ckpt_pin_target(true,  2, first_turn, 12893, 21000, 14800) == 12890);
 }
 
 static void upstream_add(server_ckpt_list & ckpts, int n_max, int min_step, int id_task, int64_t n_tokens_new,
@@ -348,9 +307,14 @@ static void test_pin_invariants() {
     }
 }
 
+int n_fail = 0;
+
 int main() {
     test_parse();
     test_split_rule();
+    test_pin_target();
+    test_restore_pick();
+    test_handback_chats();
     test_pin_survives();
     test_pin_moves();
     test_pin_beyond_split_dropped();

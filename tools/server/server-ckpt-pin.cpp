@@ -20,12 +20,30 @@ bool server_ckpt_split_is_new_chat(const common_chat_msg_spans & spans, int64_t 
     return true;
 }
 
+int64_t server_ckpt_span_start(const common_chat_msg_spans & spans, int64_t pos) {
+    for (const auto & span : spans.spans) {
+        if ((int64_t) span.pos <= pos && pos < (int64_t) (span.pos + span.len)) {
+            return (int64_t) span.pos;
+        }
+    }
+    return -1;
+}
+
 int64_t server_ckpt_pin_target(bool pin_on, int32_t n_ctx_checkpoints, const common_chat_msg_spans & spans,
         int64_t n_past, int64_t n_old, int64_t n_new) {
-    if (!pin_on || n_ctx_checkpoints < 2) {
+    if (!pin_on || n_ctx_checkpoints < 2 || !server_ckpt_split_is_new_chat(spans, n_past, n_old, n_new)) {
         return -1;
     }
-    return server_ckpt_split_is_new_chat(spans, n_past, n_old, n_new) ? n_past : -1;
+    const int64_t start = server_ckpt_span_start(spans, n_past);
+    if (start <= 0) {
+        return n_past;
+    }
+    for (const auto & span : spans.spans) {
+        if ((int64_t) span.pos == start && span.role == COMMON_CHAT_ROLE_SYSTEM) {
+            return n_past; // a split inside the system prompt (an effort or tool-list change) pins at the split
+        }
+    }
+    return start;
 }
 
 int64_t server_ckpt_unpin(server_ckpt_list & ckpts) {
@@ -50,6 +68,23 @@ bool server_ckpt_pin_existing(server_ckpt_list & ckpts, int64_t n_tokens, int64_
     *was = server_ckpt_unpin(ckpts);
     it->pinned = true;
     return true;
+}
+
+common_prompt_checkpoint * server_ckpt_restore_pick(server_ckpt_list & ckpts, llama_pos pos_next, llama_pos pos_min_thold,
+        const std::function<void(const common_prompt_checkpoint &)> & on_check) {
+    for (auto it = ckpts.rbegin(); it != ckpts.rend(); ++it) {
+        if (on_check) {
+            on_check(*it);
+        }
+        // workaround for [TAG_CHECKPOINTS_FIX_POS_MIN]
+        if (it->pos_max > pos_next) {
+            continue;
+        }
+        if (it->pos_min < pos_min_thold || it->pos_min == 0) {
+            return &*it;
+        }
+    }
+    return nullptr;
 }
 
 void server_ckpt_invalidate(server_ckpt_list & ckpts, llama_pos pos_next, const server_ckpt_on_erase & on_erase) {
