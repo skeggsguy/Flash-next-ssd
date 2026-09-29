@@ -64,9 +64,11 @@ static std::string common_speculative_get_devices_str(const std::vector<ggml_bac
     return result.empty() ? "default" : result;
 }
 
-// LLAMA_SPEC_ADAPTIVE_RATE=2 checking every step, and its starting time per word (speculative-rate2.h), tests only
-static bool   g_rate2_check_all = false;
-static double g_rate2_per_word  = 0.0;
+// LLAMA_SPEC_ADAPTIVE_RATE=2 checking every step, its starting time per word, and the drafts it timed on their own
+// (speculative-rate2.h), tests only
+static bool    g_rate2_check_all = false;
+static double  g_rate2_per_word  = 0.0;
+static int64_t g_rate2_timed     = 0;
 
 void common_speculative_rate2_check_all_for_tests(bool on) {
     g_rate2_check_all = on;
@@ -74,6 +76,10 @@ void common_speculative_rate2_check_all_for_tests(bool on) {
 
 void common_speculative_rate2_time_per_word_for_tests(double us) {
     g_rate2_per_word = us;
+}
+
+int64_t common_speculative_rate2_drafts_timed_for_tests() {
+    return g_rate2_timed;
 }
 
 static uint32_t common_speculative_env_u32(const char * name, uint32_t fallback) {
@@ -1823,9 +1829,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 const bool charged = rc.cycle_begin(ggml_time_us());
                 n_cap[seq_id] = rc.n_max; // the price stops the draft; the ceiling only caps it
                 if (charged && rc.n_cycles % 500 == 0) {
-                    SPC_WRN("draft depth: %" PRId64 " cycles | checked a cycle %.2f | time per word %.1f ms | cost ms a s b f %.1f %.1f %.1f %.1f\n",
-                            rc.n_cycles, rc.checked_avg, rc.per_word / 1e3, rc.cost.th[0] / 1e3, rc.cost.th[1] / 1e3,
-                            rc.cost.th[2] / 1e3, rc.cost.th[3] / 1e3);
+                    SPC_WRN("draft depth: %" PRId64 " cycles | checked a cycle %.2f | time per word %.1f ms | cost ms draft d s %.1f %.1f, rest a b f %.1f %.1f %.1f\n",
+                            rc.n_cycles, rc.checked_avg, rc.per_word / 1e3, rc.cost.d() / 1e3, rc.cost.s() / 1e3,
+                            rc.cost.a() / 1e3, rc.cost.b() / 1e3, rc.cost.f() / 1e3);
                 }
             }
             if (dp.n_max > 0 && dp.n_max < n_cap[seq_id]) {
@@ -1984,6 +1990,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 dp.result->clear();
             }
 
+            if (rate2_mode) {
+                rate2_ctrl[seq_id].draft_done(ggml_time_us()); // the draft call timed on its own: s apart from b
+                g_rate2_timed += rate2_ctrl[seq_id].t_draft >= 0.0;
+            }
             if (rate_trace) {
                 rate_trace->draft_end(seq_id, shadow ? 0 : n_cap[seq_id], n_drafted, (int) dp.result->size(),
                         common_speculative_rate_trace::now_us());

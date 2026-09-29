@@ -14,10 +14,16 @@
 // is more than `b`, what a checked guess costs; otherwise the draft stops there, the step paid for and its guess
 // dropped. The price replaces p-min (the startup line says "p-min: priced"); the ceiling is --spec-draft-n-max.
 //
-//   cost line   cycle = a + s*steps + b*checked + f*[any checked], least squares over this slot's own cycles with
-//               forgetting (0.995) and a prior that never fades ((70, 8, 20, 10) ms with the weight of 5 cycles),
-//               so a direction the rule never exercises returns to the prior instead of winding up. Under the
-//               floor `f` is paid every cycle and enters no decision.
+//   cost line   in two parts, each least squares over this slot's own cycles with forgetting (0.995) and a prior
+//               that never fades (the weight of 5 cycles), so a direction the rule never exercises returns to the
+//               prior instead of winding up: the draft call, timed on its own (`draft_done`, at the draft's end),
+//               fits d + s*steps; the rest of the cycle (the check and the library's own word) fits
+//               a + b*checked + f*[any checked]. Under the floor nearly every cycle drafts one step more than it
+//               checks, so one line over whole cycles could fix only s + b; the draft's own time fixes s, and so
+//               b, the price. The prior is the whole-cycle line's (a, s, b, f) = (70, 8, 20, 10) ms, each term in
+//               the part where its work happens; the draft call's fixed cost d had no term of its own (a held it),
+//               so its prior is 0 and the two parts add up to the old prior line at every depth. `f` is paid every
+//               cycle under the floor and enters no decision.
 //   chance      10 bins of the step's top confidence, each a kept share with a prior of 4 samples at the bin's
 //               midpoint, learnt from the guesses the library checked up to the first thrown out, capped at 50
 //               samples (then an exponential average).
@@ -29,25 +35,27 @@
 // `sim/test_spec_rate2_engine.py` runs tests/test-speculative-rate2 on a script and compares the choices cycle
 // by cycle. State is per slot (one per sequence).
 
-// the fitted line; the arithmetic follows the study's `CostRLS` and `_solve` (sim/spec_rules.py, spec_trace.py)
-struct common_speculative_cost_rls {
-    static constexpr int N = 4; // a, s, b, f
-
-    double prior[N]     = {70e3, 8e3, 20e3, 10e3}; // us
+// least squares with forgetting and a prior that never fades, over N fixed features; the arithmetic follows the
+// study's `RLS` (sim/spec_floor.py) and `_solve` (sim/spec_trace.py)
+template <int N>
+struct common_speculative_rls {
+    double prior[N]     = {};
     double prior_weight = 5.0;
     double forget       = 0.995;
 
     double S[N][N] = {};
     double r[N]    = {};
-    double th[N]   = {70e3, 8e3, 20e3, 10e3};
+    double th[N]   = {};
 
-    double us(double steps, double checked, double any_checked) const {
-        return th[0] + th[1] * steps + th[2] * checked + th[3] * any_checked;
+    void init(const double (&p)[N]) {
+        *this = common_speculative_rls();
+        for (int i = 0; i < N; i++) {
+            prior[i] = th[i] = p[i];
+        }
     }
 
-    void observe(int steps, int checked, double y) {
-        const double x[N] = {1.0, (double) steps, (double) checked, checked > 0 ? 1.0 : 0.0};
-        const double g    = forget;
+    void observe(const double (&x)[N], double y) {
+        const double g = forget;
         for (int i = 0; i < N; i++) {
             r[i] = g * r[i] + x[i] * y;
             for (int j = 0; j < N; j++) {
@@ -95,6 +103,32 @@ struct common_speculative_cost_rls {
     }
 };
 
+// the cost line in the two parts the engine times (the study's `SplitCost`), in us, from the prior above
+struct common_speculative_cost_split {
+    common_speculative_rls<2> draft; // d, s: the draft call
+    common_speculative_rls<3> rest;  // a, b, f: the cycle less its draft call
+
+    common_speculative_cost_split() {
+        draft.init({0.0, 8e3});
+        rest.init({70e3, 20e3, 10e3});
+    }
+
+    double d() const { return draft.th[0]; }
+    double s() const { return draft.th[1]; }
+    double a() const { return rest.th[0]; }
+    double b() const { return rest.th[1]; }
+    double f() const { return rest.th[2]; }
+
+    double us(int steps, int checked) const {
+        return d() + s() * steps + a() + b() * checked + (checked > 0 ? f() : 0.0);
+    }
+
+    void observe(int steps, int checked, double draft_us, double cycle_us) {
+        draft.observe({1.0, (double) steps}, draft_us);
+        rest.observe({1.0, (double) checked, checked > 0 ? 1.0 : 0.0}, cycle_us - draft_us);
+    }
+};
+
 struct common_speculative_rate2 {
     static constexpr int K_MAX = 16; // the deepest ceiling (the trace's MAX_STEPS)
     static constexpr int BINS  = 10;
@@ -106,7 +140,7 @@ struct common_speculative_rate2 {
     double word_alpha  = 0.02;
     bool   check_all   = false; // tests only: every step checked to the ceiling (fixed n-max at p-min 0)
 
-    common_speculative_cost_rls cost;
+    common_speculative_cost_split cost;
     double hit[BINS]  = {};
     double seen[BINS] = {};
     double t_avg      = 70e3; // cycle time, us
@@ -121,6 +155,7 @@ struct common_speculative_rate2 {
     float  conf[K_MAX] = {};
     int    kept     = 0;     // guesses the library kept (verified)
     bool   pending  = false; // verified and not yet charged
+    double t_draft  = -1.0;  // the draft call's time this cycle, us (-1: not timed, the line learns nothing)
 
     // timing, as speculative-rate.h: a cycle is timed from its draft call to the next one of the same answer
     int64_t t_start  = -1;
@@ -170,7 +205,8 @@ struct common_speculative_rate2 {
         run      = 1.0;
         kept     = 0;
         pending  = false;
-        price_b  = cost.th[2];
+        t_draft  = -1.0;
+        price_b  = cost.b();
         per_word = time_per_word();
     }
 
@@ -179,11 +215,18 @@ struct common_speculative_rate2 {
     bool cycle_begin(int64_t now_us) {
         const bool charged = t_start >= 0 && pending && now_us > t_start;
         if (charged) {
-            charge((double) (now_us - t_start));
+            charge((double) (now_us - t_start), t_draft);
         }
         start();
         t_start = now_us;
         return charged;
+    }
+
+    // the draft call ended (every step run, the last guess checked or dropped): its own time, from the cycle's start
+    void draft_done(int64_t now_us) {
+        if (t_start >= 0 && now_us >= t_start) {
+            t_draft = (double) (now_us - t_start);
+        }
     }
 
     // a draft step ran and showed its top confidence: check its guess (and draft on), or stop the draft here?
@@ -217,10 +260,13 @@ struct common_speculative_rate2 {
         pending = true;
     }
 
-    // the cycle's measured time: the cost line and time per word learn from it (a step that failed to decode
-    // still counts as one step, as the replay does)
-    void charge(double us) {
-        cost.observe(std::max(1, steps), checked, us);
+    // the cycle's measured time and its draft call's (negative: not timed): the two parts of the cost line learn
+    // from them, time per word from the whole (a step that failed to decode still counts as one step, as the
+    // replay does; a draft is never longer than its cycle)
+    void charge(double us, double draft_us) {
+        if (draft_us >= 0.0) {
+            cost.observe(std::max(1, steps), checked, std::min(draft_us, us), us);
+        }
         t_avg += word_alpha * (us - t_avg);
         w_avg += word_alpha * ((double) (kept + 1) - w_avg);
         checked_avg += 0.01 * ((double) checked - checked_avg);
@@ -231,6 +277,8 @@ struct common_speculative_rate2 {
 
 // tests only (tests/test-speculative-rate2-mtp.cpp), for drafts set up after the call with LLAMA_SPEC_ADAPTIVE_RATE=2:
 // every step checked to the ceiling (so its guesses can be held to fixed n-max at p-min 0), and a starting time per
-// word (0: the rule's own 70 ms), so a fixture whose guesses are never kept still sees a range of depths
-void common_speculative_rate2_check_all_for_tests(bool on);
-void common_speculative_rate2_time_per_word_for_tests(double us);
+// word (0: the rule's own 70 ms), so a fixture whose guesses are never kept still sees a range of depths; and how
+// many draft calls the rule has timed on their own since the process started (the hook at the draft's end)
+void    common_speculative_rate2_check_all_for_tests(bool on);
+void    common_speculative_rate2_time_per_word_for_tests(double us);
+int64_t common_speculative_rate2_drafts_timed_for_tests();

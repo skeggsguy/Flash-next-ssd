@@ -612,6 +612,7 @@ llama_build_and_test(test-speculative-adaptive.cpp)
 llama_build_and_test(test-speculative-rate.cpp)
 llama_build_and_test(test-speculative-rate-trace.cpp)
 llama_build_and_test(test-speculative-rate2.cpp)
+llama_build_and_test(test-speculative-rate2-sim.cpp)
 llama_build_and_test(test-model-resolution.cpp)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)

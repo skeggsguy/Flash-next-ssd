@@ -6,7 +6,8 @@
 //           guess still drafts deep): every cycle checks at least one guess; each cycle's guesses are the first
 //           ones fixed 8 drafts from the same place (a second fixed-8 run, its drafts cut to the rule's lengths,
 //           walks the same path), so a step the rule paid for and dropped leaves no trace on later guesses; and
-//           the text written is the second run's
+//           the text written is the second run's; and every cycle's draft call is timed on its own (the hook
+//           at the draft's end that parts the cost line's step from its check)
 // The rule's own arithmetic and the section 4 tests are test-speculative-rate2 (no model).
 
 #include "common.h"
@@ -199,7 +200,11 @@ void test_prompt(const llama_tokens & prompt) {
     // as its confidence bins learn that nothing is kept
     for (double per_word : {0.0, 1e9}) {
         const std::string name = per_word > 0 ? "priced from 1000 s a word: " : "priced: ";
+        const int64_t timed0 = common_speculative_rate2_drafts_timed_for_tests();
         const run_out priced = run(COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE, "2", false, prompt, nullptr, per_word);
+        const int64_t timed  = common_speculative_rate2_drafts_timed_for_tests() - timed0;
+        check(timed == (int64_t) priced.cycles.size(), name + "every draft call timed on its own (" +
+                std::to_string(timed) + " of " + std::to_string(priced.cycles.size()) + ")");
         std::vector<size_t> lengths;
         bool floor = priced.ok;
         int  shorter = 0, deeper = 0;
