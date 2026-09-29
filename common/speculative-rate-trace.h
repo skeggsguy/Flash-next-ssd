@@ -12,6 +12,8 @@
 // A header line opens each session (the file is appended to), and an answer line opens each answer
 // (`common_speculative_begin`), carrying the prompt length and the wall clock so a replay can join the
 // answers to a rung's steps by time. Read by the study's `sim/spec_replay.py`.
+// The header's `rate_mode` names the depth rule: 0 fixed or hand-tuned, 1 the measured depth
+// (LLAMA_SPEC_ADAPTIVE_RATE=1), 2 the priced depth (=2, speculative-rate2.h), whose stops are priced, not p-min.
 //
 // The hooks in common/speculative.cpp are one null check each when the trace is off.
 
@@ -46,9 +48,9 @@ struct common_speculative_rate_trace {
     // nullptr when the variable is unset, empty or "0"; otherwise a trace appending to the path (a path
     // that cannot be opened is reported once and gives nullptr, so a typo never stops the server)
     static std::unique_ptr<common_speculative_rate_trace> open_from_env(
-            const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, bool rate_mode);
+            const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode);
 
-    common_speculative_rate_trace(FILE * f, uint32_t n_seq, int n_max, float p_min, bool adaptive, bool rate_mode,
+    common_speculative_rate_trace(FILE * f, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode,
             int64_t wall_us);
     ~common_speculative_rate_trace(); // writes every unfinished cycle (cycle_us -1) and closes the file
 

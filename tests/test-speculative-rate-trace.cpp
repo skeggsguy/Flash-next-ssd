@@ -61,9 +61,11 @@ static void test_env() {
     setenv(var, path.c_str(), 1);
     { auto t = trace_t::open_from_env(var, 1, 8, 0.0f, false, false); CHECK(t != nullptr, "a path must trace"); }
     { auto t = trace_t::open_from_env(var, 2, 5, 0.3f, true, true);   CHECK(t != nullptr, "a path must trace"); }
+    { auto t = trace_t::open_from_env(var, 1, 8, 0.3f, true, 2);      CHECK(t != nullptr, "a path must trace"); }
     const auto lines = read_lines(path);
-    CHECK(lines.size() == 2, "two openings append two headers, got %zu lines", lines.size());
-    if (lines.size() == 2) {
+    CHECK(lines.size() == 3, "three openings append three headers, got %zu lines", lines.size());
+    if (lines.size() == 3) {
+        CHECK(has(lines[2], "\"n_max\":8") && has(lines[2], "\"rate_mode\":2"), "header 3 (RATE=2): %s", lines[2].c_str());
         CHECK(has(lines[0], "\"trace\":\"spec-rate\"") && has(lines[0], "\"n_max\":8") &&
               has(lines[0], "\"p_min\":0.0000") && has(lines[0], "\"rate_mode\":0"), "header 1: %s", lines[0].c_str());
         CHECK(has(lines[1], "\"n_seq\":2") && has(lines[1], "\"n_max\":5") && has(lines[1], "\"p_min\":0.3000") &&

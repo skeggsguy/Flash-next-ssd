@@ -8,7 +8,7 @@
 #include <cstring>
 
 std::unique_ptr<common_speculative_rate_trace> common_speculative_rate_trace::open_from_env(
-        const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, bool rate_mode) {
+        const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode) {
     const char * path = std::getenv(env_name);
     if (path == nullptr || *path == '\0' || std::strcmp(path, "0") == 0) {
         return nullptr;
@@ -23,13 +23,13 @@ std::unique_ptr<common_speculative_rate_trace> common_speculative_rate_trace::op
 }
 
 common_speculative_rate_trace::common_speculative_rate_trace(FILE * f, uint32_t n_seq, int n_max, float p_min,
-        bool adaptive, bool rate_mode, int64_t wall_us)
+        bool adaptive, int rate_mode, int64_t wall_us)
     : f(f), open(n_seq), answer_of(n_seq, -1) {
     char buf[256];
     snprintf(buf, sizeof(buf),
             "{\"trace\":\"spec-rate\",\"version\":1,\"n_seq\":%u,\"n_max\":%d,\"p_min\":%.4f,"
             "\"adaptive\":%d,\"rate_mode\":%d,\"wall_us\":%" PRId64 "}\n",
-            n_seq, n_max, (double) p_min, adaptive ? 1 : 0, rate_mode ? 1 : 0, wall_us);
+            n_seq, n_max, (double) p_min, adaptive ? 1 : 0, rate_mode, wall_us);
     put(buf);
 }
 

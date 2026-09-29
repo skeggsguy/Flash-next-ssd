@@ -555,6 +555,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-qwen4exp-mtp-record NAME test-qwen4exp-mtp-record-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-qwen4exp-mtp-record test-qwen4exp-mtp-record-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # WRITING-PLAN step 3e: LLAMA_SPEC_ADAPTIVE_RATE=2 (the priced depth) through common_speculative on the MTP
+    # fixture: forced to check every step it is fixed 8 at p-min 0 byte for byte; priced, its guesses are fixed 8's
+    # first ones from the same place and every cycle checks one
+    llama_build(test-speculative-rate2-mtp.cpp)
+    llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-rate2-mtp test-speculative-rate2-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     llama_build(test-fusion.cpp)
 endif()
 
@@ -603,6 +611,7 @@ llama_build_and_test(test-arg-parser.cpp)
 llama_build_and_test(test-speculative-adaptive.cpp)
 llama_build_and_test(test-speculative-rate.cpp)
 llama_build_and_test(test-speculative-rate-trace.cpp)
+llama_build_and_test(test-speculative-rate2.cpp)
 llama_build_and_test(test-model-resolution.cpp)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)

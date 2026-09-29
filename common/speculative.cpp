@@ -11,6 +11,7 @@
 #include "sampling.h"
 #include "speculative-adaptive.h"
 #include "speculative-rate.h"
+#include "speculative-rate2.h"
 #include "speculative-rate-trace.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
@@ -61,6 +62,18 @@ static std::string common_speculative_get_devices_str(const std::vector<ggml_bac
         result += ggml_backend_dev_name(devices[i]);
     }
     return result.empty() ? "default" : result;
+}
+
+// LLAMA_SPEC_ADAPTIVE_RATE=2 checking every step, and its starting time per word (speculative-rate2.h), tests only
+static bool   g_rate2_check_all = false;
+static double g_rate2_per_word  = 0.0;
+
+void common_speculative_rate2_check_all_for_tests(bool on) {
+    g_rate2_check_all = on;
+}
+
+void common_speculative_rate2_time_per_word_for_tests(double us) {
+    g_rate2_per_word = us;
 }
 
 static uint32_t common_speculative_env_u32(const char * name, uint32_t fallback) {
@@ -1414,6 +1427,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<llama_token> shadow_tok;           // [n_seq] the shadow guess awaiting the real token
     std::vector<uint8_t>     shadow_pending;       // [n_seq]
 
+    // LLAMA_SPEC_ADAPTIVE_RATE=2: the priced depth (speculative-rate2.h), floor-post: one guess always checked,
+    // each deeper one while it pays; the price replaces p-min
+    bool rate2_mode = false;
+    std::vector<common_speculative_rate2> rate2_ctrl; // [n_seq]
+
     // LLAMA_SPEC_RATE_TRACE=<path>: one numbers-only line per checking cycle (speculative-rate-trace.h)
     std::unique_ptr<common_speculative_rate_trace> rate_trace;
 
@@ -1523,7 +1541,23 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             SPC_TRC("%s", "adaptive draft depth enabled (draft-mtp-adaptive)\n");
 
             const char * rate_env = std::getenv("LLAMA_SPEC_ADAPTIVE_RATE");
-            rate_mode = rate_env != nullptr && std::strcmp(rate_env, "0") != 0 && *rate_env != '\0';
+            rate2_mode = rate_env != nullptr && std::strcmp(rate_env, "2") == 0;
+            rate_mode  = rate_env != nullptr && std::strcmp(rate_env, "0") != 0 && *rate_env != '\0' && !rate2_mode;
+            if (rate2_mode) {
+                rate2_ctrl.assign(n_seq, common_speculative_rate2());
+                for (auto & r : rate2_ctrl) {
+                    r.init(this->params.n_max);
+                    r.check_all = g_rate2_check_all;
+                    if (g_rate2_per_word > 0.0) {
+                        r.t_avg = g_rate2_per_word;
+                        r.start();
+                    }
+                }
+                SPC_WRN("draft depth: priced (LLAMA_SPEC_ADAPTIVE_RATE=2), one guess always checked, each deeper "
+                        "guess while its chance x time per word beats its check, ceiling %d, p-min: priced%s\n",
+                        rate2_ctrl.empty() ? this->params.n_max : rate2_ctrl[0].n_max,
+                        g_rate2_check_all ? " (tests: every step checked)" : "");
+            }
             if (rate_mode) {
                 rate_ctrl.assign(n_seq, common_speculative_rate());
                 for (auto & r : rate_ctrl) {
@@ -1537,7 +1571,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         rate_trace = common_speculative_rate_trace::open_from_env("LLAMA_SPEC_RATE_TRACE", n_seq,
-                this->params.n_max, this->params.p_min, adaptive, rate_mode);
+                this->params.n_max, this->params.p_min, adaptive, rate2_mode ? 2 : rate_mode ? 1 : 0);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
@@ -1583,6 +1617,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         if (rate_mode) {
             rate_ctrl[seq_id].restart_timer(); // keeps what it learnt; the wait between answers is not work
             shadow_pending[seq_id] = 0;
+        }
+        if (rate2_mode) {
+            rate2_ctrl[seq_id].begin_answer(); // the text's bins fade, the machine's costs stay
         }
         if (rate_trace) {
             rate_trace->answer_begin(seq_id, N, common_speculative_rate_trace::now_us(),
@@ -1781,6 +1818,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             rc.cycle_cost(4)/1e3, rc.cycle_cost(5)/1e3);
                 }
             }
+            if (rate2_mode) {
+                auto & rc = rate2_ctrl[seq_id];
+                const bool charged = rc.cycle_begin(ggml_time_us());
+                n_cap[seq_id] = rc.n_max; // the price stops the draft; the ceiling only caps it
+                if (charged && rc.n_cycles % 500 == 0) {
+                    SPC_WRN("draft depth: %" PRId64 " cycles | checked a cycle %.2f | time per word %.1f ms | cost ms a s b f %.1f %.1f %.1f %.1f\n",
+                            rc.n_cycles, rc.checked_avg, rc.per_word / 1e3, rc.cost.th[0] / 1e3, rc.cost.th[1] / 1e3,
+                            rc.cost.th[2] / 1e3, rc.cost.th[3] / 1e3);
+                }
+            }
             if (dp.n_max > 0 && dp.n_max < n_cap[seq_id]) {
                 n_cap[seq_id] = dp.n_max;
             }
@@ -1850,8 +1897,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     rate_trace->draft_step(seq_id, cur_p->data[0].p);
                 }
 
-                // only collect very high-confidence draft tokens
-                if (cur_p->data[0].p < params.p_min) {
+                // only collect very high-confidence draft tokens (under RATE=2, the guesses that pay)
+                if (rate2_mode ? !rate2_ctrl[seq_id].step(cur_p->data[0].p) : cur_p->data[0].p < params.p_min) {
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -1927,6 +1974,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             n_last[seq_id] = (int) dp.result->size();
 
+            if (rate2_mode && dp.result->empty()) {
+                rate2_ctrl[seq_id].verified(0, 0); // nothing to check (a failed step): the server never accepts it
+            }
+
             // the adaptive controller decides its own depth, so the generic n_min
             // draft cutoff does not apply to it
             if (!adaptive && dp.result->size() < (size_t) params.n_min) {
@@ -1951,7 +2002,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             rate_trace->accepted(seq_id, n_accepted, common_speculative_rate_trace::now_us());
         }
 
-        if (rate_mode && !is_other) {
+        if (rate2_mode && !is_other) {
+            rate2_ctrl[seq_id].verified(n_last[seq_id], n_accepted);
+        } else if (rate_mode && !is_other) {
             rate_ctrl[seq_id].cycle_verified(n_last[seq_id], n_accepted);
         } else if (adaptive && !is_other) {
             const int depth_before = adaptive_ctrl[seq_id].n_cur;
