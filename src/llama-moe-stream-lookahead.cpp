@@ -85,10 +85,9 @@ static void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const 
     }
 }
 
-static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, const float * logits) {
-    std::vector<int32_t> picks;
-    llama_moe_stream_lookahead_top(la, logits, picks, la->sl_next->n_expert, la->bias, la->top_k);
-    llama_moe_stream_lookahead_issue(*la->sl_next, picks);
+// the next floor's guesses for the batch's last token
+static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, const float * logits, std::vector<int32_t> & books) {
+    llama_moe_stream_lookahead_top(la, logits, books, la->sl_next->n_expert, la->bias, la->top_k);
 }
 
 // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: floor L also fetches floor L+2's K most likely books for the batch's
@@ -105,7 +104,7 @@ uint32_t llama_moe_stream_lookahead_depth2_env() {
 // batch (the apprentice's check) fetches two floors ahead for every token, rank by rank from the last,
 // each book once, as prefetch_next_all does one floor ahead; otherwise the last token only
 static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, const float * rows, int64_t n_tok,
-        int64_t stride, int64_t n1) {
+        int64_t stride, int64_t n1, std::vector<int32_t> & books) {
     if (!la->bias2_read) {
         la->bias2_read = true;
         if (la->bias_src2) {
@@ -120,7 +119,7 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
         llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2);
     }
     std::vector<uint8_t> seen(n2, 0);
-    std::vector<int32_t> books;
+    books.clear();
     for (uint32_t k = 0; k < la->top_k2; k++) {
         for (int64_t t = n_tok - 1; t >= first; t--) {
             const int32_t e = picks[(size_t) t][k];
@@ -130,7 +129,6 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
             }
         }
     }
-    llama_moe_stream_lookahead_issue(*la->sl_next2, books, true);
 }
 
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1: a small batch (the apprentice's check, 2..16 tokens) prefetches the
@@ -147,13 +145,13 @@ bool llama_moe_stream_lookahead_all_env() {
 }
 
 static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, const float * rows,
-        int64_t n_tok, int64_t stride) {
+        int64_t n_tok, int64_t stride, std::vector<int32_t> & books) {
     std::vector<std::vector<int32_t>> picks((size_t) n_tok);
     for (int64_t t = 0; t < n_tok; t++) {
         llama_moe_stream_lookahead_top(la, rows + t*stride, picks[(size_t) t], la->sl_next->n_expert, la->bias, la->top_k);
     }
     std::vector<uint8_t> seen(la->sl_next->n_expert, 0);
-    std::vector<int32_t> books;
+    books.clear();
     const uint32_t ranks = la->all_ranks > 0 ? std::min(la->all_ranks, la->top_k) : la->top_k;
     for (uint32_t k = 0; k < la->top_k; k++) {
         for (int64_t t = n_tok - 1; t >= 0; t--) {
@@ -167,7 +165,16 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
             }
         }
     }
-    llama_moe_stream_lookahead_issue(*la->sl_next, books);
+}
+
+// every guess already on the desk or on its way: the issue loop would skip them all
+static bool llama_moe_stream_lookahead_all_on_desk(const llama_moe_stream_layer & sl, const std::vector<int32_t> & books) {
+    for (const int32_t e : books) {
+        if (sl.expert_slot.find(e) == sl.expert_slot.end()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b, int ith, int nth, void * userdata) {
@@ -193,16 +200,42 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
         }
     }
 
-    std::unique_lock<std::mutex> lk(la->sl_next->mgr->mtx);
-    if (!la->sl_next->mgr->load_failed) {
-        if (n_tok > 1 && n_tok <= 16 && la->all) {
-            llama_moe_stream_prefetch_next_all(la, (const float *) b->data, n_tok, b->ne[0]);
-        } else {
-            llama_moe_stream_prefetch_next(la, logits);
+    // The guesses depend only on the logits, never on the desk, so with LLAMA_MOE_STREAM_NOLOCK they are picked
+    // before the lock, and when every one is already on the desk or on its way (the issue loop would skip them
+    // all) the lock is not taken at all (llama-moe-stream-quick.cpp says why reading the desk's index here is
+    // safe). Off: the lock first, as before.
+    auto * mgr = la->sl_next->mgr;
+    std::unique_lock<std::mutex> lk(mgr->mtx, std::defer_lock);
+    if (!mgr->nolock) {
+        lk.lock();
+        if (mgr->load_failed) {
+            return;
         }
-        const int64_t n1 = la->sl_next->n_expert;
-        if (la->sl_next2 && la->top_k2 > 0 && b->ne[0] == n1 + la->sl_next2->n_expert) {
-            llama_moe_stream_prefetch_next2(la, (const float *) b->data, n_tok, b->ne[0], n1);
+    }
+    std::vector<int32_t> books1, books2;
+    if (n_tok > 1 && n_tok <= 16 && la->all) {
+        llama_moe_stream_prefetch_next_all(la, (const float *) b->data, n_tok, b->ne[0], books1);
+    } else {
+        llama_moe_stream_prefetch_next(la, logits, books1);
+    }
+    const int64_t n1 = la->sl_next->n_expert;
+    const bool two = la->sl_next2 && la->top_k2 > 0 && b->ne[0] == n1 + la->sl_next2->n_expert;
+    if (two) {
+        llama_moe_stream_prefetch_next2(la, (const float *) b->data, n_tok, b->ne[0], n1, books2);
+    }
+    if (mgr->nolock) {
+        if (llama_moe_stream_lookahead_all_on_desk(*la->sl_next, books1) &&
+                (!two || llama_moe_stream_lookahead_all_on_desk(*la->sl_next2, books2))) {
+            mgr->n_la_quick++;
+            return;
         }
+        lk.lock();
+        if (mgr->load_failed) {
+            return;
+        }
+    }
+    llama_moe_stream_lookahead_issue(*la->sl_next, books1);
+    if (two) {
+        llama_moe_stream_lookahead_issue(*la->sl_next2, books2, true);
     }
 }

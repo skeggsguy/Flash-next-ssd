@@ -25,6 +25,11 @@ bool ggml_metal_cpy_tensor_async(ggml_metal_t ctx_src, ggml_metal_t ctx_dst, con
 
 enum ggml_status ggml_metal_graph_compute (ggml_metal_t ctx, struct ggml_cgraph * gf);
 
+// GGML_METAL_ENCODE_AHEAD (study patch, C2): encode gf now, while the GPU runs the graph before it; the next
+// graph_compute commits it if it is gf (same graph, same uid), else drops it. Counts for tests.
+void ggml_metal_graph_encode_ahead(ggml_metal_t ctx, struct ggml_cgraph * gf);
+void ggml_metal_encode_ahead_counts(int64_t * encoded, int64_t * used);
+
 // GGML_METAL_CBLOG: the last graph this thread computed (its `G` line's ctx and seq); NULL, 0 before any or when off
 void ggml_metal_cblog_last(void ** ctx, uint64_t * seq);
 void             ggml_metal_graph_optimize(ggml_metal_t ctx, struct ggml_cgraph * gf);

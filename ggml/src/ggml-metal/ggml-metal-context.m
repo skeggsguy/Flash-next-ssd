@@ -97,9 +97,19 @@ struct ggml_metal {
     // error state - set when a command buffer fails during synchronize
     // once set, graph_compute will return GGML_STATUS_FAILED until the backend is recreated
     bool has_error;
+
+    // GGML_METAL_ENCODE_AHEAD (study patch, C2: cheaper floor stops; on unless "0"): the scheduler hands over the
+    // graph after the next CPU split while the GPU still runs this one, and it is encoded then, into command
+    // buffers that are not yet queued; graph_compute for that graph only commits them (ggml_metal_graph_encode_ahead)
+    bool encode_ahead;
+    struct ggml_cgraph * ahead_gf; // the graph the waiting command buffers were encoded for, NULL = none
+    uint64_t             ahead_uid;
+    int                  ahead_n_cb;
+    id<MTLCommandBuffer> ahead_bufs[GGML_METAL_MAX_COMMAND_BUFFERS + 1]; // same indices as cmd_bufs
 };
 
 static void ggml_metal_cblog_open(void);
+static void ggml_metal_ahead_drop(ggml_metal_t ctx);
 
 ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     GGML_LOG_INFO("%s: allocating\n", __func__);
@@ -199,6 +209,15 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
         }
 
         res->has_error = false;
+
+        {
+            const char * val = getenv("GGML_METAL_ENCODE_AHEAD");
+            res->encode_ahead = val == NULL || strcmp(val, "0") != 0;
+            res->ahead_gf     = NULL;
+            for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+                res->ahead_bufs[i] = nil;
+            }
+        }
 
         res->gf = nil;
         res->encode_async = nil;
@@ -344,6 +363,8 @@ void ggml_metal_free(ggml_metal_t ctx) {
             [ctx->cmd_bufs[i].obj release];
         }
     }
+
+    ggml_metal_ahead_drop(ctx);
 
     for (int i = 0; i < (int) ctx->cmd_bufs_ext.count; ++i) {
         if (ctx->cmd_bufs_ext[i]) {
@@ -635,6 +656,166 @@ static void ggml_metal_kprof_print_json_string(const char * value, size_t length
     fputc('"', stderr);
 }
 
+// how a graph's nodes are split between the main command buffer and the n_cb others (both encoding paths)
+static void ggml_metal_split_nodes(struct ggml_cgraph * gf, int n_cb, int * n_nodes_0, int * n_nodes_1, int * n_nodes_per_cb) {
+    // number of nodes encoded by the main thread (empirically determined)
+    const int n_main = MAX(64, 0.1*gf->n_nodes);
+
+    if (n_cb == 0) {
+        // single-threaded encoding: the whole graph is encoded by one command buffer
+        *n_nodes_0      = gf->n_nodes;
+        *n_nodes_1      = 0;
+        *n_nodes_per_cb = 0;
+    } else {
+        *n_nodes_0      = MIN(n_main, gf->n_nodes);
+        if (ggml_metal_fusion_fn_enabled()) {
+            // fix 2 (P8): start the next command buffer at a fusion group, not inside it (a cut
+            // group runs unmerged); only this first split, as the expert servicer pins n_cb to 1
+            *n_nodes_0 = ggml_metal_fusion_fn_split(gf, *n_nodes_0);
+        }
+        *n_nodes_1      = gf->n_nodes - *n_nodes_0;
+
+        *n_nodes_per_cb = (*n_nodes_1 + n_cb - 1) / n_cb;
+    }
+}
+
+// the nodes command buffer cb_idx encodes: cb_idx == n_cb is the main one
+static void ggml_metal_cb_range(int cb_idx, int n_cb, int n_nodes_0, int n_nodes_1, int n_nodes_per_cb, int * idx_start, int * idx_end) {
+    *idx_start = 0;
+    *idx_end   = n_nodes_0;
+
+    if (cb_idx < n_cb) {
+        *idx_start = n_nodes_0 + (                                       (cb_idx + 0) * n_nodes_per_cb);
+        *idx_end   = n_nodes_0 + (MIN((cb_idx == n_cb - 1) ? n_nodes_1 : (cb_idx + 1) * n_nodes_per_cb, n_nodes_1));
+    }
+}
+
+// encodes nodes [idx_start, idx_end) of gf into cmd_buf (both encoding paths)
+static void ggml_metal_encode_nodes(ggml_metal_t ctx, struct ggml_cgraph * gf, id<MTLCommandBuffer> cmd_buf, int idx_start, int idx_end) {
+    ggml_metal_op_t ctx_op = ggml_metal_op_init(
+        ctx->dev,
+        cmd_buf,
+        gf,
+        ctx->finfo,
+        idx_start,
+        idx_end,
+        ctx->use_concurrency,
+        ctx->capture_compute,
+        ctx->debug_graph);
+
+    for (int idx = 0; idx < ggml_metal_op_n_nodes(ctx_op); ++idx) {
+        const int res = ggml_metal_op_encode(ctx_op, idx);
+        if (res == 0) {
+            break;
+        }
+
+        idx += res - 1;
+    }
+
+    ggml_metal_op_free(ctx_op);
+}
+
+// GGML_METAL_ENCODE_AHEAD: graphs encoded ahead, and of those, committed (the rest were dropped); for tests
+static _Atomic int64_t g_ahead_encoded = 0;
+static _Atomic int64_t g_ahead_used    = 0;
+
+void ggml_metal_encode_ahead_counts(int64_t * encoded, int64_t * used) {
+    *encoded = atomic_load(&g_ahead_encoded);
+    *used    = atomic_load(&g_ahead_used);
+}
+
+static void ggml_metal_ahead_drop(ggml_metal_t ctx) {
+    for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+        if (ctx->ahead_bufs[i]) {
+            [ctx->ahead_bufs[i] release]; // encoded, never queued: nothing of it ever reaches the GPU
+            ctx->ahead_bufs[i] = nil;
+        }
+    }
+    ctx->ahead_gf = NULL;
+}
+
+// Why the words cannot change: encoding reads a graph's shapes, strides, op params and buffer addresses, never
+// a tensor's values (the one encoder that reads host memory, the MoE servicer's handshake, turns this off), and
+// none of those change between here and the graph's turn: the scheduler's CPU split in between writes values
+// only, and a graph that is rebuilt gets a new uid. The buffers are not queued until graph_compute commits them,
+// in the order the plain path queues them (the main one, then cb[0..n_cb)), so everything queued before that
+// (the inputs the scheduler copies in, an event) still runs first. Off with capture, kernel profiling, the
+// MoE servicer, an error state, or an abort callback with n_cb > 1 (the plain path then holds buffers
+// past the second back).
+void ggml_metal_graph_encode_ahead(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+    ggml_metal_ahead_drop(ctx);
+
+    const int n_cb = ctx->n_cb;
+    if (!ctx->encode_ahead || ctx->has_error || ctx->capture_compute >= 0 || ggml_metal_kprof_stride() > 0 ||
+            ggml_metal_device_has_moe_servicer(ctx->dev) || (ctx->abort_callback != NULL && n_cb > 1) ||
+            gf == NULL || gf->n_nodes == 0) {
+        return;
+    }
+
+    int n_nodes_0, n_nodes_1, n_nodes_per_cb;
+    ggml_metal_split_nodes(gf, n_cb, &n_nodes_0, &n_nodes_1, &n_nodes_per_cb);
+
+    @autoreleasepool {
+        id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
+        // one at a time on this thread, the main one first, as the plain path encodes them when n_cb is 1
+        for (int k = 0; k <= n_cb; ++k) {
+            const int cb_idx = k == 0 ? n_cb : k - 1;
+            id<MTLCommandBuffer> cmd_buf = [queue commandBufferWithUnretainedReferences];
+            [cmd_buf retain];
+            ctx->ahead_bufs[cb_idx] = cmd_buf;
+
+            int idx_start, idx_end;
+            ggml_metal_cb_range(cb_idx, n_cb, n_nodes_0, n_nodes_1, n_nodes_per_cb, &idx_start, &idx_end);
+            ggml_metal_encode_nodes(ctx, gf, cmd_buf, idx_start, idx_end);
+        }
+    }
+
+    ctx->ahead_gf   = gf;
+    ctx->ahead_uid  = gf->uid;
+    ctx->ahead_n_cb = n_cb;
+    atomic_fetch_add(&g_ahead_encoded, 1);
+}
+
+// graph_compute's first step: commit the buffers encoded ahead for exactly this graph, or drop them
+static bool ggml_metal_ahead_commit(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+    if (ctx->ahead_gf == NULL) {
+        return false;
+    }
+    if (ctx->ahead_gf != gf || ctx->ahead_uid != gf->uid || ctx->ahead_n_cb != ctx->n_cb || ctx->capture_compute >= 0) {
+        ggml_metal_ahead_drop(ctx);
+        return false;
+    }
+
+    const int n_cb = ctx->n_cb;
+
+    @autoreleasepool {
+        ctx->gf = gf;
+        ggml_metal_split_nodes(gf, n_cb, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
+
+        for (int k = 0; k <= n_cb; ++k) {
+            const int cb_idx = k == 0 ? n_cb : k - 1;
+            id<MTLCommandBuffer> cmd_buf = ctx->ahead_bufs[cb_idx];
+            ctx->ahead_bufs[cb_idx] = nil;
+
+            if (ctx->cmd_bufs[cb_idx].obj) {
+                [ctx->cmd_bufs[cb_idx].obj release];
+            }
+            ctx->cmd_bufs[cb_idx].obj = cmd_buf;
+
+            ggml_metal_prof_track(ctx, cmd_buf);
+            ggml_metal_cblog_track(ctx, cmd_buf, cb_idx);
+            [cmd_buf commit];
+
+            // the last command buffer queued, for synchronize()
+            ctx->cmd_buf_last = cmd_buf;
+        }
+    }
+
+    ctx->ahead_gf = NULL;
+    atomic_fetch_add(&g_ahead_used, 1);
+    return true;
+}
+
 enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
     // GGML_METAL_KPROF: KPROF records carry raw node indices, so dump each distinct graph map once.
     // The KPROFS marker ties each later flush to the graph that produced it - stderr writes from
@@ -695,14 +876,16 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         GGML_METAL_CBLOG("G %p %llu %.9f %d\n", (void *) ctx, (unsigned long long) ctx->cblog_seq, ggml_metal_cblog_now(), gf->n_nodes);
     }
 
-    // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
-
     // number of threads in addition to the main thread
     const int n_cb = ctx->n_cb;
 
     // keep the memory wired
     ggml_metal_device_rsets_keep_alive(ctx->dev);
+
+    // GGML_METAL_ENCODE_AHEAD: this graph was encoded while the GPU ran the one before the CPU split; commit it
+    if (ggml_metal_ahead_commit(ctx, gf)) {
+        return GGML_STATUS_SUCCESS;
+    }
 
     // submit the ggml compute graph to the GPU by creating command buffers and encoding the ops in them
     // the first n_nodes_0 are encoded and submitted for processing directly by the calling thread
@@ -714,22 +897,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     @autoreleasepool {
         ctx->gf = gf;
 
-        if (ctx->n_cb == 0) {
-            // single-threaded encoding: the whole graph is encoded by one command buffer
-            ctx->n_nodes_0      = gf->n_nodes;
-            ctx->n_nodes_1      = 0;
-            ctx->n_nodes_per_cb = 0;
-        } else {
-            ctx->n_nodes_0      = MIN(n_main, gf->n_nodes);
-            if (ggml_metal_fusion_fn_enabled()) {
-                // fix 2 (P8): start the next command buffer at a fusion group, not inside it (a cut
-                // group runs unmerged); only this first split, as the expert servicer pins n_cb to 1
-                ctx->n_nodes_0 = ggml_metal_fusion_fn_split(gf, ctx->n_nodes_0);
-            }
-            ctx->n_nodes_1      = gf->n_nodes - ctx->n_nodes_0;
-
-            ctx->n_nodes_per_cb = (ctx->n_nodes_1 + ctx->n_cb - 1) / ctx->n_cb;
-        }
+        ggml_metal_split_nodes(gf, ctx->n_cb, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
 
         if (ctx->capture_compute >= 0) {
             ctx->capture_compute--;
@@ -927,6 +1095,8 @@ ggml_metal_event_t ggml_metal_get_ev_cpy(ggml_metal_t ctx) {
 }
 
 void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
+    ggml_metal_ahead_drop(ctx); // encoded for the old split of the nodes
+
     // when fusion stats are collected the graph must be encoded by a single thread so the
     // counters are race-free; override whatever the caller requested
     if (ggml_metal_fusion_info_stats(ctx->finfo)) {
@@ -954,37 +1124,12 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
 
         const int n_nodes_per_cb = ctx->n_nodes_per_cb;
 
-        int idx_start = 0;
-        int idx_end   = n_nodes_0;
-
-        if (cb_idx < n_cb_l) {
-            idx_start = n_nodes_0 + (                                         (cb_idx + 0) * n_nodes_per_cb);
-            idx_end   = n_nodes_0 + (MIN((cb_idx == n_cb_l - 1) ? n_nodes_1 : (cb_idx + 1) * n_nodes_per_cb, n_nodes_1));
-        }
+        int idx_start, idx_end;
+        ggml_metal_cb_range(cb_idx, n_cb_l, n_nodes_0, n_nodes_1, n_nodes_per_cb, &idx_start, &idx_end);
 
         id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs[cb_idx].obj;
 
-        ggml_metal_op_t ctx_op = ggml_metal_op_init(
-            ctx->dev,
-            cmd_buf,
-            ctx->gf,
-            ctx->finfo,
-            idx_start,
-            idx_end,
-            ctx->use_concurrency,
-            ctx->capture_compute,
-            ctx->debug_graph);
-
-        for (int idx = 0; idx < ggml_metal_op_n_nodes(ctx_op); ++idx) {
-            const int res = ggml_metal_op_encode(ctx_op, idx);
-            if (res == 0) {
-                break;
-            }
-
-            idx += res - 1;
-        }
-
-        ggml_metal_op_free(ctx_op);
+        ggml_metal_encode_nodes(ctx, ctx->gf, cmd_buf, idx_start, idx_end);
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {
             ggml_metal_prof_track(ctx, cmd_buf);

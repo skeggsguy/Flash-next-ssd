@@ -6,6 +6,7 @@
 #include "ggml-metal-device.h"
 #include "ggml-metal-fusion.h"
 #include "ggml-metal-context.h"
+#include "ggml-metal-awake.h"
 #include "ggml-metal-ops.h"
 #include "ggml-metal-tuning.h"
 
@@ -552,6 +553,13 @@ static enum ggml_status ggml_backend_metal_graph_compute(ggml_backend_t backend,
     return ggml_metal_graph_compute(ctx, cgraph);
 }
 
+// GGML_METAL_ENCODE_AHEAD (study patch, C2): the scheduler's "encode this graph now, compute it next" (ggml-backend.cpp)
+static void ggml_backend_metal_graph_encode_ahead(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    ggml_metal_graph_encode_ahead(ctx, cgraph);
+}
+
 static void ggml_backend_metal_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
     ggml_metal_t ctx = (ggml_metal_t)backend->context;
     ggml_metal_event_t ev = (ggml_metal_event_t)event->context;
@@ -990,6 +998,20 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     // GGML_METAL_CBLOG's last graph on the calling thread (study patch: the book manager's floor-stop log)
     if (strcmp(name, "ggml_backend_metal_cblog_last") == 0) {
         return (void *)ggml_metal_cblog_last;
+    }
+    // C2 encode ahead (study patch): the scheduler looks this up per backend; the counts are for tests
+    if (strcmp(name, "ggml_backend_graph_encode_ahead") == 0) {
+        return (void *)ggml_backend_metal_graph_encode_ahead;
+    }
+    if (strcmp(name, "ggml_backend_metal_encode_ahead_counts") == 0) {
+        return (void *)ggml_metal_encode_ahead_counts;
+    }
+    // C2 keep-awake (study patch, ggml-metal-awake.m): the book manager pings an idle GPU while a floor waits on a trip
+    if (strcmp(name, "ggml_backend_metal_keep_awake") == 0) {
+        return (void *)ggml_metal_keep_awake;
+    }
+    if (strcmp(name, "ggml_backend_metal_keep_awake_count") == 0) {
+        return (void *)ggml_metal_keep_awake_count;
     }
     // generic fusion debugging API (ad-hoc proc-address mechanism, not part of the official
     // ggml backend interface yet; a backend that adopts it exports these exact names)

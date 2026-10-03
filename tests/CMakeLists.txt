@@ -190,6 +190,15 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
         # fix 2a: the trimmed Q8_0 mat-vec's bytes (the old-vs-new diff is in the file's header)
         llama_build_and_test(test-mv-q8-bytes.cpp)
+        # T10A step 1 (C2): a graph encoded ahead of its compute gives the plain bytes; on (one and two extra
+        # command buffers) and off
+        llama_build(test-metal-encode-ahead.cpp)
+        foreach (EA on-ncb1 on-ncb2 off)
+            llama_test(test-metal-encode-ahead NAME test-metal-encode-ahead-${EA})
+        endforeach()
+        set_tests_properties(test-metal-encode-ahead-on-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
+        set_tests_properties(test-metal-encode-ahead-on-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
+        set_tests_properties(test-metal-encode-ahead-off     PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
         # WRITING-PLAN.md step 3b: the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX unset (16) and 8
         llama_build(test-metal-mv-ext.cpp)
         target_link_libraries(test-metal-mv-ext PRIVATE ggml-metal)
@@ -334,6 +343,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-room-lend-model.cpp)
     llama_build(test-moe-stream-lookahead-all.cpp)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
+    llama_build(test-moe-stream-c2.cpp)
     foreach (E64_NGL 99 0)
         llama_test(
             test-moe-stream-lookahead-depth2
@@ -345,7 +355,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             FIXTURES_REQUIRED generate-models-e64l4
         )
     endforeach()
-    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all)
+    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
+             test-moe-stream-c2)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(

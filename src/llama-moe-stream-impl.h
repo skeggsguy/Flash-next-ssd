@@ -34,6 +34,21 @@ static inline uint32_t sat_inc(uint32_t & c) {
     return c;
 }
 
+// A desk slot's state is guarded by the manager's lock, with one exception: the remap's quick path (no lock when
+// nothing is missing, llama-moe-stream-quick.cpp) reads it on the graph thread without the lock. The two stores
+// that make a slot RESIDENT (a runner's last slab, and a restore from the lent belt) publish with release and the
+// quick path reads with acquire, so a slot it sees RESIDENT has every byte of its book in place. Every other
+// access is under the lock, as before. Without the GCC/Clang atomic builtins the quick path is compiled out.
+#if defined(__GNUC__) || defined(__clang__)
+static const bool MOE_STREAM_QUICK_BUILT = true;
+static inline uint8_t moe_slot_state_peek(const uint8_t & s) { return __atomic_load_n(&s, __ATOMIC_ACQUIRE); }
+static inline void    moe_slot_state_publish(uint8_t & s, uint8_t v) { __atomic_store_n(&s, v, __ATOMIC_RELEASE); }
+#else
+static const bool MOE_STREAM_QUICK_BUILT = false;
+static inline uint8_t moe_slot_state_peek(const uint8_t & s) { return s; }
+static inline void    moe_slot_state_publish(uint8_t & s, uint8_t v) { s = v; }
+#endif
+
 // page-aligned allocation and positional read, defined beside the I/O workers
 void *          moe_aligned_alloc(size_t n);
 void            moe_aligned_free(void * p);

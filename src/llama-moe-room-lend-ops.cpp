@@ -290,7 +290,8 @@ void llama_moe_room::lend_restore_locked(std::unique_lock<std::mutex> & lk, cons
     lstats.n_bytes_out  += (int64_t) nb;
     lstats.t_restore_us += t1 - t0;
     if (w.gen == sl.slot_gen[w.slot] && sl.slot_pending[w.slot] > 0 && --sl.slot_pending[w.slot] == 0) {
-        sl.slot_state[w.slot] = LLAMA_MOE_STREAM_SLOT_RESIDENT; // the trip protocol: the last slab publishes
+        // the trip protocol: the last slab publishes (with release, for the remap's quick path)
+        moe_slot_state_publish(sl.slot_state[w.slot], LLAMA_MOE_STREAM_SLOT_RESIDENT);
     }
     mgr.cv_done.notify_all();
 }

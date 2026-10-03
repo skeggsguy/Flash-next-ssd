@@ -129,6 +129,7 @@ struct llama_moe_stream_layer {
     std::vector<uint8_t> touched;
     std::vector<uint8_t> keep;         // [n_slots] slots the current call must not evict
     std::vector<int32_t> demand_slots; // slots the current call waits on
+    std::vector<int32_t> slot_of;      // [n_expert] the current call's slot for each book it touched (ONE_LOOKUP)
 
     // wave plan for multi-pass prefill (guarded by mgr->mtx): the touched experts are split into
     // plan_n_waves passes of at most plan_capacity experts each, run one pass at a time
