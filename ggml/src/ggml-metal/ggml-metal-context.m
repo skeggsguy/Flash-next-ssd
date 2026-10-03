@@ -854,6 +854,11 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 ggml_metal_kprof_print_json_string(op_desc, strlen(op_desc));
                 fputs(",\"name\":", stderr);
                 ggml_metal_kprof_print_json_string(n->name, strnlen(n->name, GGML_MAX_NAME));
+                // the first source's name tells staff (a weight) from attention and the picker (the
+                // context) for a matrix product, which is often unnamed (study #10b step 1.2)
+                const struct ggml_tensor * s0 = n->src[0];
+                fputs(",\"src0\":", stderr);
+                ggml_metal_kprof_print_json_string(s0 ? s0->name : "", s0 ? strnlen(s0->name, GGML_MAX_NAME) : 0);
                 fprintf(stderr, ",\"ne\":[%lld,%lld,%lld,%lld]}\n",
                         (long long) n->ne[0], (long long) n->ne[1],
                         (long long) n->ne[2], (long long) n->ne[3]);
