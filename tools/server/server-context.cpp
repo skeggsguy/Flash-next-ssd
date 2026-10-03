@@ -15,6 +15,7 @@
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
+#include "spec-phase-log.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
@@ -1341,7 +1342,10 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        llama_init = common_init_from_params(params_base);
+        {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_TGT); // the C1 phase log (common/spec-phase-log.h)
+            llama_init = common_init_from_params(params_base);
+        }
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
@@ -1374,6 +1378,7 @@ private:
                 params_dft.load_progress_callback           = load_progress_callback;
                 params_dft.load_progress_callback_user_data = &load_progress_spec;
 
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_DFT);
                 spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
                 model_dft = spec_init->model();
                 ctx_dft   = spec_init->context();
@@ -1482,7 +1487,10 @@ private:
 
         slots.clear();
 
-        ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
+        {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_TGT);
+            ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
+        }
         if (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
@@ -1513,6 +1521,7 @@ private:
         }
 
         if (ctx_dft) {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_DFT);
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
@@ -3249,10 +3258,16 @@ private:
         std::vector<server_slot *> generating;
         std::vector<server_slot *> drafting;
 
+        common_spec_phase_round_end(); // no slot has written yet in this turn of the loop
+
         // determine which slots are generating and drafting
         iterate(slots, [&](server_slot & slot) {
             if (slot.state != SLOT_STATE_GENERATING) {
                 return;
+            }
+
+            if (generating.empty()) {
+                common_spec_phase_round_begin(); // a writing round: the C1 phase log's round id moves on
             }
 
             // check if we can batch this slot with the previous one
@@ -3289,7 +3304,9 @@ private:
                                 llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
 
                         if (use_ckpt_dft) {
+                            common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_DFT);
                             slot.spec_ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            phase.arg = (int64_t) slot.spec_ckpt.data_dft.size();
                         }
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
@@ -3327,8 +3344,10 @@ private:
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
             if (ctx_dft) {
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_LOAD_DFT);
                 if (use_ckpt_dft) {
                     ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    phase.arg = (int64_t) ckpt.data_dft.size();
                 }
 
                 if (!llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, ckpt.pos_max + 1, -1)) {
@@ -3347,7 +3366,11 @@ private:
                 if (use_ckpt_tgt) {
                     //const int64_t t_start = ggml_time_us();
 
-                    ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    {
+                        common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_TGT);
+                        ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        phase.arg = (int64_t) ckpt.data_tgt.size();
+                    }
 
                     //const int64_t t_total = ggml_time_us() - t_start;
                     //printf("checkpoint total: %f ms\n", t_total / 1000.0);
@@ -3359,7 +3382,9 @@ private:
                 }
 
                 if (use_ckpt_dft) {
+                    common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_DFT);
                     ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    phase.arg = (int64_t) ckpt.data_dft.size();
                 }
             }
         });
@@ -3997,6 +4022,7 @@ private:
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_CHECK, batch_view.n_tokens, /* round_only */ true);
             ret = llama_decode(ctx_tgt, batch_view);
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
@@ -4074,6 +4100,7 @@ private:
         if (batch_wants_speculation) {
             bool ok = true;
             queue_tasks.yield_to_queue([&]() {
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_PROCESS, batch_view.n_tokens, /* round_only */ true);
                 ok = common_speculative_process(spec.get(), batch_view);
             });
 
@@ -4247,6 +4274,7 @@ private:
 
             // verify and try to accept the draft
             {
+                common_spec_phase_scope phase_accept(COMMON_SPEC_PHASE_ACCEPT, 0, /* round_only */ true);
                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
 
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
@@ -4259,6 +4287,7 @@ private:
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
+                phase_accept.arg = (int64_t) accepted.size() - 1;
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
@@ -4278,6 +4307,10 @@ private:
                         slot.spec_draft = std::move(accepted);
 
                         const auto & ckpt = slot.spec_ckpt;
+
+                        phase_accept.end();
+                        common_spec_phase_scope phase_restore(COMMON_SPEC_PHASE_RESTORE_TGT,
+                                (int64_t) (ckpt.data_tgt.size() + (slot.ctx_dft ? ckpt.data_dft.size() : 0)), true);
 
                         SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
 

@@ -175,6 +175,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # WRITING-PLAN.md step 4b: the apprentice's word list (LLAMA_MTP_VOCAB): the switch, the list's parse, the gather
     # and the trimmed head's scores against the whole head's, byte for byte, on every backend
     llama_build_and_test(test-mtp-vocab.cpp)
+    # C1-PROFILE-PLAN step A: the apprentice's round phase by phase (common/spec-phase-log.h) and the book manager's
+    # floor stops (src/llama-moe-stream-stops.h), both beside GGML_METAL_CBLOG: the clock, the exit write, off = nothing
+    llama_build_and_test(test-spec-phase-log.cpp)
+    llama_build_and_test(test-moe-stream-stops.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -573,6 +577,26 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-qwen4exp-mtp-vocab test-qwen4exp-mtp-vocab-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # C1-PROFILE-PLAN step A end to end: llama-server writing with the apprentice on the MTP fixture, given a tiny word
+    # list (--vocab: the server turns tokens into text) in a folder of its own like the MTP fixture's; the phase log's
+    # rounds against the trace, one stop per target floor per check, and the words unchanged with the logs on
+    find_program(C1_PYTHON NAMES python3.12 python3)
+    if (LLAMA_BUILD_SERVER AND LLAMA_BUILD_TOOLS AND C1_PYTHON)
+        file(MAKE_DIRECTORY "${MODEL_DIR}/mtpv")
+        llama_test(
+            test-llama-archs
+            NAME test-generate-models-qwen4exp-e64mtpv
+            LABEL main
+            ARGS -a qwen4exp --n-expert 64 --n-expert-used 8 --nextn --vocab --suffix -e64mtpv --unit-scales -s 42 -o "${MODEL_DIR}/mtpv"
+        )
+        set_tests_properties(test-generate-models-qwen4exp-e64mtpv PROPERTIES FIXTURES_SETUP generate-models-e64mtpv)
+        add_test(NAME test-c1-phase-server
+                 COMMAND ${C1_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/test-c1-phase-server.py
+                         --server $<TARGET_FILE:llama-server> --model "${MODEL_DIR}/mtpv/qwen4exp-moe-e64mtpv.gguf")
+        set_tests_properties(test-c1-phase-server PROPERTIES LABELS main FIXTURES_REQUIRED generate-models-e64mtpv
+                             SKIP_RETURN_CODE 77)
+    endif()
 
     llama_build(test-fusion.cpp)
 endif()

@@ -109,6 +109,8 @@ add_library(${TARGET}
     speculative.h
     speculative-rate-trace.cpp
     speculative-rate-trace.h
+    spec-phase-log.cpp
+    spec-phase-log.h
     subproc.cpp
     subproc.h
     trie.cpp

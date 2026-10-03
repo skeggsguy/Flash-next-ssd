@@ -987,6 +987,10 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     if (strcmp(name, "ggml_backend_metal_tuning_device_token") == 0) {
         return (void *)ggml_backend_metal_tuning_device_token;
     }
+    // GGML_METAL_CBLOG's last graph on the calling thread (study patch: the book manager's floor-stop log)
+    if (strcmp(name, "ggml_backend_metal_cblog_last") == 0) {
+        return (void *)ggml_metal_cblog_last;
+    }
     // generic fusion debugging API (ad-hoc proc-address mechanism, not part of the official
     // ggml backend interface yet; a backend that adopts it exports these exact names)
     if (strcmp(name, "ggml_backend_fusion_get") == 0) {

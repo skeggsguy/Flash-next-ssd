@@ -80,9 +80,17 @@ std::string common_speculative_rate_trace::format_cycle(const cycle & c, int seq
     line.reserve(256 + 8 * c.conf.size());
     char buf[320];
     snprintf(buf, sizeof(buf),
-            "{\"cycle\":%" PRId64 ",\"answer\":%" PRId64 ",\"seq\":%d,\"pos\":%d,\"cap\":%d,\"steps\":%d,"
+            "{\"cycle\":%" PRId64 ",\"answer\":%" PRId64 ",\"seq\":%d,",
+            c.index, c.answer, seq);
+    line += buf;
+    if (c.round >= 0) {
+        snprintf(buf, sizeof(buf), "\"round\":%" PRId64 ",", c.round);
+        line += buf;
+    }
+    snprintf(buf, sizeof(buf),
+            "\"pos\":%d,\"cap\":%d,\"steps\":%d,"
             "\"drafted\":%d,\"checked\":%d,\"kept\":%d,\"stop\":\"%s\",\"conf\":[",
-            c.index, c.answer, seq, c.pos, c.cap, steps, c.drafted, c.checked, c.kept,
+            c.pos, c.cap, steps, c.drafted, c.checked, c.kept,
             c.ended ? stop_name(why) : "error");
     line += buf;
     for (int i = 0; i < steps; i++) {
@@ -128,7 +136,7 @@ void common_speculative_rate_trace::answer_begin(int seq, int n_prompt, int64_t 
     put(buf);
 }
 
-void common_speculative_rate_trace::draft_begin(int seq, int pos, int64_t now) {
+void common_speculative_rate_trace::draft_begin(int seq, int pos, int64_t now, int64_t round) {
     if (seq < 0 || seq >= (int) open.size()) {
         return;
     }
@@ -139,6 +147,7 @@ void common_speculative_rate_trace::draft_begin(int seq, int pos, int64_t now) {
     c.active = true;
     c.index  = n_cycles++;
     c.answer = answer_of[seq];
+    c.round  = round;
     c.pos    = pos;
     c.t0_us  = now;
     c.conf.reserve(MAX_STEPS);

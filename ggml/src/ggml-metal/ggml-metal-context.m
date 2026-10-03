@@ -269,6 +269,16 @@ static void ggml_metal_cblog_open(void) {
     });
 }
 
+// the last graph each thread handed to Metal while the log is on, so a CPU op that runs between two graphs (the
+// book manager's floor stop, src/llama-moe-stream-stops.cpp) can name the gap it sits in: the `G` line's ctx and seq
+static _Thread_local ggml_metal_t g_cblog_last_ctx = NULL;
+static _Thread_local uint64_t     g_cblog_last_seq = 0;
+
+void ggml_metal_cblog_last(void ** ctx, uint64_t * seq) {
+    *ctx = (void *) g_cblog_last_ctx;
+    *seq = g_cblog_last_seq;
+}
+
 #define GGML_METAL_CBLOG(...) do {                  \
         if (g_cblog) {                              \
             pthread_mutex_lock(&g_cblog_mutex);     \
@@ -680,6 +690,8 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
 
     if (g_cblog) {
         ctx->cblog_seq++;
+        g_cblog_last_ctx = ctx;
+        g_cblog_last_seq = ctx->cblog_seq;
         GGML_METAL_CBLOG("G %p %llu %.9f %d\n", (void *) ctx, (unsigned long long) ctx->cblog_seq, ggml_metal_cblog_now(), gf->n_nodes);
     }
 
