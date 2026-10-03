@@ -172,6 +172,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-qsa-slice.cpp)
     llama_build_and_test(test-qsa-union.cpp)
     llama_build_and_test(test-speculative-record-only.cpp)
+    # WRITING-PLAN.md step 4b: the apprentice's word list (LLAMA_MTP_VOCAB): the switch, the list's parse, the gather
+    # and the trimmed head's scores against the whole head's, byte for byte, on every backend
+    llama_build_and_test(test-mtp-vocab.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -562,6 +565,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-rate2-mtp test-speculative-rate2-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
+    # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
+    # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context
+    llama_build(test-qwen4exp-mtp-vocab.cpp)
+    llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-qwen4exp-mtp-vocab test-qwen4exp-mtp-vocab-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
     llama_build(test-fusion.cpp)
 endif()

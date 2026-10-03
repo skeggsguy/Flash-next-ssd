@@ -5,6 +5,7 @@
 #include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
 #include "llama-mtp-record.h"
+#include "llama-mtp-vocab.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -613,9 +614,14 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
         final = ggml_get_rows(ctx0, final, inp_out_ids);
     }
 
-    ggml_tensor * out_w = model.output ? model.output
-                        : qwen4exp_shared_model(cparams, model, "output.weight").output;
-    ggml_tensor * logits = build_lora_mm(out_w, final, model.output_s);
+    ggml_tensor * logits = nullptr;
+    if (cparams.mtp_vocab) { // the listed words only, the rest -INF (LLAMA_MTP_VOCAB, llama-mtp-vocab.h)
+        logits = llama_mtp_vocab_logits(ctx0, *cparams.mtp_vocab, final);
+    } else {
+        ggml_tensor * out_w = model.output ? model.output
+                            : qwen4exp_shared_model(cparams, model, "output.weight").output;
+        logits = build_lora_mm(out_w, final, model.output_s);
+    }
     cb(logits, "result_output", -1);
 
     res->t_logits = logits;

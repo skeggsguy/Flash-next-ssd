@@ -5,6 +5,7 @@
 #include "llama-cparams.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
+#include "llama-mtp-vocab.h"
 #include "llama-impl.h"
 #include "llama-memory.h"
 
@@ -286,6 +287,8 @@ private:
 
     llama_adapter_cvec_ptr  cvec;
     llama_adapter_loras_ptr loras;
+
+    std::unique_ptr<llama_mtp_vocab> mtp_vocab; // the apprentice's word list (LLAMA_MTP_VOCAB), null when off
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
