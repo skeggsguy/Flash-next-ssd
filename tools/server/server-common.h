@@ -64,6 +64,7 @@ enum error_type {
     ERROR_TYPE_UNAVAILABLE, // custom error
     ERROR_TYPE_NOT_SUPPORTED, // custom error
     ERROR_TYPE_EXCEED_CONTEXT_SIZE, // custom error
+    ERROR_TYPE_OVERLOADED, // custom error: the chat window cut a background request off (503, Anthropic's type name)
 };
 
 // thin wrapper around common_grammar_trigger with (de)serialization functions

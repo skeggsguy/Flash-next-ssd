@@ -224,6 +224,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-server-anthropic.cpp)
     target_include_directories(test-server-anthropic PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-server-anthropic PRIVATE server-context)
+    # CHAT-WINDOW-PLAN.md step 1: the chat window's rules (server-lane.h) and the queue's pick and timed wake, no model
+    llama_build_and_test(test-server-lane.cpp test-server-lane-config.cpp)
+    target_include_directories(test-server-lane PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-lane PRIVATE server-context)
 
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)

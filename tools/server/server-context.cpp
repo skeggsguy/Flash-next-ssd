@@ -1153,6 +1153,9 @@ private:
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
     bool ckpt_pin = true; // env: LLAMA_CKPT_PIN, the bookmark pin (server-ckpt-pin.h), on unless set to 0
 
+    // the chat window (server-lane.h, --chat-window): off unless set; used on the start_loop() thread only
+    server_lane_window lane_window;
+
     int n_empty_consecutive = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
@@ -1563,6 +1566,10 @@ private:
                 if (slot.stats.n_gen > 0) {
                     metrics_on_prediction(slot);
                 }
+                // the chat window runs from the end of the last chat (finished, failed or cancelled)
+                if (slot.task->lane == SERVER_LANE_CHAT && !slot.task->is_child()) {
+                    lane_window.on_chat_done(ggml_time_ms());
+                }
             };
 
             slot.reset();
@@ -1682,6 +1689,24 @@ private:
         queue_tasks.on_sleeping_state([this](bool sleeping) {
             handle_sleeping_state(sleeping);
         });
+
+        if (params_base.chat_window > 0) {
+            lane_window = server_lane_window((int64_t) params_base.chat_window * 1000);
+            queue_tasks.on_pick_deferred([this](const std::deque<server_task> & deferred) {
+                std::vector<server_lane> lanes;
+                lanes.reserve(deferred.size());
+                for (const auto & task : deferred) {
+                    lanes.push_back(task.lane);
+                }
+                return server_lane_pick(lanes, lane_window.code_may_start(ggml_time_ms(), chat_running()));
+            });
+            queue_tasks.on_tick([this]() {
+                chat_window_tick();
+            });
+            SRV_WRN("chat window: on, chat keeps the seat %d s after its last reply; requests with header %s: %s are "
+                    "background, every other request is chat\n", params_base.chat_window,
+                    params_base.chat_window_header.c_str(), params_base.chat_window_background.c_str());
+        }
 
         metrics.init();
 
@@ -2621,6 +2646,53 @@ private:
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
 
+    // the chat window: does a chat task hold a seat right now?
+    bool chat_running() const {
+        for (const auto & slot : slots) {
+            if (slot.is_processing() && slot.task->lane == SERVER_LANE_CHAT) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // the chat window's timed wake (server_queue::on_tick): when a window lapses, nothing releases a seat, so start
+    // the held tasks here, one per free seat
+    void chat_window_tick() {
+        if (!lane_window.take_lapse(ggml_time_ms(), chat_running())) {
+            return;
+        }
+        SRV_WRN("chat window: window lapsed, %zu waiting task(s) may start\n", queue_tasks.queue_tasks_deferred_size());
+        for (const auto & slot : slots) {
+            if (!slot.is_processing()) {
+                queue_tasks.pop_deferred_task(slot.id);
+            }
+        }
+    }
+
+    // the chat window: a chat task arrived and found no free seat; cut off a background task holding one, if any.
+    // The background client gets "busy, try again" (503) first, else it would hang: a cancel sends nothing.
+    // Returns false if no seat runs a background task.
+    bool chat_window_cut(server_slot * wanted, int id_chat) {
+        server_slot * victim = nullptr;
+        if (wanted != nullptr && wanted->is_processing() && server_lane_should_cut(wanted->task->lane, SERVER_LANE_CHAT)) {
+            victim = wanted;
+        }
+        for (auto & slot : slots) {
+            if (victim == nullptr && slot.is_processing() && server_lane_should_cut(slot.task->lane, SERVER_LANE_CHAT)) {
+                victim = &slot;
+            }
+        }
+        if (victim == nullptr) {
+            return false;
+        }
+        SRV_WRN("chat window: cut code task %d for chat task %d (prompt %d tokens, %d in context, %d generated)\n",
+                victim->task->id, id_chat, victim->task->n_tokens(), victim->prompt.n_tokens(), (int) victim->stats.n_gen);
+        send_error(*victim, "server busy: a chat has the seat (chat window), try again later", ERROR_TYPE_OVERLOADED);
+        victim->release(); // pops the deferred chat task, which runs next
+        return true;
+    }
+
     // returns false to decline the task, it is offered again after the decode is done
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only reading the server state is safe
@@ -2645,11 +2717,34 @@ private:
 
                     const int id_task = task.id;
 
+                    // the chat window holds background tasks while chat has the seat
+                    if (task.lane == SERVER_LANE_CODE && !lane_window.code_may_start(ggml_time_ms(), chat_running())) {
+                        const int64_t left = lane_window.seconds_left(ggml_time_ms(), chat_running());
+                        if (left < 0) {
+                            SRV_WRN("chat window: held code task %d while a chat has the seat, then %d s\n",
+                                    id_task, params_base.chat_window);
+                        } else {
+                            SRV_WRN("chat window: held code task %d for %" PRId64 " s more\n", id_task, left);
+                        }
+                        queue_tasks.defer(std::move(task));
+                        break;
+                    }
+
                     server_slot * slot = get_available_slot(task);
 
                     //
                     // slot scheduling logic
                     //
+
+                    // the chat window: a chat with no free seat takes one from a background task
+                    if ((slot == nullptr || slot->is_processing()) && task.lane == SERVER_LANE_CHAT) {
+                        // deferred first, so the seat's release hands it over
+                        queue_tasks.defer(std::move(task));
+                        if (!chat_window_cut(slot, id_task)) {
+                            SRV_DBG("no seat runs a background task, chat task waits, id_task = %d\n", id_task);
+                        }
+                        break;
+                    }
 
                     if (slot == nullptr) {
                         // if no slot is available, we defer this task for processing later
@@ -4643,6 +4738,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
     int32_t sse_ping_interval = params.sse_ping_interval;
 
+    // the chat window's lane, from the request's header (server-lane.h); not looked up when the window is off
+    const server_lane lane = params.chat_window > 0
+        ? server_lane_of(req.headers, params.chat_window_header, params.chat_window_background)
+        : SERVER_LANE_NONE;
+
     try {
         std::vector<server_task> tasks;
 
@@ -4693,6 +4793,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.params.message_spans = task.tokens.find_message_spans(delimiters);
 
             task.id_slot = json_value(data, "id_slot", -1);
+            task.lane    = lane;
             sse_ping_interval = task.params.sse_ping_interval;
 
             // OAI-compat
@@ -4753,26 +4854,47 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         // in streaming mode, the first error must be treated as non-stream response
         // this is to match the OAI API behavior
         // ref: https://github.com/ggml-org/llama.cpp/pull/16486#discussion_r2419657309
-        auto first_result = rd.next(req.should_stop);
-        if (first_result == nullptr) {
+        //
+        // the chat window: a task waiting for the seat (held for 20+ minutes, say) sends nothing until it starts, so
+        // after one ping interval without a first result the stream opens (200) and pings until the task runs. A task
+        // that has started already sent its first result (the headers signal), so only waiting tasks get here.
+        bool waiting_pings = false;
+        server_task_result_ptr first_result;
+        if (params.chat_window > 0 && sse_ping_interval > 0) {
+            const int64_t t_wait = ggml_time_ms();
+            first_result = rd.next([&]() {
+                if (req.should_stop()) {
+                    return true;
+                }
+                waiting_pings = ggml_time_ms() - t_wait > (int64_t) sse_ping_interval * 1000;
+                return waiting_pings;
+            });
+        } else {
+            first_result = rd.next(req.should_stop);
+        }
+        if (first_result == nullptr && !waiting_pings) {
             GGML_ASSERT(req.should_stop());
             return res; // connection is closed
         }
 
-        if (first_result->is_error()) {
+        if (first_result != nullptr && first_result->is_error()) {
             res->error(first_result->to_json());
             return res;
         }
 
         GGML_ASSERT(
+            first_result == nullptr ||
             dynamic_cast<server_task_result_cmpl_partial*>(first_result.get()) != nullptr ||
             dynamic_cast<server_task_result_cmpl_final*>  (first_result.get()) != nullptr
         );
 
         // next responses are streamed
         // to be sent immediately
-        json first_result_json = first_result->to_json();
-        if (first_result_json == nullptr) {
+        json first_result_json = first_result != nullptr ? first_result->to_json() : json();
+        if (first_result == nullptr) {
+            SRV_DBG("%s", "chat window: still waiting for the seat, opening the stream with a ping\n");
+            res->data = ":\n\n";
+        } else if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
         } else if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
             res->data = format_anthropic_sse(first_result_json);
@@ -4783,8 +4905,22 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval, waiting_pings](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
+                if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC && json_value(res_json, "type", std::string()) == "overloaded_error") {
+                    // the chat window's cut: Anthropic's own stream error, which Anthropic clients classify as
+                    // retryable (llama.cpp's own error shape lacks the "type": "error" they dispatch on)
+                    return format_anthropic_sse({
+                        {"event", "error"},
+                        {"data", {
+                            {"type", "error"},
+                            {"error", {
+                                {"type",    "overloaded_error"},
+                                {"message", json_value(res_json, "message", std::string())},
+                            }},
+                        }},
+                    });
+                }
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
                         {"event", "error"},
@@ -4869,6 +5005,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
                     json res_json = result->to_json();
+                    if (waiting_pings && res_json == nullptr) {
+                        // the headers signal of a task that waited for the seat: the headers went out with the pings
+                        output = "";
+                        return true;
+                    }
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);
                     } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {

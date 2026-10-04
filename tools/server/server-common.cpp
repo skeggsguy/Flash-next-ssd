@@ -69,6 +69,10 @@ json format_error_response(const std::string & message, const enum error_type ty
             type_str = "exceed_context_size_error";
             code = 400;
             break;
+        case ERROR_TYPE_OVERLOADED:
+            type_str = "overloaded_error";
+            code = 503;
+            break;
     }
     return json {
         {"code", code},
