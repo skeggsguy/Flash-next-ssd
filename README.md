@@ -1,298 +1,186 @@
-# llama.cpp — very large MoE models on a 64 GB Mac
+# Flash-Next SSD
 
-A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) for running MoE models **far larger
-than available RAM** by streaming their routed experts from SSD on demand, tuned specifically for
-Apple Silicon.
+**Run Qwen3.8-Flash-Next, a 111 GB model, on a 64 GB Mac.**
 
----
+This is a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork for Apple Silicon. The model is a
+mixture of experts: 48 layers of 512 experts, and each token uses only 10 experts on each layer. So
+the experts stay on the SSD. The ones a token needs are read in as it is computed, and the ones used
+most stay in an expert cache in RAM. Everything else stays resident on the GPU.
 
-# Quick start: Qwen3.8-Flash-Next V3 on a 64 GB Mac
+It was tuned for a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 5. The tuning was
+measured on real agent conversations, and any timing that swap touched was thrown out.
 
-You need an Apple Silicon Mac with 64 GB of memory and about 100 GB free on the internal SSD.
-Five steps, roughly an hour, nearly all of it downloading.
+<p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs"></p>
 
-Stock llama.cpp will not do. It has the model architecture but not `--moe-stream`, which is the
-flag that lets a 95.5 GiB model run on a 64 GB machine.
+## Headline numbers
 
-### 1. Build it
+Measured on a Mac mini M5 Pro (64 GB) with Unsloth's UD-Q4_K_XL quant, a 28 GiB expert cache, two
+SSDs and the MTP draft head on. Sources and method are in [Results](docs/flashnext/results.md).
 
-```bash
-git clone https://github.com/npanj/llama.cpp
-cd llama.cpp
+| | |
+|---|---|
+| **Writing (decode)** | **17.5 tokens/s** across 120 real agent conversations replayed in order: +47% over the study's first setup (11.9) |
+| **Time to first token** | **5.5 s** median: −52% (from 11.4 s) |
+| **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
+| **Writing after a 100K-token prompt** | **~21 tokens/s** |
+| **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
+
+## What it adds
+
+### SSD expert streaming with an expert cache
+
+`--moe-stream` keeps the routed experts on disk and holds a fixed-size expert cache in RAM
+(`--moe-stream-cache 28` = 28 GiB). Reads skip macOS's file cache (`--moe-stream-direct`), so the
+cache and the rest of the system keep their memory, and many reads are in flight at once. While a
+token is being written, the next layer's experts are fetched ahead of time; about 72% of those
+guesses turn out right. The cache keeps the experts used most recently and most often. At 28 GiB
+about 3 in 4 expert lookups find their expert already in RAM.
+
+### The reading room: a carousel for long prompts
+
+A long prompt needs nearly every expert on every layer. The reading room is a small ring buffer
+(about 1.4 GiB) carved out of the expert cache. The SSDs fill it layer after layer, ahead of the
+GPU, so prompt reading costs whichever of the two is slower, not both added together. The output
+is bit-identical to having every expert in RAM. While writing, the buffer is lent back as extra
+cache, which won back its cost (+5.5% writing). It is on by default.
+
+<p align="center"><img src="media/flashnext/carousel.svg" width="760" alt="Before: the SSD and GPU take turns. After: the reading room keeps both busy, reading in +32%, time to first word −28%"></p>
+
+### Two drives
+
+Put a byte-identical copy of the model on a second SSD and the expert reads are split across both
+by expert id (`--moe-stream-alt-path`, `--moe-stream-alt-split 53`). The internal SSD (6.5 GB/s)
+and a 990 PRO over Thunderbolt 5 (5.7 GB/s) give 12.3 GB/s together. That made writing 15% faster
+and cut the time to first token by 31%.
+
+<p align="center"><img src="media/flashnext/two-ssds.svg" width="760" alt="Gain from a second SSD: reading in +40% before the reading room and +15% after; writing +15%; time to first word −31% to −33%"></p>
+
+### The MTP draft head, at a depth it measures for itself
+
+A small draft head guesses up to 5 tokens ahead, and the model checks them all in one pass
+(`--spec-type draft-mtp-adaptive` with `LLAMA_SPEC_ADAPTIVE_RATE=1`). It picks its own guessing
+depth from how often recent guesses were kept. On the agent conversations (tool calls, code) it
+made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs its own experts
+fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from, for another +2.6%.
+
+### Union attention
+
+The model's sparse attention picks the context blocks each query attends to. Union attention
+shares one deduplicated pick list per batch while reading a prompt. At 160K context its working
+memory drops from 5.6 GiB to 1.9 GiB, and prompt reading gets 5% faster. It sums in a different
+order, so words can differ at near-ties; perplexity is unchanged. It is the default
+(`LLAMA_QSA_UNION=1`).
+
+### The chat window
+
+One server, two users: a person chatting and a coding agent working in the background. With
+`--chat-window 1200`, a chat request stops a running background request, which gets a 503 that its
+client retries. Background requests then wait until 20 minutes after the last chat reply. Only the
+background client needs to send a header (`X-Lane: code`). It is off by default.
+
+<p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
+
+### And smaller wins, all on by default
+
+- The n-gram table's hot rows sit on a 128 MiB shelf instead of macOS's file cache (`--ple-shelf`, +3% writing).
+- One prompt-cache checkpoint stays pinned at the start of the conversation, so a new chat after a
+  long one resumes in 4 s instead of 14 s.
+- Cheaper per-layer stops: less locking and lookup at each layer, the next layer's GPU work encoded
+  ahead, and a tiny keep-awake ping so the GPU does not power down while it waits (+7% writing).
+
+## Quick start
+
+You need an Apple Silicon Mac with 64 GB, about 115 GB free on the internal SSD, Xcode's command
+line tools and CMake. A second fast SSD is optional.
+
+**1. Build**
+
+```sh
+git clone https://github.com/skeggsguy/Flash-next-ssd
+cd Flash-next-ssd
 cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j8 --config Release
+cmake --build build -j
 ```
 
-### 2. Download the model (95.5 GiB, 3 shards)
+**2. Download the model (111.3 GB, 4 files) and the draft head (1.9 GB)**
 
-```bash
-D=~/models/qwen38-flash-next-v3 && mkdir -p $D
-for i in 1 2 3; do
-  curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-Q4_0-Q8out-v3-0000$i-of-00003.gguf \
-    https://huggingface.co/nitinpanj/qwen38-flash-next-v3/resolve/main/Qwen3.8-Flash-Next-Q4_0-Q8out-v3-0000$i-of-00003.gguf
+```sh
+D=~/models/flashnext && mkdir -p $D
+for i in 1 2 3 4; do
+  curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-UD-Q4_K_XL-0000$i-of-00004.gguf \
+    https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-0000$i-of-00004.gguf
 done
-```
-
-### 3. Download the draft head (1.9 GiB, worth ~50% more speed)
-
-```bash
-D=~/models/qwen38-flash-next-mtp && mkdir -p $D
 curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
   https://huggingface.co/nitinpanj/qwen38-flash-next-v3/resolve/main/MTP/mtp-shared-Q4_K_M.gguf
 ```
 
-### 4. Let the GPU wire enough memory
+**3. Let the GPU wire enough memory** (this resets on every reboot)
 
-Don't skip this. Without it the model fails to load. It also resets on every reboot.
-
-```bash
+```sh
 sudo sysctl iogpu.wired_limit_mb=59392
 ```
 
-### 5. Run it
+**4. Run the server**
 
-```bash
-export LLAMA_MOE_STREAM_LOOKAHEAD=1 LLAMA_MOE_STREAM_WAVE_CAP=200 \
-       LLAMA_MOE_STREAM_PARTITION=1 LLAMA_QWEN4EXP_SPARSE_FA=1
-
+```sh
+LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 \
+GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 \
 ./build/bin/llama-server \
-  -m ~/models/qwen38-flash-next-v3/Qwen3.8-Flash-Next-Q4_0-Q8out-v3-00001-of-00003.gguf \
-  -md ~/models/qwen38-flash-next-mtp/mtp-shared-Q4_K_M.gguf \
-  -ngl 99 \
-  --moe-stream --moe-stream-cache 36 --moe-stream-io-threads 8 --moe-stream-direct \
-  -c 98304 -b 4096 -ub 4096 -cms 512 -np 1 -fa on \
-  --cache-reuse 0 --cache-ram 512 \
-  --jinja --reasoning-format deepseek \
-  --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.3 \
-  --spec-draft-ngl 99 --spec-max-prompt 0 \
+  -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -ngl 99 \
+  --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct \
+  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf --spec-draft-ngl 99 \
+  --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 \
+  -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on \
+  --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek \
   --host 127.0.0.1 --port 8080
 ```
 
-Open <http://127.0.0.1:8080>, or point any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
-
-First load takes a few minutes, since it is reading 95.5 GiB off disk. On an M5 Pro you should see
-around 370 tokens/sec reading your prompt and about 27 tokens/sec writing the answer.
-
-If something goes wrong, whether the machine freezes, it won't load, or it is much slower than
-that, the fixes are in [docs/qwen38-flash-next-v3.md](docs/qwen38-flash-next-v3.md). That guide
-also explains every flag above, what to change if your Mac isn't 64 GB, and how to build the draft
-head yourself instead of downloading it.
-
----
-
-## How this works
-
-Target hardware: **Apple Silicon, 64 GB** — developed on an M1 Max (~400 GB/s) and an M5 Pro.
-Everything except the routed experts stays resident; the experts live in a bounded cache filled by
-demand loads and a one-layer-ahead prefetcher. The usable checkpoint size is therefore set by **disk
-throughput, not by RAM** — a 284B model in 107 GiB runs on a machine with 64 GB, at a speed that is
-genuinely usable for agentic coding.
-
-Decode at depth is dominated by the KV read, not by weight traffic, which is why streaming the
-experts costs so little once the context is deep. That is the entire premise of this approach, and
-most of the optimisation effort targets prefill and long context rather than short-prompt decode.
-
----
-
-## Support the upstream fork
-
-Expert streaming, which this whole fork is built around, comes from
-[mihailescu2m/llama.cpp](https://github.com/mihailescu2m/llama.cpp). If this work is useful to you,
-a donation to its author is greatly appreciated and helps fund continued development.
-
-[![Donate with PayPal](https://www.paypalobjects.com/en_AU/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=mihailescu2m%40gmail%2Ecom&lc=AU&item_name=memeka&item_number=odroid&currency_code=AUD&bn=PP%2DDonationsBF%3Abtn_donate_LG%2Egif%3ANonHosted)
-
----
-
-## Building
-
-Standard llama.cpp build; Metal is the only backend this fork is tuned for.
-
-```bash
-cmake -B build -DGGML_METAL=ON
-cmake --build build -j8 --config Release
-```
-
-Verify the ggml operations, including the ones this fork adds:
-
-```bash
-./build/bin/test-backend-ops -b MTL0 -o UNION_BUILD,FLASH_ATTN_UNION
-```
-
-The perf suite also carries expert-GEMM cases at both target models' shapes, which is what the
-kernel tables in the research logs are generated from:
-
-```bash
-./build/bin/test-backend-ops perf -b MTL0 -o MUL_MAT
-```
-
----
-
-## Running
-
-The generic shape of a streaming run:
-
-```bash
-llama-server -m <first shard> \
-  -ngl 99 --moe-stream --moe-stream-cache 40 --moe-stream-io-threads 8 \
-  -c 131072 -b 4096 -ub 4096 -np 1 -fa on
-```
-
-> For the Qwen3.8-Flash-Next V3 checkpoint specifically, use the tuned command in
-> [docs/qwen38-flash-next-v3.md](docs/qwen38-flash-next-v3.md) instead. It adds the MTP draft head
-> and the measured cache and wired-limit pairing, together worth roughly +50% decode.
-
-Two parameters carry most of the performance:
-
-* **`-ub 4096`** — dominates prefill, and
-* **`--moe-stream-cache`** — size it to your machine's free RAM, *not* to the model. Leave ~4 GB of
-  headroom or allocation fails, more with a draft model loaded.
-
-Expert streaming is enabled by the CLI flag. Once it is on, lookahead prefetch and pair
-partitioning are both **on by default**; the environment variables below exist to turn them off for
-A/B work, and all of them parse their value, so `VAR=0` disables.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `LLAMA_MOE_STREAM_PARTITION` | on | give each (token, expert) pair to exactly one wave |
-| `LLAMA_MOE_STREAM_LOOKAHEAD` | 1 | prefetch depth, in layers |
-| `LLAMA_MOE_STREAM_CACHE` / `--moe-stream-cache` | — | expert cache budget, GiB |
-| `LLAMA_MOE_STREAM_WAVE_CAP` | planner | force experts per wave; wins over the pair budget |
-| `LLAMA_DSV4_UNION` | on | DeepSeek union-8; `0` selects the per-query sparse path |
-| `LLAMA_QWEN4EXP_BLOCK_TOPK` | on | Qwen block-level indexer selection |
-| `LLAMA_QWEN4EXP_INDEXER_F16` | on | keep raw indexer keys in F16 under quantised KV |
-| `GGML_METAL_KPROF` | off | per-kernel GPU attribution, stride in nodes |
-| `GGML_METAL_GPU_PROFILE` | off | per-context GPU busy time |
-
----
-
-## What this fork adds on top of upstream
-
-Organised by the commit layers in this branch. The reasoning behind each is in the model logs.
-
-### Selected upstream PRs
-
-Metal sparse flash attention, indexed predecessor lookup and focused Metal kernel improvements are
-kept immediately above current llama.cpp master so they can be dropped when upstream merges them.
-
-These were still open upstream when this branch was cut (2026-09-17). They are carried here
-because each one helps the Qwen3.8-Flash-Next V3 configuration. Credit to their authors.
-
-The figures below are each PR author's own, not re-measured here. Treat the prompt-reading numbers
-with particular care: `llama-bench` feeds uniform random tokens, which for this architecture means
-random access across the whole 26.8 GiB n-gram table. Real prompts reuse common trigrams and warm
-the page cache, so a fix aimed at page faults looks far larger under `llama-bench` than in use.
-Measured here on a real 11k-token prefill, bypassing the page cache entirely was worth +1.1%, inside
-run-to-run noise.
-
-| PR | What it does | Measured effect |
-|---|---|---|
-| [#29030](https://github.com/ggml-org/llama.cpp/pull/29030) | Read the 26.8 GiB PLE table with direct file reads instead of mmap page faults | prompt reading +65% to +121% (`llama-bench`, see caveat above) |
-| [#28948](https://github.com/ggml-org/llama.cpp/pull/28948) | Fuse Metal MoE routing, MoE reduction, SSM_CONV+silu and RMS_NORM+SCALE | decode +5-9%, prefill +4-6% |
-| [#29000](https://github.com/ggml-org/llama.cpp/pull/29000) | Dedicated Metal kernels for the four-stream hyper-connection ops | HC ops were 10-15% of decode GPU time |
-| [#28213](https://github.com/ggml-org/llama.cpp/pull/28213) | Gather the top-2048 attended cells instead of masking full context | +6% at 31k ctx, +50% at 130k |
-| [#29019](https://github.com/ggml-org/llama.cpp/pull/29019) | Preserve batch order so the MTP head reads aligned hidden states | draft acceptance +17% |
-| [#29029](https://github.com/ggml-org/llama.cpp/pull/29029) | Skip unneeded F32 rescale in `mul_mm_id` on Metal | +1-4% on batched MoE GEMM |
-
-If you are on this branch and one of these has since merged upstream, it is redundant here, not
-wrong.
-
-### MoE expert streaming
-
-The core of the fork, and one commit per sub-feature so any of them can be dropped when upstream
-grows an equivalent. Routed experts stream from SSD into a bounded cache: parallel slab reads at
-real queue depth, one-layer-ahead prefetch on its own queue so a wide prefetch cannot delay a demand
-read, route-hotness eviction with decay, GPU-side slot resolution serviced over a Metal shared event
-(no CPU round-trip, no graph split), zero-copy loads straight into the Metal shared buffer, and
-per-row streaming for gather tables too large to map.
-
-Multi-pass prefill splits a ubatch that touches more experts than the cache holds into waves, and
-pair partitioning gives each (token, expert) pair to exactly one wave rather than running every wave
-over every pair and masking the rest away.
-
-### Metal optimisations and profiling
-
-Per-kernel GPU attribution behind `GGML_METAL_KPROF`, per-context GPU busy time, op-named debug
-groups, an occupancy probe, and a routing-capture tool. On the kernel side: a flash-attention unroll
-cap at DK=512, a byte-indexed half2 table for the MXFP4 GEMV, and naturally aligned halfword loads
-for q8_0 dequant.
-
-### DeepSeek
-
-Union-8 lets blocks of eight prompt queries share one deduplicated top-k list, with each query's
-exact membership preserved — so it is exact, not an approximation. Its threadgroup bitmap walks the
-row space in chunks, so the path stays engaged at long context instead of falling back to dense.
-Single-token decode never uses union-8.
-
-### Qwen and serving
-
-Block-level indexer selection cuts the prefill quadratic by selecting over blocks rather than
-materialising an `[n_kv, n_tokens]` cell table. The indexer K cache stays F16 even under quantised
-attention KV, because quantisation changes which blocks survive a discrete top-k. The native MTP
-head is supported end to end, bounds its own memory, and can be gated by prompt length; saved slots
-persist their prompt checkpoints.
-
----
-
-## The two models, and why they are hard
-
-They are hard in completely different ways, which is why each has its own log.
-
-### DeepSeek-V4-Flash-0731 — the I/O problem
-
-284B, 256 experts per layer. The model is 107 GiB and the machine has 64 GB, so the experts must
-come off the disk *while the GPU waits*. Everything is about hiding that latency: prefetch far
-enough ahead, keep the right experts resident, and never let a demand read queue behind speculative
-work.
-
-→ **[Research log](docs/DeepSeek-V4-Flash-0731.md)** — checkpoint composition, kernel survey, features, negative results.
-
-### Qwen3.8-Flash-Next — the graph-shape problem
-
-Fast enough that the bottleneck left the disk entirely. What remained was GPU work the graph did not
-need to do: a reshape that silently broke Metal's `RMS_NORM→MUL` fusion, copies that bought nothing,
-a full sort of 512 expert scores to read the top 10, and an indexer materialising a table
-proportional to context × chunk size on every layer. Plus three genuinely awkward architectural
-features: four parallel residual streams, a 26.8 GiB PLE table that cannot be resident, and a native
-MTP head whose hidden-state contract has three separate ways to fail silently.
-
-→ **[Research log](docs/Qwen3.8-Flash-Next.md)** — checkpoint composition, kernel survey, features, negative results.
-
----
-
-## On the research logs
-
-Both logs record **negative results as first-class content**, not as an appendix. Roughly half the
-entries are ideas that look obviously correct on paper and cost real GPU time to disprove.
-
-That is deliberate. On hardware this constrained, knowing which plausible optimisation *does not*
-work — and why — has been worth more than the wins.
-
-Each log also carries a **kernel survey**: every quant format the checkpoint could use, measured at
-that model's own expert-GEMM shape, ranked by time per *effective* bit-per-weight. That ranking is
-what selects a checkpoint's expert mix, and it does not match intuition — on this GPU the i-quant
-kernels are occupancy-bound and lose to simpler formats that read more bytes.
-
----
-
-## Lineage and credit
-
-This is a fork of a fork. In order:
-
-1. [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp), upstream. Everything not listed
-   above behaves exactly as upstream documents it. See
-   [the upstream README](https://github.com/ggml-org/llama.cpp#readme) for supported backends, model
-   conversion and the general tool set.
-2. [mihailescu2m/llama.cpp](https://github.com/mihailescu2m/llama.cpp), where MoE expert streaming,
-   phase-aware ubatching, the persistent SSD context cache and MTP rejection sampling come from.
-   Without that work none of this runs.
-3. This branch, which adds the six open upstream PRs listed above, the Metal and Qwen work in the
-   sections above, and the tuning documented in the research logs.
-
-Bugs found here that belong upstream are noted as such in the model logs.
-
-### Reporting problems
-
-Open an issue on this repository rather than upstream, since upstream maintainers cannot support
-code they have not merged. Please say which Mac and how much memory you have, and include the first
-30 or so lines the server prints at startup.
+It loads in seconds; the first request is slower while the expert cache fills. Open
+<http://127.0.0.1:8080>, or point any OpenAI-compatible client at `http://127.0.0.1:8080/v1`
+(the Anthropic-style `/v1/messages` endpoint works too).
+
+With a second SSD, copy the four model files to it and add
+`--moe-stream-alt-path /Volumes/<ssd>/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --moe-stream-alt-split 53`.
+To share the server with a coding agent, add `--chat-window 1200`.
+
+This is the study's everyday command. Close memory-hungry apps while it runs: at a 28 GiB cache
+the Mac has little room to spare. If you see swap (`sysctl vm.swapusage`), use a smaller cache or
+context; [Memory sizing](docs/flashnext/memory-sizing.md) explains how to choose.
+
+## Guides
+
+- [Getting started](docs/flashnext/getting-started.md): the steps above in detail, the second drive, and what a healthy start looks like.
+- [Settings](docs/flashnext/settings.md): every option for this model, with its default, when to change it, and how to set it on the command line, as an environment variable or in an INI preset file.
+- [Memory sizing](docs/flashnext/memory-sizing.md): choosing the expert cache and context on 64 GB and 48 GB Macs, and how to watch for swap.
+- [The chat window](docs/flashnext/chat-window.md): sharing one server between chat and a coding agent.
+- [Results](docs/flashnext/results.md): the measurements behind this README, and how they were taken.
+
+The rest of llama.cpp works as upstream documents it: see [docs/](docs/) and
+[the upstream README](https://github.com/ggml-org/llama.cpp#readme). npanj's notes on the model's
+architecture and kernels are in [docs/Qwen3.8-Flash-Next.md](docs/Qwen3.8-Flash-Next.md), and the
+README of his fork is kept as [docs/npanj-fork-README.md](docs/npanj-fork-README.md).
+
+## Credits
+
+This is a fork of a fork of a fork, and it stands on the work underneath it:
+
+- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml, by Georgi Gerganov and the
+  llama.cpp contributors.
+- [mihailescu2m/llama.cpp](https://github.com/mihailescu2m/llama.cpp) by Marian Mihailescu, the
+  origin of MoE expert streaming (`--moe-stream`), phase-aware batching, the SSD context cache and
+  MTP rejection sampling. Without that work none of this runs.
+- [npanj/llama.cpp](https://github.com/npanj/llama.cpp), which brought streaming to
+  Qwen3.8-Flash-Next on Apple Silicon: the model's graph and indexer work, the native MTP head, the
+  Metal kernels, and the shared MTP draft head used here
+  ([nitinpanj/qwen38-flash-next-v3](https://huggingface.co/nitinpanj/qwen38-flash-next-v3)).
+- [Unsloth](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) for the UD-Q4_K_XL quant, and
+  the Qwen team for the model.
+
+This fork adds two-drive striping, the reading room, the measured-depth draft head and its token
+list, union attention, the n-gram shelf, the pinned checkpoint, the cheaper per-layer stops and the
+chat window, and the study that measured them.
+
+## Licence
+
+MIT, as upstream: see [LICENSE](LICENSE). Bundled third-party code keeps its own licences, listed
+in [licenses/](licenses/).

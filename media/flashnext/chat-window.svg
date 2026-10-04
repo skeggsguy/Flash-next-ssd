@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 760 290" width="760" height="290" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="The chat window: a chat request cuts a running coding request off with a 503, the coding agent's retry is held while the window is open, and coding runs again when the window lapses">
+<rect width="760" height="290" fill="#ffffff"/>
+<defs>
+<marker id="cwa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5a6670"/></marker>
+</defs>
+<text x="20" y="30" font-size="16" font-weight="700" fill="#1b2228">The chat window: one seat, chat goes first</text>
+<text x="20" y="48" font-size="11.5" fill="#5a6670">One request runs at a time (-np 1). A chat request cuts a running coding request off; coding waits until the window lapses.</text>
+
+<rect x="400" y="62" width="240" height="132" fill="#e2f0f0"/>
+<text x="520" y="80" font-size="11" fill="#0f6e72" text-anchor="middle">the window: --chat-window seconds</text>
+<text x="520" y="93" font-size="11" fill="#0f6e72" text-anchor="middle">after the last chat reply</text>
+
+<text x="20" y="110" font-size="12" font-weight="600" fill="#1b2228">Coding agent</text>
+<text x="20" y="125" font-size="10.5" fill="#5a6670">header X-Lane: code</text>
+<text x="20" y="170" font-size="12" font-weight="600" fill="#1b2228">Chat</text>
+<text x="20" y="185" font-size="10.5" fill="#5a6670">any other request</text>
+
+<g font-size="11" text-anchor="middle">
+<rect x="130" y="98" width="170" height="24" rx="3" fill="#0f6e72"/>
+<text x="215" y="114" fill="#ffffff">coding request runs</text>
+<rect x="300" y="158" width="100" height="24" rx="3" fill="#1b2228"/>
+<text x="350" y="174" fill="#ffffff">chat reply</text>
+<rect x="400" y="98" width="240" height="24" rx="3" fill="#fbf1e1" stroke="#b8730f" stroke-dasharray="4 3"/>
+<text x="520" y="114" fill="#9a5b00">its retry is held: SSE pings keep it open</text>
+<rect x="640" y="98" width="100" height="24" rx="3" fill="#0f6e72"/>
+<text x="690" y="114" fill="#ffffff">runs again</text>
+</g>
+
+<line x1="300" y1="92" x2="300" y2="186" stroke="#b8730f" stroke-width="2"/>
+<text x="306" y="140" font-size="10.5" fill="#b8730f">cut: 503 overloaded_error,</text>
+<text x="306" y="152" font-size="10.5" fill="#b8730f">the client retries</text>
+<line x1="640" y1="62" x2="640" y2="194" stroke="#0f6e72" stroke-width="1.5" stroke-dasharray="3 3"/>
+
+<line x1="130" y1="200" x2="745" y2="200" stroke="#5a6670" stroke-width="1.2" marker-end="url(#cwa)"/>
+<text x="130" y="216" font-size="10.5" fill="#5a6670">time</text>
+<text x="740" y="216" font-size="11" fill="#0f6e72" text-anchor="end">the window lapses: held requests start, oldest first</text>
+
+<text x="20" y="244" font-size="10.5" fill="#5a6670">Every chat reply restarts the window. Each side keeps its cached prompt only while it holds the seat,</text>
+<text x="20" y="258" font-size="10.5" fill="#5a6670">so after a switch the first request reads its prompt in again.</text>
+<text x="20" y="276" font-size="10.5" fill="#5a6670">Applies to /v1/chat/completions, /v1/messages, /v1/completions, /v1/responses, /completion and /infill. Off by default.</text>
+</svg>
