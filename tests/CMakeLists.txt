@@ -220,6 +220,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # BOOKMARK-PIN-PLAN.md step 1: the bookmark pin's rules (server-ckpt-pin.h), no model
     llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
+    llama_build_and_test(test-server-anthropic.cpp)
+    target_include_directories(test-server-anthropic PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-anthropic PRIVATE server-context)
 
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)
