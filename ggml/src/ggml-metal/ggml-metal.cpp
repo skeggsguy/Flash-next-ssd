@@ -188,6 +188,11 @@ static bool ggml_backend_buffer_is_metal(ggml_backend_buffer_t buffer) {
            buffer->iface.free_buffer == ggml_backend_metal_buffer_private_free_buffer;
 }
 
+// study patch (LLAMA_KV_LAZY_ZERO): true when an untouched page of the buffer reads zero, so a caller that has not written it yet can skip a clear
+static bool ggml_backend_metal_buffer_is_zero_fill(ggml_backend_buffer_t buffer) {
+    return ggml_backend_buffer_is_metal(buffer) && ggml_metal_buffer_is_zero_fill((ggml_metal_buffer_t) buffer->context);
+}
+
 //
 // buffer types
 //
@@ -1012,6 +1017,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_backend_metal_keep_awake_count") == 0) {
         return (void *)ggml_metal_keep_awake_count;
+    }
+    if (strcmp(name, "ggml_backend_buffer_is_zero_fill") == 0) {
+        return (void *)ggml_backend_metal_buffer_is_zero_fill;
     }
     // generic fusion debugging API (ad-hoc proc-address mechanism, not part of the official
     // ggml backend interface yet; a backend that adopts it exports these exact names)

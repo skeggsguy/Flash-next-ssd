@@ -13,6 +13,12 @@ struct llama_hparams;
 struct llama_model;
 struct llama_context;
 
+// LLAMA_KV_LAZY_ZERO=1: a cache buffer of fresh zero-fill memory skips its opening clear, and clear(true) zeroes only the cells written since the last one
+bool llama_kv_lazy_zero_env();
+
+// true when the backend says an untouched page of buf reads zero (a Metal shared buffer from vm_allocate); call it before anything writes buf
+bool llama_buffer_is_zero_fill(ggml_backend_buffer_t buf);
+
 //
 // llama_kv_cache
 //
@@ -165,6 +171,7 @@ public:
 
     std::vector<uint32_t> get_layer_ids() const;
     ggml_tensor * get_k_storage(int32_t il) const;
+    ggml_tensor * get_v_storage(int32_t il) const; // nullptr when the cache keeps no V (MLA-shaped)
 
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
 
@@ -293,6 +300,18 @@ private:
 
     // ggml contexts for the KV cache along with the allocated backend buffers:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
+
+    // LLAMA_KV_LAZY_ZERO: per buffer of ctxs_bufs, true when it skipped the opening clear (clear(true) then zeroes only written cells)
+    std::vector<bool> bufs_lazy;
+
+    // per stream: one past the highest cell written since the last clear(true); every cell at or above it reads zero
+    // mutable: the writes are noted where the graph inputs name the cells (set_input_k_idxs/v_idxs)
+    mutable std::vector<uint32_t> v_hw;
+
+    void hw_note(const slot_info & sinfo) const;
+
+    // zero the cells below each stream's high-water mark in the tensors of buf
+    void clear_written(ggml_backend_buffer_t buf);
 
     // the current index from where we start searching for a free slot in the ring buffer of KV cells (see find_slot())
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method

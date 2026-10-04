@@ -1109,6 +1109,9 @@ void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offl
 
     size_t size = 0;
 
+    const bool lazy_zero = llama_kv_lazy_zero_env();
+    size_t     n_lazy    = 0;
+
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf;
         if (hparams_idx.no_alloc) {
@@ -1124,16 +1127,22 @@ void llama_memory_hybrid_idx::qsa_keep_init(const llama_model & model, bool offl
             throw std::runtime_error("failed to allocate buffer for the qsa keep store");
         }
 
-        ggml_backend_buffer_clear(buf, 0);
+        // LLAMA_KV_LAZY_ZERO: fresh zero-fill memory already reads zero, and clear() never zeroes the store
+        const bool lazy = lazy_zero && !hparams_idx.no_alloc && llama_buffer_is_zero_fill(buf);
+        if (!lazy) {
+            ggml_backend_buffer_clear(buf, 0);
+        }
+        n_lazy += lazy ? 1 : 0;
 
         size += ggml_backend_buffer_get_size(buf);
 
         keep.ctxs_bufs.emplace_back(std::move(ctx), buf);
     }
 
-    LLAMA_LOG_INFO("%s: qsa keep: %zu layers, %u streams, %.2f MiB%s%s\n", __func__,
+    LLAMA_LOG_INFO("%s: qsa keep: %zu layers, %u streams, %.2f MiB%s%s%s\n", __func__,
             keep.layers.size(), n_stream, size/1024.0/1024.0,
-            keep.check ? ", check" : "", keep.debug ? ", debug" : "");
+            keep.check ? ", check" : "", keep.debug ? ", debug" : "",
+            !lazy_zero ? "" : n_lazy == keep.ctxs_bufs.size() ? ", lazy zeros" : ", lazy zeros fall back to a full clear");
 }
 
 ggml_tensor * llama_memory_hybrid_idx::qsa_keep_rows(int32_t il) const {
@@ -1141,6 +1150,14 @@ ggml_tensor * llama_memory_hybrid_idx::qsa_keep_rows(int32_t il) const {
     GGML_ASSERT(it != keep.layers.end());
 
     return it->second.rows;
+}
+
+std::vector<ggml_tensor *> llama_memory_hybrid_idx::qsa_keep_store() const {
+    std::vector<ggml_tensor *> res;
+    for (const auto & [il, layer] : keep.layers) {
+        res.push_back(layer.rows);
+    }
+    return res;
 }
 
 ggml_tensor * llama_memory_hybrid_idx::qsa_keep_sum(int32_t il) const {

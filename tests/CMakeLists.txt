@@ -534,6 +534,22 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu PROPERTIES
         FIXTURES_REQUIRED generate-models-e64)
 
+    # LANES-PLAN amendment 3 S1 (LLAMA_KV_LAZY_ZERO): notepads and the keep store skip the opening memset on Metal shared
+    # buffers and clear(true) zeroes only the written cells; everything still reads zero and matches lazy off byte for byte.
+    # The CPU arm checks the fallback (full clears); the llama arm runs with flash attention off (V transposed). The Metal arms
+    # turn residency sets off: a set wires every page of the buffer, so mincore could not see the skipped clear
+    llama_build(test-kv-lazy-zero.cpp)
+    llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-qwen4exp-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0 -fa on)
+    llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-llama-cpu    LABEL main ARGS -m "${MODEL_DIR}/llama-dense.gguf" -ngl 0 -fa off)
+    set_tests_properties(test-kv-lazy-zero-qwen4exp-cpu test-kv-lazy-zero-llama-cpu PROPERTIES
+        FIXTURES_REQUIRED generate-models ENVIRONMENT "KV_LAZY_EXPECT=0")
+    if (GGML_METAL)
+        llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-qwen4exp LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -fa on)
+        llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-llama    LABEL main ARGS -m "${MODEL_DIR}/llama-dense.gguf" -fa off)
+        set_tests_properties(test-kv-lazy-zero-qwen4exp test-kv-lazy-zero-llama PROPERTIES
+            FIXTURES_REQUIRED generate-models ENVIRONMENT "KV_LAZY_EXPECT=1;GGML_METAL_NO_RESIDENCY=1")
+    endif()
+
     # SHARE-PARTS-PLAN phase 6b: union attention (LLAMA_QSA_UNION=1) picks what the masked path picks, attends
     # exactly the cells the masked path leaves visible, and agrees with it within a tolerance; the head-256
     # fixture runs the Metal union kernel, the default fixture's heads of 128 the CPU op

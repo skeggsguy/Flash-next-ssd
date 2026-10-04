@@ -2952,6 +2952,17 @@ bool ggml_metal_buffer_is_shared(ggml_metal_buffer_t buf) {
     return buf->is_shared;
 }
 
+bool ggml_metal_buffer_is_zero_fill(ggml_metal_buffer_t buf) {
+#if TARGET_OS_OSX
+    // ggml_metal_host_malloc takes owned shared memory from vm_allocate, which hands out zero-fill pages
+    return buf->is_shared && buf->owned;
+#else
+    // posix_memalign memory is not zeroed
+    GGML_UNUSED(buf);
+    return false;
+#endif
+}
+
 void ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     if (buf->is_shared) {
         memset((char *) tensor->data + offset, value, size);

@@ -162,6 +162,7 @@ public:
     // buckets, then the spares that the rows pooled afresh every ubatch are written to
     ggml_tensor * qsa_keep_rows(int32_t il) const;
     ggml_tensor * qsa_keep_sum (int32_t il) const; // F32 [1], LLAMA_QSA_KEEP_CHECK only
+    std::vector<ggml_tensor *> qsa_keep_store() const; // every layer's rows, empty when the store is off
 
     uint32_t qsa_keep_n_buckets(uint32_t ratio) const; // every bucket a cell's position can fall in
     uint32_t qsa_keep_n_spare  (uint32_t ratio) const; // the most rows one INCR ubatch pools
