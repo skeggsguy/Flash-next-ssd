@@ -6,6 +6,10 @@ bool server_ckpt_pin_parse(const char * value) {
     return value == nullptr ? true : std::atoi(value) > 0;
 }
 
+bool server_ckpt_copy_dft(common_context_seq_rm_type dft_type) {
+    return dft_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || dft_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;
+}
+
 bool server_ckpt_split_is_new_chat(const common_chat_msg_spans & spans, int64_t n_past, int64_t n_old, int64_t n_new) {
     if (n_past <= 0 || n_past >= n_old || n_past >= n_new) {
         return false;

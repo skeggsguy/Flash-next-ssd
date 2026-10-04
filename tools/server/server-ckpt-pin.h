@@ -36,6 +36,16 @@ using server_ckpt_on_erase = std::function<void(const common_prompt_checkpoint &
 // LLAMA_CKPT_PIN: on when unset, off when it parses to 0 or less (the fork's env-switch pattern)
 bool server_ckpt_pin_parse(const char * value);
 
+// Does a bookmark copy (a prompt checkpoint) also save the apprentice's (the draft context's) record? Only when its
+// memory cannot be trimmed back to the restore point (study COPY-FIX-PLAN.md step 1). A PART draft is trimmed, never
+// copied: after a restore the server removes both contexts' cells past the restore point (common_memory::seq_rm),
+// and the apprentice's cells below it hold what a copy would, since each is written once from the library's own
+// state at that position and only ever removed from the end (the speculative path already treats a PART draft this
+// way: use_ckpt_dft). Copying it was ~3/4 of each copy (~372 of ~488 MiB at 187K) and grew the heap ~0.7 GiB a long
+// follow-up. FULL must be copied; RS rolls back only a bounded number of cells and a retry can rewind any distance,
+// so it is copied too; NO means no draft context. load_dft is a no-op on the empty record a skipped copy leaves.
+bool server_ckpt_copy_dft(common_context_seq_rm_type dft_type);
+
 // A split (the common prefix n_past of the old and the new prompt) counts as a new chat only if it lies inside
 // both prompts and before the new prompt's first assistant message (inside the system prompt or the first user
 // message). A follow-up or a tool turn re-renders the last reply and splits at or after an assistant message;

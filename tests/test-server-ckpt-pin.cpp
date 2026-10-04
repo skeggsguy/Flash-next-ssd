@@ -11,6 +11,7 @@
 //   create_checkpoint list logic, copied below as the reference, over generated sequences
 // - with the pin on, invariants over generated sequences: never more than -ctxcp copies, at most one pinned,
 //   and the pin is never thrown out to make room
+// - a copy saves the apprentice's record only when its memory can't be trimmed (FULL, RS; COPY-FIX-PLAN.md step 1)
 
 #include "test-server-ckpt-pin.h"
 
@@ -24,6 +25,14 @@ static void test_parse() {
     CHECK(server_ckpt_pin_parse(nullptr));
     CHECK(server_ckpt_pin_parse("1"));
     CHECK(!server_ckpt_pin_parse("0"));
+}
+
+// COPY-FIX-PLAN.md step 1: a copy saves the apprentice only when its memory can't be trimmed back
+static void test_copy_dft_rule() {
+    CHECK(!server_ckpt_copy_dft(COMMON_CONTEXT_SEQ_RM_TYPE_PART)); // trimmed after a restore, never copied
+    CHECK( server_ckpt_copy_dft(COMMON_CONTEXT_SEQ_RM_TYPE_FULL)); // can only be cleared: must be copied
+    CHECK( server_ckpt_copy_dft(COMMON_CONTEXT_SEQ_RM_TYPE_RS));   // bounded rollback; a retry rewinds any distance
+    CHECK(!server_ckpt_copy_dft(COMMON_CONTEXT_SEQ_RM_TYPE_NO));   // no draft context
 }
 
 static void test_split_rule() {
@@ -311,6 +320,7 @@ int n_fail = 0;
 
 int main() {
     test_parse();
+    test_copy_dft_rule();
     test_split_rule();
     test_pin_target();
     test_restore_pick();

@@ -1152,6 +1152,7 @@ private:
     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
     bool ckpt_pin = true; // env: LLAMA_CKPT_PIN, the bookmark pin (server-ckpt-pin.h), on unless set to 0
+    bool ckpt_copy_dft = false; // bookmark copies save the apprentice's record (server_ckpt_copy_dft), set at load
 
     // the chat window (server-lane.h, --chat-window): off unless set; used on the start_loop() thread only
     server_lane_window lane_window;
@@ -1612,6 +1613,19 @@ private:
                 SRV_WRN("bookmark pin: off, it needs 2 or more copies (-ctxcp %d)\n", params_base.n_ctx_checkpoints);
             } else {
                 SRV_WRN("%s", "bookmark pin: off (LLAMA_CKPT_PIN=0), upstream's copies\n");
+            }
+        }
+
+        {
+            // a draft context exists only with the apprentice loaded (ctx_dft is reset above when spec failed)
+            const common_context_seq_rm_type dft_type = ctx_dft ? ctx_dft_seq_rm_type : COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+            ckpt_copy_dft = server_ckpt_copy_dft(dft_type);
+            if (ctx_dft == nullptr) {
+                SRV_WRN("%s", "bookmark copies: no apprentice, each copy holds the library's record only\n");
+            } else if (ckpt_copy_dft) {
+                SRV_WRN("bookmark copies: include the apprentice's record (its memory can't be trimmed back, seq_rm type %d)\n", (int) dft_type);
+            } else {
+                SRV_WRN("bookmark copies: leave out the apprentice's record, it is trimmed back on restore instead (seq_rm type %d)\n", (int) dft_type);
             }
         }
 
@@ -2636,7 +2650,12 @@ private:
         }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        // the apprentice's record only when its memory can't be trimmed (server_ckpt_copy_dft, COPY-FIX-PLAN.md):
+        // a PART draft is trimmed past the restore point after a restore (slot.mem.seq_rm), so its data_dft stays
+        // empty and load_dft does nothing
+        if (ckpt_copy_dft) {
+            cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        }
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
@@ -3767,6 +3786,8 @@ private:
                                     if (!do_reset) {
                                         // restore the context checkpoint
                                         it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                        // a no-op when copies leave the apprentice out (ckpt_copy_dft): its live
+                                        // record is trimmed to the restore point by slot.mem.seq_rm(p0) below
                                         it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                                         // restore the draft's speculative state
                                         common_speculative_set_state(spec.get(), slot.id, it->data_spec);
