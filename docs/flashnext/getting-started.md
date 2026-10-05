@@ -153,6 +153,10 @@ Then open <http://127.0.0.1:8080>, or point an OpenAI-compatible client at
 `http://127.0.0.1:8080/v1`. `/v1/messages` serves Anthropic-style clients. Keep `--host 127.0.0.1`
 unless you mean to share the server on your network.
 
+To start this same command with a double-click, or by itself at every login, see
+[Start it with one click](../../README.md#start-it-with-one-click) and
+[Start at login](../../README.md#start-at-login-suggested) in the README.
+
 ## What a healthy start looks like
 
 The server loads in a few seconds. Look for these lines in its log:

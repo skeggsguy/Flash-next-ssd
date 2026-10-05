@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Starts the Flash-Next server at login. tools/flashnext/install-autostart.sh fills in the
+  folders and the drive switch, and copies the result to ~/Library/LaunchAgents.
+  Restarts it 5 minutes after it fails (a crash, the second drive not yet connected),
+  but not after a clean stop.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flashnext.server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/tools/flashnext/start.sh</string>
+		<string>__DRIVES__</string>
+		<string>--at-login</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>300</integer>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/flashnext/server.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/flashnext/server.log</string>
+</dict>
+</plist>

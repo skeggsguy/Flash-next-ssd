@@ -1,0 +1,37 @@
+# Flash-Next SSD: the settings the "Start Flash-Next" files use.
+#
+# The first start copies this file to flashnext.conf; change your settings there, not here.
+# flashnext.conf is yours: git leaves it alone. A line you delete from it takes the value below.
+# Paths may start with ~ (your home folder). Put a path with spaces in quotes.
+# What each setting does, and every other option: docs/flashnext/settings.md
+
+# The model's first file. The other three files must sit beside it.
+MODEL=~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+
+# The MTP draft head, which guesses a few tokens ahead (faster on code and tool calls).
+# Leave it empty (DRAFT_HEAD=) to run without it: for mostly prose, and about 1 GiB more room.
+DRAFT_HEAD=~/models/flashnext/mtp-shared-Q4_K_M.gguf
+
+# Two SSDs only: the first file of the byte-identical copy on the second drive.
+SECOND_COPY=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+
+# Two SSDs only: the percent of experts read from the internal copy. 53 suits a 6.5 GB/s
+# internal drive beside a 5.7 GB/s external one (settings.md, "Two drives").
+SECOND_SPLIT=53
+
+# The expert cache, in GiB: the biggest speed setting. 28 on a 64 GB Mac with the draft head
+# on; 26 if you keep heavy apps open; start at 16 on 48 GB (memory-sizing.md).
+CACHE_GIB=28
+
+# The context, in tokens: the longest conversation the server holds. 200000 on 64 GB;
+# 65536 on 48 GB. Each 1,000 tokens cost about 27 MB.
+CONTEXT=200000
+
+# The chat window, in seconds: shares the server with a coding agent that sends the header
+# X-Lane: code. Chat goes first and keeps the server 5 minutes after its last reply; the
+# agent's requests wait meanwhile (chat-window.md). Without such an agent it changes nothing.
+# 0 = off.
+CHAT_WINDOW=300
+
+# The port. Open http://127.0.0.1:8080, or point a client at http://127.0.0.1:8080/v1
+PORT=8080

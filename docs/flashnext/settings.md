@@ -198,7 +198,7 @@ until the window lapses. Off by default. Full guide: [The chat window](chat-wind
 
 | Option | Env var | Default | What it does |
 |---|---|---|---|
-| `--chat-window SECONDS` | `LLAMA_ARG_CHAT_WINDOW` | 0 (off) | How long chat keeps the slot after its last reply. Study: **1200** (20 minutes). |
+| `--chat-window SECONDS` | `LLAMA_ARG_CHAT_WINDOW` | 0 (off) | How long chat keeps the slot after its last reply. Study: **300** (5 minutes). |
 | `--chat-window-header NAME` | `LLAMA_ARG_CHAT_WINDOW_HEADER` | `X-Lane` | The header that marks a background request. |
 | `--chat-window-background VALUE` | `LLAMA_ARG_CHAT_WINDOW_BACKGROUND` | `code` | The header value for background requests. Every other request is chat. |
 | `--sse-ping-interval N` | `LLAMA_ARG_SSE_PING_INTERVAL` | 30 | Seconds between keep-alive comments to a streamed request that is waiting. |
@@ -244,7 +244,7 @@ GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 \
   --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 \
   -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on \
   --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek \
-  --chat-window 1200 --host 127.0.0.1 --port 8080
+  --chat-window 300 --host 127.0.0.1 --port 8080
 ```
 
 **Environment variables** (for example in a launchd job or a shell script; the paths must be
@@ -265,7 +265,7 @@ export LLAMA_ARG_SPEC_DRAFT_N_MAX=5 LLAMA_ARG_SPEC_DRAFT_P_MIN=0.3 LLAMA_ARG_SPE
 export LLAMA_ARG_CTX_SIZE=200000 LLAMA_ARG_BATCH=4096 LLAMA_ARG_UBATCH=4096
 export LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=8192 LLAMA_ARG_CTX_CHECKPOINTS=3 LLAMA_ARG_N_PARALLEL=1
 export LLAMA_ARG_FLASH_ATTN=on LLAMA_ARG_CACHE_REUSE=0 LLAMA_ARG_CACHE_RAM=0
-export LLAMA_ARG_JINJA=1 LLAMA_ARG_THINK=deepseek LLAMA_ARG_CHAT_WINDOW=1200
+export LLAMA_ARG_JINJA=1 LLAMA_ARG_THINK=deepseek LLAMA_ARG_CHAT_WINDOW=300
 export LLAMA_ARG_HOST=127.0.0.1 LLAMA_ARG_PORT=8080
 ./build/bin/llama-server
 ```
@@ -304,7 +304,7 @@ cache-reuse = 0
 cache-ram = 0
 jinja = true
 reasoning-format = deepseek
-chat-window = 1200
+chat-window = 300
 load-on-startup = true
 ```
 

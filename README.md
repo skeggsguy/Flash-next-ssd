@@ -20,9 +20,8 @@ SSDs and the MTP draft head on. Sources and method are in [Results](docs/flashne
 | | |
 |---|---|
 | **Writing (decode)** | **17.5 tokens/s** across 120 real agent conversations replayed in order: +47% over the study's first setup (11.9) |
-| **Time to first token** | **5.5 s** median: −52% (from 11.4 s) |
+| **Time to first token** | **5.5 s** median: −52% (from 11.4 s). A typical first reply reads ~1,500 new tokens; the other ~12,800 come from the prompt cache |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
-| **Writing after a 100K-token prompt** | **~21 tokens/s** |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
 
 ## What it adds
@@ -74,8 +73,8 @@ order, so words can differ at near-ties; perplexity is unchanged. It is the defa
 ### The chat window
 
 One server, two users: a person chatting and a coding agent working in the background. With
-`--chat-window 1200`, a chat request stops a running background request, which gets a 503 that its
-client retries. Background requests then wait until 20 minutes after the last chat reply. Only the
+`--chat-window 300`, a chat request stops a running background request, which gets a 503 that its
+client retries. Background requests then wait until 5 minutes after the last chat reply. Only the
 background client needs to send a header (`X-Lane: code`). It is off by default.
 
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
@@ -141,11 +140,91 @@ It loads in seconds; the first request is slower while the expert cache fills. O
 
 With a second SSD, copy the four model files to it and add
 `--moe-stream-alt-path /Volumes/<ssd>/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --moe-stream-alt-split 53`.
-To share the server with a coding agent, add `--chat-window 1200`.
+To share the server with a coding agent, add `--chat-window 300`.
 
 This is the study's everyday command. Close memory-hungry apps while it runs: at a 28 GiB cache
 the Mac has little room to spare. If you see swap (`sysctl vm.swapusage`), use a smaller cache or
 context; [Memory sizing](docs/flashnext/memory-sizing.md) explains how to choose.
+
+## Start it with one click
+
+Once it is built and downloaded (steps 1-3 above), double-click one of these in Finder, in the
+repo's folder:
+
+- **`Start Flash-Next.command`**: the model on the internal SSD only.
+- **`Start Flash-Next (two SSDs).command`**: the internal SSD and a copy on a second SSD
+  ([Getting started](docs/flashnext/getting-started.md#3-the-second-drive-optional) explains the copy).
+
+A Terminal window opens and runs the server with the everyday command from step 4, plus the chat
+window (the table below). Keep the window open while you use it; to stop the server, press
+Control-C or close the window.
+
+Before it starts, it checks that the server is built, the model files are where the settings say,
+the second drive is connected (two SSDs only) and no other server is running. If something is
+missing, it says what to do and stops. It never starts a second server: two at once would push the
+Mac into swap. To see the checks and the exact command without starting anything, run it from
+Terminal with `--dry-run`:
+
+```sh
+./"Start Flash-Next (two SSDs).command" --dry-run
+```
+
+**Your settings** live in `flashnext.conf`, beside the start files. The first start makes it from
+`flashnext.conf.example`; edit it in any text editor. It is yours: git ignores it, so pulling an
+update never changes it. A setting you delete takes the example's value.
+
+| Setting | Default | What it is |
+|---|---|---|
+| `MODEL` | `~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` | The model's first file; the other three sit beside it. |
+| `DRAFT_HEAD` | `~/models/flashnext/mtp-shared-Q4_K_M.gguf` | The MTP draft head. Empty (`DRAFT_HEAD=`) runs without it. |
+| `SECOND_COPY` | `/Volumes/ssd/flashnext/...-00001-of-00004.gguf` | Two SSDs only: the first file of the copy on the second drive. |
+| `SECOND_SPLIT` | `53` | Two SSDs only: the percent of experts read from the internal copy ([Settings](docs/flashnext/settings.md#two-drives)). |
+| `CACHE_GIB` | `28` | The expert cache in GiB, the biggest speed setting ([Memory sizing](docs/flashnext/memory-sizing.md)). |
+| `CONTEXT` | `200000` | The context in tokens. |
+| `CHAT_WINDOW` | `300` | Seconds chat keeps the server after its last reply, when you share it with a coding agent ([The chat window](docs/flashnext/chat-window.md)); `0` = off. Without such an agent it changes nothing. |
+| `PORT` | `8080` | The server's address is `http://127.0.0.1:PORT`. |
+
+Everything else is fixed at the everyday values (the table in
+[Getting started](docs/flashnext/getting-started.md#5-run) says what each is for). To change one of
+those, run `llama-server` yourself with the options in [Settings](docs/flashnext/settings.md).
+
+## Start at login (suggested)
+
+To have the server start by itself whenever you log in, install it as a launchd agent:
+
+```sh
+tools/flashnext/install-autostart.sh            # internal SSD only
+tools/flashnext/install-autostart.sh two-ssds   # or with the second drive
+```
+
+It checks your settings first, then copies a filled-in
+`tools/flashnext/launchd/com.flashnext.server.plist.template` to
+`~/Library/LaunchAgents/com.flashnext.server.plist` and starts the server in the background. Add
+`--no-load` to wait for the next login instead. From then on, at every login it:
+
+- runs the same checks and the same command as the start files, with the same `flashnext.conf`;
+- waits until the Mac has been up 10 minutes, because opening a 28 GiB cache while macOS is still
+  busy after a restart risks swap ([Memory sizing](docs/flashnext/memory-sizing.md#opening-the-model-safely));
+- if the server fails or a check stops it (say the second drive isn't connected yet), tries again
+  5 minutes later, but not after a clean stop;
+- writes the server's log to `~/Library/Logs/flashnext/server.log`.
+
+To stop it until the next login, and to start it again:
+
+```sh
+launchctl bootout gui/$(id -u)/com.flashnext.server
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flashnext.server.plist
+```
+
+`tools/flashnext/uninstall-autostart.sh` stops it and removes the agent.
+
+**It needs you logged in.** The GPU (Metal) works only in a logged-in session, so the agent starts
+at login, not at power-on. For a Mac that should come back by itself after a power cut, turn on
+automatic login (System Settings > Users & Groups; macOS offers it only with FileVault off, since
+FileVault waits for your password at the unlock screen) and `sudo pmset -a autorestart 1` (start up
+after a power failure). Install the wired-limit LaunchDaemon from
+[Getting started](docs/flashnext/getting-started.md#4-the-gpus-wired-memory-limit) too, so the
+limit is set at every boot.
 
 ## Guides
 

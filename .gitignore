@@ -142,6 +142,11 @@ flake.lock
 /run-spec.sh
 /.ccache/
 
+# Flash-Next: your own settings and filled-in launchd files (the repo ships the templates)
+
+/flashnext.conf
+/tools/flashnext/launchd/*.plist
+
 # IDE
 
 /*.code-workspace
