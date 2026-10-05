@@ -712,6 +712,8 @@ set_tests_properties(test-state-restore-fragmented PROPERTIES FIXTURES_REQUIRED 
 
 if (APPLE)
     llama_build(test-rset-release.cpp)
+    # ONE-CLICK-PLAN.md step 1: the one-click start and autostart scripts, fake paths, no model
+    llama_test_cmd(${CMAKE_CURRENT_SOURCE_DIR}/test-flashnext-start.sh NAME test-flashnext-start)
 endif()
 
 if (NOT GGML_BACKEND_DL)
