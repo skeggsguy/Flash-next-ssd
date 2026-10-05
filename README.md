@@ -20,7 +20,7 @@ SSDs and the MTP draft head on. Sources and method are in [Results](docs/flashne
 | | |
 |---|---|
 | **Writing (decode)** | **17.5 tokens/s** across 120 real agent conversations replayed in order: +47% over the study's first setup (11.9) |
-| **Time to first token** | **5.5 s** median: −52% (from 11.4 s) |
+| **Time to first token** | **5.5 s** median: −52% (from 11.4 s). A typical first reply reads ~1,500 new tokens; the other ~12,800 come from the prompt cache |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
 
