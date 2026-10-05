@@ -31,7 +31,7 @@ each number can be traced in the write-up.
 | | Result | Compared with | Run |
 |---|---|---|---|
 | Writing, 120 agent conversations in order | **17.46 tokens/s** | 11.88 for the study's first setup: **+47%** | H-final vs T-paper |
-| Time to first token, median | **5.46 s** | 11.35 s: **−52%** | H-final vs T-paper |
+| Time to first token, median (median prompt: 1,502 new tokens read, 12,775 from the prompt cache) | **5.46 s** | 11.35 s: **−52%** | H-final vs T-paper |
 | Reading a prompt, from cold | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K | | R-lengths |
 | Writing after a 100K-token prompt | **~21 tokens/s** | | R-lengths |
 | Exam | **18/20** | 18/20 with the draft head off and none of the later changes | final, sp-final-union, paper-2r |

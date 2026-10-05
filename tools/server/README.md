@@ -2088,7 +2088,7 @@ Note that the following endpoints are exempt from being considered as incoming t
 When one server is shared by a person chatting and a background job, such as a coding agent, the chat window lets the person go first. It is meant for a single slot (`-np 1`), where one request runs at a time, and it is off by default.
 
 ```sh
-llama-server -m model.gguf -np 1 --chat-window 1200
+llama-server -m model.gguf -np 1 --chat-window 300
 ```
 
 Requests whose `X-Lane` header is `code` are background requests. Every other request, with or without the header, is a chat request, so only the background client needs configuring. The header name and value match ignoring case, and both can be changed with `--chat-window-header` and `--chat-window-background`.
@@ -2128,13 +2128,13 @@ Marking a coding agent's requests, for example in an [OpenCode](https://opencode
 }
 ```
 
-The options also work as environment variables (`LLAMA_ARG_CHAT_WINDOW=1200`) and in a model preset file (`--models-preset`, see [Model presets](#model-presets)):
+The options also work as environment variables (`LLAMA_ARG_CHAT_WINDOW=300`) and in a model preset file (`--models-preset`, see [Model presets](#model-presets)):
 
 ```ini
 [my-model]
 model = /path/to/model.gguf
 parallel = 1
-chat-window = 1200
+chat-window = 300
 chat-window-header = X-Lane
 chat-window-background = code
 ```
