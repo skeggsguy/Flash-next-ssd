@@ -318,4 +318,4 @@ rejection sampling come from. That work is the reason any of this runs at all.
 Upstream is [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp).
 
 This branch additionally carries six pull requests that were still open upstream when it was cut.
-see the fork notes in the [README](../README.md).
+see the fork notes in [npanj's fork README](npanj-fork-README.md).

@@ -542,7 +542,7 @@ Raise `-np`. Ensure `--cont-batching` (default on). Raise `-b` so prefill chunks
 
 ### Before you upstream anything
 
-Read `AGENTS.md` and `CONTRIBUTING.md` in this repo. The short version: llama.cpp is deliberately kept simple, every merged line is maintained forever by a small team, and a simpler change that does 90% of the job beats a complex one that does 100%. Discuss in an issue before building.
+Read upstream's [AGENTS.md](https://github.com/ggml-org/llama.cpp/blob/master/AGENTS.md) and [CONTRIBUTING.md](https://github.com/ggml-org/llama.cpp/blob/master/CONTRIBUTING.md). The short version: llama.cpp is deliberately kept simple, every merged line is maintained forever by a small team, and a simpler change that does 90% of the job beats a complex one that does 100%. Discuss in an issue before building.
 
 ---
 

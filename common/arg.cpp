@@ -3690,6 +3690,41 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SSE_PING_INTERVAL"));
     add_opt(common_arg(
+        {"--chat-window"}, "SECONDS",
+        string_format("chat window: give chat requests the server ahead of background requests, and keep it for chat "
+            "this many seconds after the last chat reply (default: %d = off). A chat request stops a running background "
+            "request, which gets a 503 to retry; background requests wait until the window lapses. A waiting streamed "
+            "request is kept open with SSE pings (--sse-ping-interval), a non-streamed one gets none. "
+            "See --chat-window-header and --chat-window-background", params.chat_window),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("chat-window must be 0 (off) or a number of seconds");
+            }
+            params.chat_window = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CHAT_WINDOW"));
+    add_opt(common_arg(
+        {"--chat-window-header"}, "NAME",
+        string_format("chat window: the request header that marks a background request (default: %s)", params.chat_window_header.c_str()),
+        [](common_params & params, const std::string & value) {
+            if (value.empty()) {
+                throw std::invalid_argument("chat-window-header must not be empty");
+            }
+            params.chat_window_header = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CHAT_WINDOW_HEADER"));
+    add_opt(common_arg(
+        {"--chat-window-background"}, "VALUE",
+        string_format("chat window: requests whose header carries this value are background requests; every other "
+            "request, with or without the header, is chat (default: %s)", params.chat_window_background.c_str()),
+        [](common_params & params, const std::string & value) {
+            if (value.empty()) {
+                throw std::invalid_argument("chat-window-background must not be empty");
+            }
+            params.chat_window_background = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CHAT_WINDOW_BACKGROUND"));
+    add_opt(common_arg(
         {"--threads-http"}, "N",
         string_format("number of threads used to process HTTP requests (default: %d)", params.n_threads_http),
         [](common_params & params, int value) {

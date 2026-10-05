@@ -10,6 +10,7 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-device.cpp
                          ggml-metal-common.cpp
                          ggml-metal-context.m
+                         ggml-metal-awake.m
                          ggml-metal-fusion.cpp
                          ggml-metal-fusion-fn.cpp
                          ggml-metal-mv-ext.cpp

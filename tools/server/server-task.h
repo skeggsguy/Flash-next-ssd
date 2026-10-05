@@ -10,6 +10,7 @@
 
 // TODO: prevent including the whole server-common.h as we only use server_tokens
 #include "server-common.h"
+#include "server-lane.h"
 
 
 enum server_task_type {
@@ -143,6 +144,9 @@ struct server_task {
     int id_target = -1;
     int id_slot   = -1;
 
+    // the chat window's lane (server-lane.h), from the request's header; NONE when the window is off
+    server_lane lane = SERVER_LANE_NONE;
+
     // used by parallel sampling (multiple completions from same prompt)
     int id_parent  = -1;
     // temporary store of child tasks for scheduling
@@ -234,6 +238,7 @@ struct server_task {
         copy.type      = type;
         copy.tokens    = tokens.clone();
         copy.id_slot   = -1; // child tasks cannot specify slot
+        copy.lane      = lane; // the chat window treats the children as their parent
 
         // use different sampling seed for each child
         // note: https://github.com/ggml-org/llama.cpp/pull/18700#discussion_r2675115723

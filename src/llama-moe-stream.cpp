@@ -90,6 +90,8 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
     if (const char * s = std::getenv("LLAMA_MOE_STREAM_SPEC_MAX")) {
         q_spec_max = (size_t) std::max(0, atoi(s));
     }
+
+    c2_init(); // the C2 switches (llama-moe-stream-quick.cpp)
 }
 
 // stop and join the I/O workers before the cache buffers and files they use are destroyed
@@ -178,6 +180,7 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
         sl->route_hotness.resize(n_expert, 0);
         sl->seen         .resize(n_expert, 0);
         sl->keep         .resize(n_slots, 0);
+        sl->slot_of      .resize(n_expert, -1);
 
         if (gpu_slot) {
             if (!ctx_state) {

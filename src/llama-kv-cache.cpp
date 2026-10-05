@@ -62,6 +62,31 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
 // llama_kv_cache
 //
 
+bool llama_kv_lazy_zero_env() {
+    const char * env = getenv("LLAMA_KV_LAZY_ZERO");
+    if (env == nullptr || strcmp(env, "0") == 0) {
+        return false;
+    }
+    if (strcmp(env, "1") == 0) {
+        return true;
+    }
+    LLAMA_LOG_WARN("%s: LLAMA_KV_LAZY_ZERO=%s not understood, lazy zeros stay off (use 1 or 0)\n", __func__, env);
+    return false;
+}
+
+bool llama_buffer_is_zero_fill(ggml_backend_buffer_t buf) {
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf));
+    if (dev == nullptr) {
+        return false;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    if (reg == nullptr) {
+        return false;
+    }
+    auto * is_zero_fill = (bool (*)(ggml_backend_buffer_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_buffer_is_zero_fill");
+    return is_zero_fill != nullptr && is_zero_fill(buf);
+}
+
 llama_kv_cache::llama_kv_cache(
         const llama_model & model,
         const llama_hparams & hparams,
@@ -138,6 +163,8 @@ llama_kv_cache::llama_kv_cache(
     for (uint32_t s = 0; s < n_stream; ++s) {
         v_heads[s] = 0;
     }
+
+    v_hw.assign(n_stream, 0);
 
     v_cells.resize(n_stream);
     for (uint32_t s = 0; s < n_stream; ++s) {
@@ -273,6 +300,8 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    const bool lazy_zero = llama_kv_lazy_zero_env();
+
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf;
@@ -290,8 +319,17 @@ llama_kv_cache::llama_kv_cache(
 
         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
-        ggml_backend_buffer_clear(buf, 0);
+        // fresh zero-fill memory already reads zero: skip the clear so pages nothing writes are never touched
+        const bool lazy = lazy_zero && !hparams.no_alloc && llama_buffer_is_zero_fill(buf);
+        if (lazy_zero) {
+            LLAMA_LOG_INFO("%s: %10s KV buffer: lazy zeros %s\n", __func__, ggml_backend_buffer_name(buf),
+                    lazy ? "on, the opening clear is skipped" : "fall back to full clears (not fresh zero-fill memory)");
+        }
+        if (!lazy) {
+            ggml_backend_buffer_clear(buf, 0);
+        }
         ctxs_bufs.emplace_back(std::move(ctx), buf);
+        bufs_lazy.push_back(lazy);
     }
 
     {
@@ -373,8 +411,61 @@ void llama_kv_cache::clear(bool data) {
     }
 
     if (data) {
-        for (auto & [_, buf] : ctxs_bufs) {
-            ggml_backend_buffer_clear(buf.get(), 0);
+        for (size_t i = 0; i < ctxs_bufs.size(); ++i) {
+            ggml_backend_buffer_t buf = ctxs_bufs[i].second.get();
+            // a cache that shares cells with another does not see all writes to its cells, so it clears in full
+            if (bufs_lazy[i] && !other) {
+                clear_written(buf);
+            } else {
+                ggml_backend_buffer_clear(buf, 0);
+            }
+        }
+
+        std::fill(v_hw.begin(), v_hw.end(), 0);
+    }
+}
+
+void llama_kv_cache::hw_note(const slot_info & sinfo) const {
+    for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+        auto & hw = v_hw[sinfo.strm[s]];
+        for (const uint32_t idx : sinfo.idxs[s]) {
+            hw = std::max(hw, idx + 1);
+        }
+    }
+}
+
+void llama_kv_cache::clear_written(ggml_backend_buffer_t buf) {
+    // the attention reads n_kv cells, padded to 256 (get_n_kv): zero the padded range too
+    const uint32_t n_pad_cur = std::max(n_pad, 256u);
+
+    for (const auto & layer : layers) {
+        for (ggml_tensor * t : { layer.k, layer.v }) {
+            // a layer shared from another cache lives in that cache's buffer
+            if (t == nullptr || t->buffer != buf) {
+                continue;
+            }
+
+            const bool     trans   = t == layer.v && v_trans;
+            const uint32_t kv_size = t->ne[1];
+
+            for (uint32_t s = 0; s < n_stream; ++s) {
+                const uint32_t n = std::min(kv_size, GGML_PAD(v_hw[s], n_pad_cur));
+                if (n == 0) {
+                    continue;
+                }
+
+                if (!trans) {
+                    ggml_backend_tensor_memset(t, 0, s*t->nb[2], (size_t) n*t->nb[1]);
+                } else if (ggml_blck_size(t->type) == 1) {
+                    // transposed V: a row per embedding dim, kv_size cells long (set_input_v_idxs)
+                    const size_t es = ggml_type_size(t->type);
+                    for (int64_t j = 0; j < t->ne[0]; ++j) {
+                        ggml_backend_tensor_memset(t, 0, s*t->nb[2] + (size_t) j*kv_size*es, (size_t) n*es);
+                    }
+                } else {
+                    ggml_backend_tensor_memset(t, 0, s*t->nb[2], t->nb[2]);
+                }
+            }
         }
     }
 }
@@ -842,6 +933,8 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 
             assert(ssrc != sdst);
 
+            v_hw[sdst] = std::max(v_hw[sdst], v_hw[ssrc]);
+
             for (uint32_t il = 0; il < layers.size(); ++il) {
                 const auto & layer = layers[il];
 
@@ -863,6 +956,9 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 
         // apply K-shift if needed
         if (hparams.rope_type != LLAMA_ROPE_TYPE_NONE) {
+            // the shift rotates every cell of every stream (build_graph_shift)
+            std::fill(v_hw.begin(), v_hw.end(), get_size());
+
             ggml_backend_sched_reset(sched);
 
             auto * res = lctx->get_gf_res_reserve();
@@ -1100,6 +1196,8 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
         return;
     }
 
+    hw_note(sinfo);
+
     // keep track of the max sequence position that we would overwrite with this ubatch
     // for non-SWA cache, this would be always empty
     llama_seq_id seq_pos_max_rm[LLAMA_MAX_SEQ];
@@ -1239,6 +1337,12 @@ ggml_tensor * llama_kv_cache::get_k_storage(int32_t il) const {
     const int32_t ikv = map_layer_ids.at(il);
 
     return layers[ikv].k;
+}
+
+ggml_tensor * llama_kv_cache::get_v_storage(int32_t il) const {
+    const int32_t ikv = map_layer_ids.at(il);
+
+    return layers[ikv].v;
 }
 
 const llama_kv_cells & llama_kv_cache::get_cells(llama_seq_id seq_id) const {
@@ -1483,6 +1587,8 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
     const uint32_t n_tokens = ubatch->n_tokens;
     GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());
 
+    hw_note(sinfo);
+
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     int64_t * data = (int64_t *) dst->data;
 
@@ -1498,6 +1604,8 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
 void llama_kv_cache::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
     const uint32_t n_tokens = ubatch->n_tokens;
     GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());
+
+    hw_note(sinfo);
 
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     int64_t * data = (int64_t *) dst->data;
@@ -2530,6 +2638,10 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             runs.push_back({idxs[i0], idxs[i1 - 1] + 1});
             i0 = i1;
         }
+    }
+
+    for (const auto & run : runs) {
+        v_hw[strm] = std::max(v_hw[strm], run.to);
     }
 
     uint32_t v_trans;

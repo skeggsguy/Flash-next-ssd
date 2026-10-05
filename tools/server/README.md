@@ -216,6 +216,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--chat-template-kwargs STRING` | sets additional params for the json template parser, must be a valid json object string, e.g. '{"key1":"value1","key2":"value2"}'<br/>(env: LLAMA_ARG_CHAT_TEMPLATE_KWARGS) |
 | `-to, --timeout N` | server read/write timeout in seconds (default: 3600)<br/>(env: LLAMA_ARG_TIMEOUT) |
 | `--sse-ping-interval N` | server SSE ping interval in seconds (-1 = disabled, default: 30)<br/>(env: LLAMA_ARG_SSE_PING_INTERVAL) |
+| `--chat-window SECONDS` | chat window: give chat requests the server ahead of background requests, and keep it for chat this many seconds after the last chat reply (default: 0 = off). A chat request stops a running background request, which gets a 503 to retry; background requests wait until the window lapses. A waiting streamed request is kept open with SSE pings (--sse-ping-interval), a non-streamed one gets none. See --chat-window-header and --chat-window-background<br/>(env: LLAMA_ARG_CHAT_WINDOW) |
+| `--chat-window-header NAME` | chat window: the request header that marks a background request (default: X-Lane)<br/>(env: LLAMA_ARG_CHAT_WINDOW_HEADER) |
+| `--chat-window-background VALUE` | chat window: requests whose header carries this value are background requests; every other request, with or without the header, is chat (default: code)<br/>(env: LLAMA_ARG_CHAT_WINDOW_BACKGROUND) |
 | `--threads-http N` | number of threads used to process HTTP requests (default: -1)<br/>(env: LLAMA_ARG_THREADS_HTTP) |
 | `--cache-prompt, --no-cache-prompt` | whether to enable prompt caching (default: enabled)<br/>(env: LLAMA_ARG_CACHE_PROMPT) |
 | `--cache-reuse N` | min chunk size to attempt reusing from the cache via KV shifting, requires prompt caching to be enabled (default: 0)<br/>[(card)](https://ggml.ai/f0.png)<br/>(env: LLAMA_ARG_CACHE_REUSE) |
@@ -2079,6 +2082,64 @@ Note that the following endpoints are exempt from being considered as incoming t
 - `GET /props`
 - `GET /models`
 - `GET /metrics`
+
+## Chat window
+
+When one server is shared by a person chatting and a background job, such as a coding agent, the chat window lets the person go first. It is meant for a single slot (`-np 1`), where one request runs at a time, and it is off by default.
+
+```sh
+llama-server -m model.gguf -np 1 --chat-window 1200
+```
+
+Requests whose `X-Lane` header is `code` are background requests. Every other request, with or without the header, is a chat request, so only the background client needs configuring. The header name and value match ignoring case, and both can be changed with `--chat-window-header` and `--chat-window-background`.
+
+With the window on:
+
+- A chat request that arrives while a background request is running stops it at the next batch, and the chat request runs instead. The background request ends with a `503` error of type `overloaded_error` ("server busy ... try again later"). If it was streaming, the error arrives as an SSE `error` event; on `/v1/messages` it has Anthropic's shape, `{"type": "error", "error": {"type": "overloaded_error", ...}}`. Clients that retry on overloaded or 5xx errors simply send it again.
+- Background requests wait while a chat request is running and for `--chat-window` seconds after the last one ends. When that time runs out, the waiting requests start by themselves, oldest first.
+- While a streamed request waits, the server sends the HTTP headers and an SSE comment (`:`) every `--sse-ping-interval` seconds, so the client does not time out. A non-streamed request gets nothing until it runs, so give its client a long enough timeout.
+- Each side keeps its cached prompt only while it holds the slot. After a switch, the first request processes its prompt again, unless the prompt cache (`--cache-ram`) still holds it.
+
+The window applies to the completion endpoints (`/completion`, `/infill`, `/v1/completions`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages`). Other endpoints, such as embeddings or tokenize, are never stopped or held.
+
+Sending a background request with curl:
+
+```sh
+curl http://localhost:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "X-Lane: code" \
+    -d '{"messages": [{"role": "user", "content": "Refactor this function"}], "stream": true}'
+```
+
+Marking a coding agent's requests, for example in an [OpenCode](https://opencode.ai) provider (`opencode.json`):
+
+```json
+{
+  "provider": {
+    "llama-server": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "headers": { "X-Lane": "code" }
+      },
+      "models": { "local": { "name": "local model" } }
+    }
+  }
+}
+```
+
+The options also work as environment variables (`LLAMA_ARG_CHAT_WINDOW=1200`) and in a model preset file (`--models-preset`, see [Model presets](#model-presets)):
+
+```ini
+[my-model]
+model = /path/to/model.gguf
+parallel = 1
+chat-window = 1200
+chat-window-header = X-Lane
+chat-window-background = code
+```
+
+The server log has a `chat window:` line at startup and for each event: `cut code task N for chat task M`, `held code task N for S s more` and `window lapsed`.
 
 ## More examples
 

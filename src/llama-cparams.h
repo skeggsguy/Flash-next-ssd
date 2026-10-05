@@ -54,6 +54,7 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
     bool mtp_record_only = false; // the apprentice's batches without outputs record K/V only (llama-mtp-record.h)
+    const struct llama_mtp_vocab * mtp_vocab = nullptr; // the apprentice's word list, owned by the context (llama-mtp-vocab.h)
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 

@@ -5,7 +5,9 @@
 #include "ggml-backend.h"
 
 #include <cerrno>
+#include <chrono>
 #include <mutex>
+#include <thread>
 
 #ifdef _WIN32
 #include <malloc.h>
@@ -190,6 +192,9 @@ void llama_moe_stream::worker_loop() {
         // change: read 1.00 ms/slab, upload 0.065 ms/slab, i.e. 94% of a miss is the read, and the
         // three reads of an expert were strictly serialised at the device's QD1 rate (~2.9 GB/s
         // against 7.3 GB/s at QD8). Issuing them together is what raises the depth.
+        if (test_land_delay_us > 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(test_land_delay_us)); // a slow drive, for tests
+        }
         const int64_t t0 = ggml_time_us();
         const uint8_t * data = llama_moe_stream_pread(*(alt ? files_alt : files)[wt.file_idx], dst ? dst : staging,
                 wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
@@ -239,7 +244,7 @@ void llama_moe_stream::worker_loop() {
             // the LAST slab to land publishes the slot; until then it stays LOADING, so no consumer
             // can observe a half-filled expert
             if (--sl.slot_pending[w.slot] == 0) {
-                sl.slot_state[w.slot] = LLAMA_MOE_STREAM_SLOT_RESIDENT;
+                moe_slot_state_publish(sl.slot_state[w.slot], LLAMA_MOE_STREAM_SLOT_RESIDENT); // release: the remap's quick path
             }
         }
         cv_done.notify_all();

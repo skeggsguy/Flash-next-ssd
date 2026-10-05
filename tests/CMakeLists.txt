@@ -172,6 +172,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-qsa-slice.cpp)
     llama_build_and_test(test-qsa-union.cpp)
     llama_build_and_test(test-speculative-record-only.cpp)
+    # WRITING-PLAN.md step 4b: the apprentice's word list (LLAMA_MTP_VOCAB): the switch, the list's parse, the gather
+    # and the trimmed head's scores against the whole head's, byte for byte, on every backend
+    llama_build_and_test(test-mtp-vocab.cpp)
+    # C1-PROFILE-PLAN step A: the apprentice's round phase by phase (common/spec-phase-log.h) and the book manager's
+    # floor stops (src/llama-moe-stream-stops.h), both beside GGML_METAL_CBLOG: the clock, the exit write, off = nothing
+    llama_build_and_test(test-spec-phase-log.cpp)
+    llama_build_and_test(test-moe-stream-stops.cpp)
 
     if (GGML_METAL)
         # fix 2: merged op chains write the same bytes as the unmerged ops, GGML_METAL_FUSION_FN on and off
@@ -183,12 +190,27 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
         # fix 2a: the trimmed Q8_0 mat-vec's bytes (the old-vs-new diff is in the file's header)
         llama_build_and_test(test-mv-q8-bytes.cpp)
+        # T10A step 1 (C2): a graph encoded ahead of its compute gives the plain bytes; on (one and two extra
+        # command buffers) and off
+        llama_build(test-metal-encode-ahead.cpp)
+        foreach (EA on-ncb1 on-ncb2 off)
+            llama_test(test-metal-encode-ahead NAME test-metal-encode-ahead-${EA})
+        endforeach()
+        set_tests_properties(test-metal-encode-ahead-on-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
+        set_tests_properties(test-metal-encode-ahead-on-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
+        set_tests_properties(test-metal-encode-ahead-off     PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
         # WRITING-PLAN.md step 3b: the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX unset (16) and 8
         llama_build(test-metal-mv-ext.cpp)
         target_link_libraries(test-metal-mv-ext PRIVATE ggml-metal)
         foreach (MX 16 8)
             llama_test(test-metal-mv-ext NAME test-metal-mv-ext-${MX})
             set_tests_properties(test-metal-mv-ext-${MX} PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=${MX}")
+        endforeach()
+        # #10b step 1.2: GGML_METAL_KPROF's node map names each node's first source (staff vs the rest), on and off
+        llama_build(test-metal-kprof.cpp)
+        foreach (KP 1 0)
+            llama_test(test-metal-kprof NAME test-metal-kprof-${KP})
+            set_tests_properties(test-metal-kprof-${KP} PROPERTIES ENVIRONMENT "GGML_METAL_KPROF=${KP}")
         endforeach()
     endif()
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
@@ -198,6 +220,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # BOOKMARK-PIN-PLAN.md step 1: the bookmark pin's rules (server-ckpt-pin.h), no model
     llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
+    llama_build_and_test(test-server-anthropic.cpp)
+    target_include_directories(test-server-anthropic PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-anthropic PRIVATE server-context)
+    # CHAT-WINDOW-PLAN.md step 1: the chat window's rules (server-lane.h) and the queue's pick and timed wake, no model
+    llama_build_and_test(test-server-lane.cpp test-server-lane-config.cpp)
+    target_include_directories(test-server-lane PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-lane PRIVATE server-context)
 
     if (NOT GGML_BACKEND_DL)
         llama_build(test-quantize-stats.cpp)
@@ -327,6 +357,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-room-lend-model.cpp)
     llama_build(test-moe-stream-lookahead-all.cpp)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
+    llama_build(test-moe-stream-c2.cpp)
     foreach (E64_NGL 99 0)
         llama_test(
             test-moe-stream-lookahead-depth2
@@ -338,7 +369,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             FIXTURES_REQUIRED generate-models-e64l4
         )
     endforeach()
-    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all)
+    foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
+             test-moe-stream-c2)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(
@@ -506,6 +538,22 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu PROPERTIES
         FIXTURES_REQUIRED generate-models-e64)
 
+    # LANES-PLAN amendment 3 S1 (LLAMA_KV_LAZY_ZERO): notepads and the keep store skip the opening memset on Metal shared
+    # buffers and clear(true) zeroes only the written cells; everything still reads zero and matches lazy off byte for byte.
+    # The CPU arm checks the fallback (full clears); the llama arm runs with flash attention off (V transposed). The Metal arms
+    # turn residency sets off: a set wires every page of the buffer, so mincore could not see the skipped clear
+    llama_build(test-kv-lazy-zero.cpp)
+    llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-qwen4exp-cpu LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -ngl 0 -fa on)
+    llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-llama-cpu    LABEL main ARGS -m "${MODEL_DIR}/llama-dense.gguf" -ngl 0 -fa off)
+    set_tests_properties(test-kv-lazy-zero-qwen4exp-cpu test-kv-lazy-zero-llama-cpu PROPERTIES
+        FIXTURES_REQUIRED generate-models ENVIRONMENT "KV_LAZY_EXPECT=0")
+    if (GGML_METAL)
+        llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-qwen4exp LABEL main ARGS -m "${MODEL_DIR}/qwen4exp-moe.gguf" -fa on)
+        llama_test(test-kv-lazy-zero NAME test-kv-lazy-zero-llama    LABEL main ARGS -m "${MODEL_DIR}/llama-dense.gguf" -fa off)
+        set_tests_properties(test-kv-lazy-zero-qwen4exp test-kv-lazy-zero-llama PROPERTIES
+            FIXTURES_REQUIRED generate-models ENVIRONMENT "KV_LAZY_EXPECT=1;GGML_METAL_NO_RESIDENCY=1")
+    endif()
+
     # SHARE-PARTS-PLAN phase 6b: union attention (LLAMA_QSA_UNION=1) picks what the masked path picks, attends
     # exactly the cells the masked path leaves visible, and agrees with it within a tolerance; the head-256
     # fixture runs the Metal union kernel, the default fixture's heads of 128 the CPU op
@@ -562,6 +610,34 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-rate2-mtp test-speculative-rate2-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
+    # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
+    # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context
+    llama_build(test-qwen4exp-mtp-vocab.cpp)
+    llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-qwen4exp-mtp-vocab test-qwen4exp-mtp-vocab-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # C1-PROFILE-PLAN step A end to end: llama-server writing with the apprentice on the MTP fixture, given a tiny word
+    # list (--vocab: the server turns tokens into text) in a folder of its own like the MTP fixture's; the phase log's
+    # rounds against the trace, one stop per target floor per check, and the words unchanged with the logs on
+    find_program(C1_PYTHON NAMES python3.12 python3)
+    if (LLAMA_BUILD_SERVER AND LLAMA_BUILD_TOOLS AND C1_PYTHON)
+        file(MAKE_DIRECTORY "${MODEL_DIR}/mtpv")
+        llama_test(
+            test-llama-archs
+            NAME test-generate-models-qwen4exp-e64mtpv
+            LABEL main
+            ARGS -a qwen4exp --n-expert 64 --n-expert-used 8 --nextn --vocab --suffix -e64mtpv --unit-scales -s 42 -o "${MODEL_DIR}/mtpv"
+        )
+        set_tests_properties(test-generate-models-qwen4exp-e64mtpv PROPERTIES FIXTURES_SETUP generate-models-e64mtpv)
+        add_test(NAME test-c1-phase-server
+                 COMMAND ${C1_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/test-c1-phase-server.py
+                         --server $<TARGET_FILE:llama-server> --model "${MODEL_DIR}/mtpv/qwen4exp-moe-e64mtpv.gguf")
+        set_tests_properties(test-c1-phase-server PROPERTIES LABELS main FIXTURES_REQUIRED generate-models-e64mtpv
+                             SKIP_RETURN_CODE 77)
+    endif()
 
     llama_build(test-fusion.cpp)
 endif()

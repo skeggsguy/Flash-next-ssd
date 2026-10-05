@@ -15,6 +15,9 @@
 // The header's `rate_mode` names the depth rule: 0 fixed or hand-tuned, 1 the measured depth
 // (LLAMA_SPEC_ADAPTIVE_RATE=1), 2 the priced depth (=2, speculative-rate2.h), whose stops are priced, not p-min.
 //
+// While the C1 phase log is on (GGML_METAL_CBLOG, common/spec-phase-log.h) each cycle line also carries the
+// log's `"round"`, so a cycle joins its phase lines; with that log off the line is unchanged.
+//
 // The hooks in common/speculative.cpp are one null check each when the trace is off.
 
 #include <cstdint>
@@ -33,6 +36,7 @@ struct common_speculative_rate_trace {
         bool    active    = false;
         int64_t index     = 0;   // cycle number in this session
         int64_t answer    = -1;  // answer the cycle belongs to
+        int64_t round     = -1;  // the C1 phase log's round (common/spec-phase-log.h); written only when >= 0
         int     pos       = 0;   // position the draft started from
         int     cap       = 0;   // the ceiling in force (0: a measured-depth shadow cycle, nothing checked)
         int     drafted   = 0;   // guesses that passed p-min
@@ -65,7 +69,7 @@ struct common_speculative_rate_trace {
 
     // hooks, in the order a cycle sees them
     void answer_begin(int seq, int n_prompt, int64_t now, int64_t wall);
-    void draft_begin(int seq, int pos, int64_t now);
+    void draft_begin(int seq, int pos, int64_t now, int64_t round = -1);
     void draft_step(int seq, float conf);
     void draft_end(int seq, int cap, int drafted, int checked, int64_t now);
     void accepted(int seq, int n_accepted, int64_t now);

@@ -46,6 +46,10 @@ private:
     std::function<void(void)>                 callback_update_slots;
     std::vector<std::function<void(bool)>>    callback_sleeping_state;
 
+    // the chat window (server-lane.h); both unset when it is off, and then the queue behaves as upstream
+    std::function<int(const std::deque<server_task> &)> callback_pick_deferred;
+    std::function<void(void)>                           callback_tick;
+
 public:
     ~server_queue() { worker_stop(); }
 
@@ -134,6 +138,19 @@ public:
     // note: caller will hold mutex_tasks while calling the callbacks
     void on_sleeping_state(std::function<void(bool)> callback) {
         callback_sleeping_state.push_back(std::move(callback));
+    }
+
+    // Register the chat window's choice of deferred task: pop_deferred_task() moves the task at the index it returns
+    // (oldest first) instead of upstream's pick, and none if it returns -1. It runs under the queue's lock, so it must
+    // not call back into the queue. While it is set and tasks wait, the server never goes to sleep on idle.
+    void on_pick_deferred(std::function<int(const std::deque<server_task> &)> callback) {
+        callback_pick_deferred = std::move(callback);
+    }
+
+    // Register a timed wake on the start_loop() thread, without the queue's lock: after every update and at least
+    // once a second while idle. The chat window starts held tasks from it when a window lapses.
+    void on_tick(std::function<void(void)> callback) {
+        callback_tick = std::move(callback);
     }
 
 private:

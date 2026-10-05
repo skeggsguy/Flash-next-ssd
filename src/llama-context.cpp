@@ -173,6 +173,11 @@ llama_context::llama_context(
         }
     }
 
+    // the apprentice guesses from a list of words (LLAMA_MTP_VOCAB, per context; llama-mtp-vocab.h)
+    mtp_vocab = llama_mtp_vocab_init(getenv("LLAMA_MTP_VOCAB"), cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP,
+            model, params.ctx_other);
+    cparams.mtp_vocab = mtp_vocab.get();
+
     if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED) {
         cparams.rope_scaling_type = hparams.rope_scaling_type_train;
     }
@@ -3469,6 +3474,9 @@ llama_memory_breakdown llama_context::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> ret;
     for (const auto & [buft, size] : model.memory_breakdown()) {
         ret[buft].model += size;
+    }
+    if (mtp_vocab) { // the apprentice's copy of the head's listed rows
+        ret[ggml_backend_buffer_get_type(mtp_vocab->buf.get())].model += mtp_vocab->nbytes();
     }
     if (memory) {
         for (const auto & [buft, size] : memory->memory_breakdown()) {

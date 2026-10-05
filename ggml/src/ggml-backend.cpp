@@ -845,6 +845,10 @@ struct ggml_backend_sched {
 
     bool op_offload;
 
+    // study patch, C2 (GGML_METAL_ENCODE_AHEAD): a backend that can encode a graph ahead of computing it exports
+    // "ggml_backend_graph_encode_ahead"; null for the others
+    void (*encode_ahead[GGML_SCHED_MAX_BACKENDS])(ggml_backend_t backend, struct ggml_cgraph * cgraph);
+
     int debug;
 
     // used for debugging graph reallocations [GGML_SCHED_DEBUG_REALLOC]
@@ -1811,6 +1815,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
+            // study patch, C2: a GPU split, then another backend's (the book manager's CPU remap), then this
+            // backend's again: encode that one now, while this one runs, so its turn only commits it. The
+            // backend checks it is handed that same graph next and drops the encoding otherwise.
+            if (sched->encode_ahead[split_backend_id] != nullptr && sched->n_copies == 1 && split_id + 2 < sched->n_splits &&
+                    splits[split_id + 1].backend_id != split_backend_id && splits[split_id + 2].backend_id == split_backend_id) {
+                sched->encode_ahead[split_backend_id](split_backend, &splits[split_id + 2].graph);
+            }
         } else {
             // similar to ggml_backend_compare_graph_backend
             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
@@ -1912,6 +1923,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
         sched->backends[b] = backends[b];
         sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
         GGML_ASSERT(ggml_backend_supports_buft(backends[b], sched->bufts[b]));
+
+        sched->encode_ahead[b] = nullptr;
+        if (ggml_backend_dev_t dev = ggml_backend_get_device(backends[b])) {
+            if (ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev)) {
+                sched->encode_ahead[b] = (void (*)(ggml_backend_t, struct ggml_cgraph *))
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_graph_encode_ahead");
+            }
+        }
 
         if (sched->n_copies > 1) {
             for (int c = 0; c < sched->n_copies; c++) {

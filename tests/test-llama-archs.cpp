@@ -47,6 +47,9 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
 static bool g_unit_scales = false;
 static uint32_t g_n_layer = 0; // --n-layer: more floors than the arch default (0: the default)
 static bool g_nextn = false;    // --nextn: qwen4exp with one MTP block after the trunk (the apprentice's floor)
+// --vocab: a tiny sentencepiece word list (<unk> <s> </s>, the newline byte, then "w4".."w127"), so llama-server
+// can run on the fixture (it turns tokens into text); without it the fixture has no word list ("no_vocab")
+static bool g_vocab = false;
 // --n-embd / --n-head-kv (0: the arch default): qwen4exp at the library's head size of 256 with shared kv heads,
 // the shape the Metal union attention kernel takes (LLAMA_QSA_UNION, SHARE-PARTS-PLAN phase 6)
 static uint32_t g_n_embd    = 0;
@@ -86,6 +89,7 @@ static void usage(char ** argv) {
     printf("       [--n-expert N] [--n-expert-used N] [--suffix S] [--unit-scales]   (with -o: MoE shape,\n");
     printf("       file name suffix, weight scales around 1 instead of 0)\n");
     printf("       [--nextn]   (with -o -a qwen4exp: one MTP block after the trunk, the apprentice's floor)\n");
+    printf("       [--vocab]   (with -o: a tiny word list, so llama-server can run on the fixture)\n");
     printf("       %s --layer-input-order\n", argv[0]);
 }
 
@@ -385,7 +389,22 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe,
         ms.add_kv(LLM_KV_SWIGLU_CLAMP_EXP, 7.0f);
     }
 
-    ms.add_kv(LLM_KV_TOKENIZER_MODEL,         "no_vocab");
+    if (g_vocab) {
+        std::vector<std::string> tokens = { "<unk>", "<s>", "</s>", "<0x0A>" };
+        std::vector<int32_t>     types  = { 2, 3, 3, 6 }; // unknown, control, control, byte
+        for (uint32_t t = (uint32_t) tokens.size(); t < n_vocab; t++) {
+            tokens.push_back("\xe2\x96\x81w" + std::to_string(t)); // "_w<t>": a word with its leading space
+            types.push_back(1);                                  // normal
+        }
+        std::vector<float> scores(n_vocab, 0.0f);
+        ms.add_kv(LLM_KV_TOKENIZER_MODEL,      "llama");
+        ms.add_kv(LLM_KV_TOKENIZER_LIST,       tokens);
+        ms.add_kv(LLM_KV_TOKENIZER_SCORES,     scores);
+        // int32 as the converter writes it (the saver's template has no int32 vector)
+        gguf_set_arr_data(ret.get(), "tokenizer.ggml.token_type", GGUF_TYPE_INT32, types.data(), types.size());
+    } else {
+        ms.add_kv(LLM_KV_TOKENIZER_MODEL,      "no_vocab");
+    }
     // ms.add_kv(LLM_KV_DENSE_2_FEAT_OUT,     n_embd);
     // ms.add_kv(LLM_KV_DENSE_3_FEAT_IN,      n_embd);
 
@@ -1075,6 +1094,9 @@ int main(int argc, char ** argv) {
         }
         if (strcmp(argv[i], "--nextn") == 0) {
             g_nextn = true;
+        }
+        if (strcmp(argv[i], "--vocab") == 0) {
+            g_vocab = true;
         }
         if (strcmp(argv[i], "--n-embd") == 0 || strcmp(argv[i], "--n-head-kv") == 0) {
             if (i + 1 < argc) {

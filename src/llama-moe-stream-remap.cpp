@@ -1,6 +1,7 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
 #include "llama-moe-room.h"
+#include "llama-moe-stream-stops.h"
 
 #include "ggml-backend.h"
 
@@ -25,6 +26,13 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     // idle while this CPU-side op runs as a graph dependency
     const int64_t t_op0 = ggml_time_us();
 
+    // the floor-stop log (llama-moe-stream-stops.h): one pointer check when off
+    llama_moe_stream_stops * stops = llama_moe_stream_stops::get();
+    const int64_t t_stop0 = stops ? llama_moe_stream_stops::now_ns() : 0;
+    int64_t  stop_send_ns = 0;
+    int64_t  stop_wait_ns = 0;
+    uint32_t stop_trips   = 0;
+
     auto * sl  = (llama_moe_stream_layer *) userdata;
     auto * mgr = sl->mgr;
 
@@ -36,6 +44,14 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
 
     const int32_t * ids = (const int32_t *) a->data;
           int32_t * out = (int32_t *) dst->data;
+
+    // every book already on the desk: no lock (LLAMA_MOE_STREAM_NOLOCK, llama-moe-stream-quick.cpp)
+    if (mgr->remap_quick(*sl, ids, out, n, a->ne[1], t_op0)) {
+        if (stops) {
+            stops->put(sl->il, t_stop0, llama_moe_stream_stops::now_ns(), (uint32_t) sl->uniq.size(), 0, 0, 0);
+        }
+        return;
+    }
 
     std::unique_lock<std::mutex> lk(mgr->mtx);
 
@@ -109,13 +125,21 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             mgr->stats.n_hit++;
             sl->n_hit++;
             sl->keep[s] = 1;
+            sl->slot_of[e] = s; // ONE_LOOKUP: the final loop reads it
             sl->demand_slots.push_back(s);
         } else {
+            const int64_t t_send0 = stops ? llama_moe_stream_stops::now_ns() : 0;
             const uint64_t lent = lender ? lender->lend_find_locked(*sl, e, false) : 0; // pinned before any keep
             int32_t v;
             while ((v = mgr->pick_victim_locked(*sl, sl->keep.data())) < 0) {
                 // every allowed slot is loading; wait for a commit and retry
+                const int64_t t_w0 = stops ? llama_moe_stream_stops::now_ns() : 0;
                 mgr->cv_done.wait(lk);
+                if (stops) {
+                    const int64_t dt = llama_moe_stream_stops::now_ns() - t_w0;
+                    stop_wait_ns += dt;
+                    stop_send_ns -= dt; // inside the send span below, but it is a wait
+                }
                 if (mgr->load_failed) {
                     GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
                 }
@@ -142,42 +166,37 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             sl->n_miss++;
             waited = true;
             sl->keep[v] = 1;
+            sl->slot_of[e] = v;
             sl->demand_slots.push_back(v);
+            if (stops) {
+                stop_send_ns += llama_moe_stream_stops::now_ns() - t_send0;
+                stop_trips++;
+            }
         }
     }
 
     if (lender) {
+        const int64_t t_lend0 = stops ? llama_moe_stream_stops::now_ns() : 0;
         lender->lend_help_locked(lk); // copy the put-back books out while the runners read
+        if (stops) {
+            stop_send_ns += llama_moe_stream_stops::now_ns() - t_lend0;
+        }
     }
 
     if (waited) {
+        const int64_t t_wait0 = stops ? llama_moe_stream_stops::now_ns() : 0;
         const int64_t t0 = ggml_time_us();
-        mgr->cv_done.wait(lk, [&]{
-            if (mgr->load_failed) {
-                return true;
-            }
-            for (const int32_t s : sl->demand_slots) {
-                if (sl->slot_state[s] != LLAMA_MOE_STREAM_SLOT_RESIDENT) {
-                    return false;
-                }
-            }
-            return true;
-        });
+        mgr->wait_trips_locked(lk, *sl, t_op0); // every demand slot RESIDENT, or a load failed (KEEP_AWAKE pings)
         if (mgr->load_failed) {
             GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
         }
         mgr->stats.t_stall_us += ggml_time_us() - t0;
-    }
-
-    for (int64_t i = 0; i < n; i++) {
-        const int32_t s = sl->expert_slot.at(ids[i]);
-        sl->slot_last_use[s] = ++sl->use_counter;
-        out[i] = s;
-        if (!sl->slot_la2.empty() && sl->slot_la2[s] == ids[i]) {
-            sl->slot_la2[s] = -1; // a two-floors-ahead fetch, read by its floor
-            mgr->stats.n_la2_used++;
+        if (stops) {
+            stop_wait_ns += llama_moe_stream_stops::now_ns() - t_wait0;
         }
     }
+
+    llama_moe_stream_remap_out(*sl, ids, out, n); // ONE_LOOKUP: slot_of, filled above
 
     if (mgr->gpu_slot) {
         sl->publish_state_locked(*mgr);
@@ -185,6 +204,11 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     }
 
     mgr->stats.t_remap_op_us += ggml_time_us() - t_op0;
+
+    if (stops) {
+        stops->put(sl->il, t_stop0, llama_moe_stream_stops::now_ns(), (uint32_t) sl->uniq.size(), stop_trips,
+                stop_send_ns, stop_wait_ns);
+    }
 }
 
 void llama_moe_stream::register_hash_router(int32_t il, ggml_tensor * tid2eid, uint32_t n_expert_used) {

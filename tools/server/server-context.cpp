@@ -15,6 +15,7 @@
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
+#include "spec-phase-log.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
@@ -1151,6 +1152,10 @@ private:
     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
     bool ckpt_pin = true; // env: LLAMA_CKPT_PIN, the bookmark pin (server-ckpt-pin.h), on unless set to 0
+    bool ckpt_copy_dft = false; // bookmark copies save the apprentice's record (server_ckpt_copy_dft), set at load
+
+    // the chat window (server-lane.h, --chat-window): off unless set; used on the start_loop() thread only
+    server_lane_window lane_window;
 
     int n_empty_consecutive = 0;
 
@@ -1341,7 +1346,10 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        llama_init = common_init_from_params(params_base);
+        {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_TGT); // the C1 phase log (common/spec-phase-log.h)
+            llama_init = common_init_from_params(params_base);
+        }
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
@@ -1374,6 +1382,7 @@ private:
                 params_dft.load_progress_callback           = load_progress_callback;
                 params_dft.load_progress_callback_user_data = &load_progress_spec;
 
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_DFT);
                 spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
                 model_dft = spec_init->model();
                 ctx_dft   = spec_init->context();
@@ -1482,7 +1491,10 @@ private:
 
         slots.clear();
 
-        ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
+        {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_TGT);
+            ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
+        }
         if (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
@@ -1513,6 +1525,7 @@ private:
         }
 
         if (ctx_dft) {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_OPEN_DFT);
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
@@ -1553,6 +1566,10 @@ private:
                 // flush the generated token stats before reset()
                 if (slot.stats.n_gen > 0) {
                     metrics_on_prediction(slot);
+                }
+                // the chat window runs from the end of the last chat (finished, failed or cancelled)
+                if (slot.task->lane == SERVER_LANE_CHAT && !slot.task->is_child()) {
+                    lane_window.on_chat_done(ggml_time_ms());
                 }
             };
 
@@ -1596,6 +1613,19 @@ private:
                 SRV_WRN("bookmark pin: off, it needs 2 or more copies (-ctxcp %d)\n", params_base.n_ctx_checkpoints);
             } else {
                 SRV_WRN("%s", "bookmark pin: off (LLAMA_CKPT_PIN=0), upstream's copies\n");
+            }
+        }
+
+        {
+            // a draft context exists only with the apprentice loaded (ctx_dft is reset above when spec failed)
+            const common_context_seq_rm_type dft_type = ctx_dft ? ctx_dft_seq_rm_type : COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+            ckpt_copy_dft = server_ckpt_copy_dft(dft_type);
+            if (ctx_dft == nullptr) {
+                SRV_WRN("%s", "bookmark copies: no apprentice, each copy holds the library's record only\n");
+            } else if (ckpt_copy_dft) {
+                SRV_WRN("bookmark copies: include the apprentice's record (its memory can't be trimmed back, seq_rm type %d)\n", (int) dft_type);
+            } else {
+                SRV_WRN("bookmark copies: leave out the apprentice's record, it is trimmed back on restore instead (seq_rm type %d)\n", (int) dft_type);
             }
         }
 
@@ -1673,6 +1703,24 @@ private:
         queue_tasks.on_sleeping_state([this](bool sleeping) {
             handle_sleeping_state(sleeping);
         });
+
+        if (params_base.chat_window > 0) {
+            lane_window = server_lane_window((int64_t) params_base.chat_window * 1000);
+            queue_tasks.on_pick_deferred([this](const std::deque<server_task> & deferred) {
+                std::vector<server_lane> lanes;
+                lanes.reserve(deferred.size());
+                for (const auto & task : deferred) {
+                    lanes.push_back(task.lane);
+                }
+                return server_lane_pick(lanes, lane_window.code_may_start(ggml_time_ms(), chat_running()));
+            });
+            queue_tasks.on_tick([this]() {
+                chat_window_tick();
+            });
+            SRV_WRN("chat window: on, chat keeps the seat %d s after its last reply; requests with header %s: %s are "
+                    "background, every other request is chat\n", params_base.chat_window,
+                    params_base.chat_window_header.c_str(), params_base.chat_window_background.c_str());
+        }
 
         metrics.init();
 
@@ -2602,7 +2650,12 @@ private:
         }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        // the apprentice's record only when its memory can't be trimmed (server_ckpt_copy_dft, COPY-FIX-PLAN.md):
+        // a PART draft is trimmed past the restore point after a restore (slot.mem.seq_rm), so its data_dft stays
+        // empty and load_dft does nothing
+        if (ckpt_copy_dft) {
+            cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        }
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
@@ -2610,6 +2663,53 @@ private:
                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
                 (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+    }
+
+    // the chat window: does a chat task hold a seat right now?
+    bool chat_running() const {
+        for (const auto & slot : slots) {
+            if (slot.is_processing() && slot.task->lane == SERVER_LANE_CHAT) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // the chat window's timed wake (server_queue::on_tick): when a window lapses, nothing releases a seat, so start
+    // the held tasks here, one per free seat
+    void chat_window_tick() {
+        if (!lane_window.take_lapse(ggml_time_ms(), chat_running())) {
+            return;
+        }
+        SRV_WRN("chat window: window lapsed, %zu waiting task(s) may start\n", queue_tasks.queue_tasks_deferred_size());
+        for (const auto & slot : slots) {
+            if (!slot.is_processing()) {
+                queue_tasks.pop_deferred_task(slot.id);
+            }
+        }
+    }
+
+    // the chat window: a chat task arrived and found no free seat; cut off a background task holding one, if any.
+    // The background client gets "busy, try again" (503) first, else it would hang: a cancel sends nothing.
+    // Returns false if no seat runs a background task.
+    bool chat_window_cut(server_slot * wanted, int id_chat) {
+        server_slot * victim = nullptr;
+        if (wanted != nullptr && wanted->is_processing() && server_lane_should_cut(wanted->task->lane, SERVER_LANE_CHAT)) {
+            victim = wanted;
+        }
+        for (auto & slot : slots) {
+            if (victim == nullptr && slot.is_processing() && server_lane_should_cut(slot.task->lane, SERVER_LANE_CHAT)) {
+                victim = &slot;
+            }
+        }
+        if (victim == nullptr) {
+            return false;
+        }
+        SRV_WRN("chat window: cut code task %d for chat task %d (prompt %d tokens, %d in context, %d generated)\n",
+                victim->task->id, id_chat, victim->task->n_tokens(), victim->prompt.n_tokens(), (int) victim->stats.n_gen);
+        send_error(*victim, "server busy: a chat has the seat (chat window), try again later", ERROR_TYPE_OVERLOADED);
+        victim->release(); // pops the deferred chat task, which runs next
+        return true;
     }
 
     // returns false to decline the task, it is offered again after the decode is done
@@ -2636,11 +2736,34 @@ private:
 
                     const int id_task = task.id;
 
+                    // the chat window holds background tasks while chat has the seat
+                    if (task.lane == SERVER_LANE_CODE && !lane_window.code_may_start(ggml_time_ms(), chat_running())) {
+                        const int64_t left = lane_window.seconds_left(ggml_time_ms(), chat_running());
+                        if (left < 0) {
+                            SRV_WRN("chat window: held code task %d while a chat has the seat, then %d s\n",
+                                    id_task, params_base.chat_window);
+                        } else {
+                            SRV_WRN("chat window: held code task %d for %" PRId64 " s more\n", id_task, left);
+                        }
+                        queue_tasks.defer(std::move(task));
+                        break;
+                    }
+
                     server_slot * slot = get_available_slot(task);
 
                     //
                     // slot scheduling logic
                     //
+
+                    // the chat window: a chat with no free seat takes one from a background task
+                    if ((slot == nullptr || slot->is_processing()) && task.lane == SERVER_LANE_CHAT) {
+                        // deferred first, so the seat's release hands it over
+                        queue_tasks.defer(std::move(task));
+                        if (!chat_window_cut(slot, id_task)) {
+                            SRV_DBG("no seat runs a background task, chat task waits, id_task = %d\n", id_task);
+                        }
+                        break;
+                    }
 
                     if (slot == nullptr) {
                         // if no slot is available, we defer this task for processing later
@@ -3249,10 +3372,16 @@ private:
         std::vector<server_slot *> generating;
         std::vector<server_slot *> drafting;
 
+        common_spec_phase_round_end(); // no slot has written yet in this turn of the loop
+
         // determine which slots are generating and drafting
         iterate(slots, [&](server_slot & slot) {
             if (slot.state != SLOT_STATE_GENERATING) {
                 return;
+            }
+
+            if (generating.empty()) {
+                common_spec_phase_round_begin(); // a writing round: the C1 phase log's round id moves on
             }
 
             // check if we can batch this slot with the previous one
@@ -3289,7 +3418,9 @@ private:
                                 llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
 
                         if (use_ckpt_dft) {
+                            common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_DFT);
                             slot.spec_ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            phase.arg = (int64_t) slot.spec_ckpt.data_dft.size();
                         }
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
@@ -3327,8 +3458,10 @@ private:
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
             if (ctx_dft) {
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_LOAD_DFT);
                 if (use_ckpt_dft) {
                     ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    phase.arg = (int64_t) ckpt.data_dft.size();
                 }
 
                 if (!llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, ckpt.pos_max + 1, -1)) {
@@ -3347,7 +3480,11 @@ private:
                 if (use_ckpt_tgt) {
                     //const int64_t t_start = ggml_time_us();
 
-                    ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    {
+                        common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_TGT);
+                        ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        phase.arg = (int64_t) ckpt.data_tgt.size();
+                    }
 
                     //const int64_t t_total = ggml_time_us() - t_start;
                     //printf("checkpoint total: %f ms\n", t_total / 1000.0);
@@ -3359,7 +3496,9 @@ private:
                 }
 
                 if (use_ckpt_dft) {
+                    common_spec_phase_scope phase(COMMON_SPEC_PHASE_SAVE_DFT);
                     ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    phase.arg = (int64_t) ckpt.data_dft.size();
                 }
             }
         });
@@ -3647,6 +3786,8 @@ private:
                                     if (!do_reset) {
                                         // restore the context checkpoint
                                         it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                        // a no-op when copies leave the apprentice out (ckpt_copy_dft): its live
+                                        // record is trimmed to the restore point by slot.mem.seq_rm(p0) below
                                         it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                                         // restore the draft's speculative state
                                         common_speculative_set_state(spec.get(), slot.id, it->data_spec);
@@ -3997,6 +4138,7 @@ private:
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
+            common_spec_phase_scope phase(COMMON_SPEC_PHASE_CHECK, batch_view.n_tokens, /* round_only */ true);
             ret = llama_decode(ctx_tgt, batch_view);
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
@@ -4074,6 +4216,7 @@ private:
         if (batch_wants_speculation) {
             bool ok = true;
             queue_tasks.yield_to_queue([&]() {
+                common_spec_phase_scope phase(COMMON_SPEC_PHASE_PROCESS, batch_view.n_tokens, /* round_only */ true);
                 ok = common_speculative_process(spec.get(), batch_view);
             });
 
@@ -4247,6 +4390,7 @@ private:
 
             // verify and try to accept the draft
             {
+                common_spec_phase_scope phase_accept(COMMON_SPEC_PHASE_ACCEPT, 0, /* round_only */ true);
                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
 
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
@@ -4259,6 +4403,7 @@ private:
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
+                phase_accept.arg = (int64_t) accepted.size() - 1;
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
@@ -4278,6 +4423,10 @@ private:
                         slot.spec_draft = std::move(accepted);
 
                         const auto & ckpt = slot.spec_ckpt;
+
+                        phase_accept.end();
+                        common_spec_phase_scope phase_restore(COMMON_SPEC_PHASE_RESTORE_TGT,
+                                (int64_t) (ckpt.data_tgt.size() + (slot.ctx_dft ? ckpt.data_dft.size() : 0)), true);
 
                         SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
 
@@ -4610,6 +4759,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
     int32_t sse_ping_interval = params.sse_ping_interval;
 
+    // the chat window's lane, from the request's header (server-lane.h); not looked up when the window is off
+    const server_lane lane = params.chat_window > 0
+        ? server_lane_of(req.headers, params.chat_window_header, params.chat_window_background)
+        : SERVER_LANE_NONE;
+
     try {
         std::vector<server_task> tasks;
 
@@ -4660,6 +4814,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.params.message_spans = task.tokens.find_message_spans(delimiters);
 
             task.id_slot = json_value(data, "id_slot", -1);
+            task.lane    = lane;
             sse_ping_interval = task.params.sse_ping_interval;
 
             // OAI-compat
@@ -4720,26 +4875,47 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         // in streaming mode, the first error must be treated as non-stream response
         // this is to match the OAI API behavior
         // ref: https://github.com/ggml-org/llama.cpp/pull/16486#discussion_r2419657309
-        auto first_result = rd.next(req.should_stop);
-        if (first_result == nullptr) {
+        //
+        // the chat window: a task waiting for the seat (held for 20+ minutes, say) sends nothing until it starts, so
+        // after one ping interval without a first result the stream opens (200) and pings until the task runs. A task
+        // that has started already sent its first result (the headers signal), so only waiting tasks get here.
+        bool waiting_pings = false;
+        server_task_result_ptr first_result;
+        if (params.chat_window > 0 && sse_ping_interval > 0) {
+            const int64_t t_wait = ggml_time_ms();
+            first_result = rd.next([&]() {
+                if (req.should_stop()) {
+                    return true;
+                }
+                waiting_pings = ggml_time_ms() - t_wait > (int64_t) sse_ping_interval * 1000;
+                return waiting_pings;
+            });
+        } else {
+            first_result = rd.next(req.should_stop);
+        }
+        if (first_result == nullptr && !waiting_pings) {
             GGML_ASSERT(req.should_stop());
             return res; // connection is closed
         }
 
-        if (first_result->is_error()) {
+        if (first_result != nullptr && first_result->is_error()) {
             res->error(first_result->to_json());
             return res;
         }
 
         GGML_ASSERT(
+            first_result == nullptr ||
             dynamic_cast<server_task_result_cmpl_partial*>(first_result.get()) != nullptr ||
             dynamic_cast<server_task_result_cmpl_final*>  (first_result.get()) != nullptr
         );
 
         // next responses are streamed
         // to be sent immediately
-        json first_result_json = first_result->to_json();
-        if (first_result_json == nullptr) {
+        json first_result_json = first_result != nullptr ? first_result->to_json() : json();
+        if (first_result == nullptr) {
+            SRV_DBG("%s", "chat window: still waiting for the seat, opening the stream with a ping\n");
+            res->data = ":\n\n";
+        } else if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
         } else if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
             res->data = format_anthropic_sse(first_result_json);
@@ -4750,8 +4926,22 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval, waiting_pings](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
+                if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC && json_value(res_json, "type", std::string()) == "overloaded_error") {
+                    // the chat window's cut: Anthropic's own stream error, which Anthropic clients classify as
+                    // retryable (llama.cpp's own error shape lacks the "type": "error" they dispatch on)
+                    return format_anthropic_sse({
+                        {"event", "error"},
+                        {"data", {
+                            {"type", "error"},
+                            {"error", {
+                                {"type",    "overloaded_error"},
+                                {"message", json_value(res_json, "message", std::string())},
+                            }},
+                        }},
+                    });
+                }
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
                         {"event", "error"},
@@ -4836,6 +5026,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
                     json res_json = result->to_json();
+                    if (waiting_pings && res_json == nullptr) {
+                        // the headers signal of a task that waited for the seat: the headers went out with the pings
+                        output = "";
+                        return true;
+                    }
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);
                     } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {

@@ -89,7 +89,16 @@ int server_queue::get_new_id() {
 
 void server_queue::pop_deferred_task(int id_slot) {
     std::unique_lock<std::mutex> lock(mutex_tasks);
-    if (!queue_tasks_deferred.empty()) {
+    if (callback_pick_deferred) {
+        // the chat window (server-lane.h): chat first, background tasks only once its window has lapsed
+        const int i = queue_tasks_deferred.empty() ? -1 : callback_pick_deferred(queue_tasks_deferred);
+        if (i >= 0 && i < (int) queue_tasks_deferred.size()) {
+            auto it = queue_tasks_deferred.begin() + i;
+            QUE_DBG("pop deferred task (chat window), id_task = %d\n", it->id);
+            queue_tasks.emplace_front(std::move(*it));
+            queue_tasks_deferred.erase(it);
+        }
+    } else if (!queue_tasks_deferred.empty()) {
         // try to find a task that uses the specified slot
         bool found = false;
         for (auto it = queue_tasks_deferred.begin(); it != queue_tasks_deferred.end(); ++it) {
@@ -292,6 +301,9 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
         if (idle_sleep_ms < 0) {
             return false;
         }
+        if (callback_pick_deferred && !queue_tasks_deferred.empty()) {
+            return false; // the chat window holds tasks: they must not wait on a sleeping server
+        }
         int64_t now = ggml_time_ms();
         return (now - time_last_task) >= idle_sleep_ms;
     };
@@ -318,6 +330,9 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
 
         QUE_DBG("%s", "waiting for new tasks\n");
         while (true) {
+            if (callback_tick) {
+                callback_tick(); // the chat window's timed wake, at most max_wait_time apart while idle
+            }
             std::unique_lock<std::mutex> lock(mutex_tasks);
             if (!running || !queue_tasks.empty()) {
                 break; // go back to process new tasks or terminate

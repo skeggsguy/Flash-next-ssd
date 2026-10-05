@@ -653,6 +653,11 @@ struct common_params {
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
+    // chat window (tools/server/server-lane.h): chat requests take the seat from background ones; 0 = off
+    int32_t     chat_window            = 0;        // seconds background requests wait after the last chat reply
+    std::string chat_window_header     = "X-Lane"; // the header that marks a background request
+    std::string chat_window_background = "code";   // its value for the background lane; anything else is chat
+
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";                                                                         // NOLINT
     std::string api_prefix    = "";                                                                         // NOLINT

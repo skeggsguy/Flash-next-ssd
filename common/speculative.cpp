@@ -13,6 +13,7 @@
 #include "speculative-rate.h"
 #include "speculative-rate2.h"
 #include "speculative-rate-trace.h"
+#include "spec-phase-log.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
 
@@ -1799,7 +1800,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
 
             if (rate_trace) {
-                rate_trace->draft_begin(seq_id, dp.pos0, t_trace);
+                rate_trace->draft_begin(seq_id, dp.pos0, t_trace, common_spec_phase_round());
             }
 
             n_drafting++;
@@ -1851,6 +1852,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         int i = 0;
 
         while (n_drafting > 0) {
+            common_spec_phase_scope phase_step(COMMON_SPEC_PHASE_DRAFT_STEP, i); // one apprentice decode per guess
+
             // each step decodes under a different head, i.e. a different decoder layer, and
             // KV is per layer. process() filled this layer's KV only for positions < pos0
             // (prompt + accepted prefix) — nothing in the draft region yet. so reset the
