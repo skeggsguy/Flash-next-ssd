@@ -22,7 +22,6 @@ SSDs and the MTP draft head on. Sources and method are in [Results](docs/flashne
 | **Writing (decode)** | **17.5 tokens/s** across 120 real agent conversations replayed in order: +47% over the study's first setup (11.9) |
 | **Time to first token** | **5.5 s** median: −52% (from 11.4 s) |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
-| **Writing after a 100K-token prompt** | **~21 tokens/s** |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
 
 ## What it adds
