@@ -73,8 +73,8 @@ order, so words can differ at near-ties; perplexity is unchanged. It is the defa
 ### The chat window
 
 One server, two users: a person chatting and a coding agent working in the background. With
-`--chat-window 1200`, a chat request stops a running background request, which gets a 503 that its
-client retries. Background requests then wait until 20 minutes after the last chat reply. Only the
+`--chat-window 300`, a chat request stops a running background request, which gets a 503 that its
+client retries. Background requests then wait until 5 minutes after the last chat reply. Only the
 background client needs to send a header (`X-Lane: code`). It is off by default.
 
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
@@ -140,7 +140,7 @@ It loads in seconds; the first request is slower while the expert cache fills. O
 
 With a second SSD, copy the four model files to it and add
 `--moe-stream-alt-path /Volumes/<ssd>/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --moe-stream-alt-split 53`.
-To share the server with a coding agent, add `--chat-window 1200`.
+To share the server with a coding agent, add `--chat-window 300`.
 
 This is the study's everyday command. Close memory-hungry apps while it runs: at a 28 GiB cache
 the Mac has little room to spare. If you see swap (`sysctl vm.swapusage`), use a smaller cache or
