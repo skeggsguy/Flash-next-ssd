@@ -59,6 +59,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-quick.cpp
     llama-moe-stream-stats.cpp
     llama-moe-stream-trace.cpp
+    llama-moe-stream-statelog.cpp
     llama-moe-stream-stops.cpp
     llama-moe-stream-wave-ops.cpp
     llama-moe-stream-wave-plan.cpp

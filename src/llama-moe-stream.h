@@ -42,6 +42,7 @@ bool moe_stream_partition();
 // one context can evict slots referenced by the other's in-flight graph.
 
 struct llama_moe_room;
+struct llama_moe_stream_statelog;
 
 struct llama_moe_stream {
     uint32_t n_slots      = 0; // expert cache slots per streamed layer
@@ -246,6 +247,10 @@ struct llama_moe_stream {
     // says how many tokens the call routed, not why: with the MTP draft on, a verification ubatch
     // is several tokens and is written as kind 1.
     std::string trace_path;                // LLAMA_MOE_STREAM_TRACE, empty = off
+
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG, llama-moe-stream-statelog.h): the router's input, scores and
+    // the shared expert's output at every single-wave floor stop; null = off, and then the graph is unchanged
+    std::unique_ptr<llama_moe_stream_statelog> state_log;
     FILE *      trace_file    = nullptr;
     int64_t     trace_records = 0;         // records written since the last flush
     int64_t     trace_skipped = 0;         // calls whose routing width was not n_expert_used

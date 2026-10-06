@@ -161,6 +161,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-llama-grammar.cpp)
     llama_build_and_test(test-batch-alloc.cpp)
     llama_build_and_test(test-moe-stream-trace.cpp)
+    llama_build_and_test(test-moe-stream-statelog.cpp)
     llama_build_and_test(test-moe-stream-split.cpp)
     llama_build_and_test(test-moe-room-gemm.cpp)
     llama_build_and_test(test-moe-room-size.cpp)
@@ -357,17 +358,20 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-room-lend-model.cpp)
     llama_build(test-moe-stream-lookahead-all.cpp)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
+    llama_build(test-moe-stream-statelog-model.cpp)
     llama_build(test-moe-stream-c2.cpp)
     foreach (E64_NGL 99 0)
-        llama_test(
-            test-moe-stream-lookahead-depth2
-            NAME test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL}
-            LABEL main
-            ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64l4.gguf" -ngl ${E64_NGL}
-        )
-        set_tests_properties(test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL} PROPERTIES
-            FIXTURES_REQUIRED generate-models-e64l4
-        )
+        foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-statelog-model)
+            llama_test(
+                ${E64_TEST}
+                NAME ${E64_TEST}-qwen4exp-ngl${E64_NGL}
+                LABEL main
+                ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64l4.gguf" -ngl ${E64_NGL}
+            )
+            set_tests_properties(${E64_TEST}-qwen4exp-ngl${E64_NGL} PROPERTIES
+                FIXTURES_REQUIRED generate-models-e64l4
+            )
+        endforeach()
     endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
              test-moe-stream-c2)

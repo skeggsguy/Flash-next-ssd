@@ -1,5 +1,6 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
+#include "llama-moe-stream-statelog.h"
 #include "llama-moe-room.h"
 
 #include "llama-impl.h"
@@ -65,6 +66,12 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
         trace_path = s;
     }
 
+    // the state log: what each floor's router saw and said, and the shared expert's output (format on
+    // llama_moe_stream_statelog). Read here, before any graph is built: the graph asks whether it is on.
+    if (const char * s = llama_moe_stream_state_log_env()) {
+        state_log = std::make_unique<llama_moe_stream_statelog>(s, n_layer);
+    }
+
     // MUST be read here and not in open_files: create_cache_tensor decides whether to allocate the
     // GPU residency table, and it runs while the model's tensors are being loaded - long before
     // open_files. Parsing this late silently disabled the whole feature.
@@ -109,6 +116,7 @@ llama_moe_stream::~llama_moe_stream() {
     }
     // after the workers are gone, so nothing can append to a closed file
     trace_close();
+    state_log.reset();
 }
 
 int64_t llama_moe_stream::n_streamed_layers() const {

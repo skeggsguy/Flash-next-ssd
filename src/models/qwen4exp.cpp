@@ -1767,25 +1767,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
 
-    ggml_tensor * moe_out =
-        build_moe_ffn(cur,
-            model.layers[il].ffn_gate_inp,
-            model.layers[il].ffn_up_exps,
-            model.layers[il].ffn_gate_exps,
-            model.layers[il].ffn_down_exps,
-            nullptr,
-            n_expert, n_expert_used,
-            LLM_FFN_SILU, true,
-            hparams.expert_weights_scale,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-            nullptr, model.layers[il].ffn_gate_up_exps,
-            model.layers[il].ffn_up_exps_s,
-            model.layers[il].ffn_gate_exps_s,
-            model.layers[il].ffn_down_exps_s);
-    cb(moe_out, "ffn_moe_out", il);
-
     // shared experts, as in the Qwen3Next reference
-    if (model.layers[il].ffn_up_shexp != nullptr) {
+    const auto build_shexp = [&]() {
         ggml_tensor * ffn_shexp =
             build_ffn(cur,
                 model.layers[il].ffn_up_shexp, NULL, model.layers[il].ffn_up_shexp_s,
@@ -1804,7 +1787,39 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
 
         ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
         cb(ffn_shexp, "ffn_shexp_gated", il);
+        return ffn_shexp;
+    };
 
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG) reads the shared expert's output at the floor stop, so with it
+    // on the shared expert is built first and handed over; off, the graph is built exactly as before
+    ggml_tensor * ffn_shexp = nullptr;
+    if (model.layers[il].ffn_up_shexp != nullptr && moe_stream_state_log_on()) {
+        ffn_shexp = build_shexp();
+        moe_stream_shexp = ffn_shexp;
+    }
+
+    ggml_tensor * moe_out =
+        build_moe_ffn(cur,
+            model.layers[il].ffn_gate_inp,
+            model.layers[il].ffn_up_exps,
+            model.layers[il].ffn_gate_exps,
+            model.layers[il].ffn_down_exps,
+            nullptr,
+            n_expert, n_expert_used,
+            LLM_FFN_SILU, true,
+            hparams.expert_weights_scale,
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+            nullptr, model.layers[il].ffn_gate_up_exps,
+            model.layers[il].ffn_up_exps_s,
+            model.layers[il].ffn_gate_exps_s,
+            model.layers[il].ffn_down_exps_s);
+    cb(moe_out, "ffn_moe_out", il);
+    moe_stream_shexp = nullptr;
+
+    if (model.layers[il].ffn_up_shexp != nullptr) {
+        if (ffn_shexp == nullptr) {
+            ffn_shexp = build_shexp();
+        }
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
     } else {
