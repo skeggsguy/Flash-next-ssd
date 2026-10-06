@@ -4,6 +4,7 @@
 
 #include "llama-impl.h"
 
+#include <cerrno>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -125,14 +126,30 @@ void llama_moe_stream_statelog::put(int32_t il, uint32_t n_slip_want, const ggml
             ggml_fp32_to_fp16_row(src, (ggml_fp16_t *) p, t->ne[0]); // p is 2-aligned: the head is 12 bytes
             p += sizeof(ggml_fp16_t)*t->ne[0];
         }
-        fwrite(rec.data(), 1, rec.size(), file);
+        // stdio buffers the record; a full drive surfaces when the buffer is written, as a short fwrite or ferror
+        if (fwrite(rec.data(), 1, rec.size(), file) != rec.size() || ferror(file)) {
+            fail_locked("writing a record");
+            return;
+        }
         n_records++;
     }
     // flushed now and then, so a server killed mid-run leaves a readable file
     if ((since_flush += n_rows) >= 1024) {
-        fflush(file);
         since_flush = 0;
+        if (fflush(file) != 0 || ferror(file)) {
+            fail_locked("flushing");
+        }
     }
+}
+
+void llama_moe_stream_statelog::fail_locked(const char * what) {
+    const int err = errno;
+    LLAMA_LOG_ERROR("%s: moe stream: state log %s: %s failed (%s) after %" PRId64 " records - the log is off from "
+                    "here, the file keeps what was written\n",
+            __func__, path.c_str(), what, strerror(err), n_records);
+    fclose(file);
+    file   = nullptr;
+    failed = true;
 }
 
 void llama_moe_stream_remap_log(ggml_tensor * dst, int ith, int nth, void * userdata) {

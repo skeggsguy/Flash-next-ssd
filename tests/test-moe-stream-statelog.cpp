@@ -12,6 +12,7 @@
 #include "../src/llama-moe-stream.h"
 #include "../src/llama-moe-stream-statelog.h"
 
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 static std::string tmp_path(const std::string & name) {
@@ -226,6 +228,48 @@ int main(int argc, char ** argv) {
         log->put(1, 2, T.ids(2, { 0, 1 }), T.f32(4, 1, 0), T.f32(3, 1, 0), T.f32(3, 1, 0));
         t.assert_equal("nothing recorded", (int64_t) 0, log->n_records);
         t.assert_true("no file", !exists(path));
+    });
+
+    t.test("a_full_drive_turns_the_log_off", [&](testing & t) {
+        // the drive fills: with SIGXFSZ ignored, a write past RLIMIT_FSIZE fails with EFBIG, as ENOSPC would.
+        // The failure surfaces where stdio writes: at the flush every 1,024 records when the records are small
+        // (38 bytes here), and inside an fwrite when the library's real records (11,296 bytes) fill the 4 MB
+        // buffer first. Both paths must turn the log off.
+        struct rlimit was;
+        getrlimit(RLIMIT_FSIZE, &was);
+        struct rlimit cap = was;
+        cap.rlim_cur = 16*1024;
+        signal(SIGXFSZ, SIG_IGN);
+        setrlimit(RLIMIT_FSIZE, &cap);
+        for (const int64_t width : { 4, 2560 }) {
+            const std::string what = width == 4 ? " (small records: the flush)" : " (the library's records: an fwrite)";
+            const std::string path = tmp_path("full" + std::to_string(width));
+            remove(path.c_str());
+            auto log = std::make_unique<llama_moe_stream_statelog>(path, 4);
+            tensors T;
+            ggml_tensor * ids = T.ids(width == 4 ? 2 : 10, std::vector<int32_t>(width == 4 ? 2 : 10, 1));
+            ggml_tensor * sc  = T.f32(width == 4 ? 3 : 512, 1, 0);
+            ggml_tensor * cur = T.f32(width, 1, 0);
+            ggml_tensor * sh  = T.f32(width, 1, 0);
+            int64_t n = 0;
+            for (; n < 1024 && !log->failed; n++) {
+                log->put(0, (uint32_t) ids->ne[0], ids, sc, cur, sh);
+            }
+            const int64_t handed = log->n_records;
+            t.assert_true("the failed write turned the log off" + what, log->failed);
+            t.assert_true(width == 4 ? "at the flush, not before" : "inside an fwrite, before the flush",
+                    width == 4 ? n == 1024 : n < 1024);
+            log->put(1, (uint32_t) ids->ne[0], ids, sc, cur, sh);
+            t.assert_equal("nothing taken after it" + what, handed, log->n_records);
+            log.reset();
+
+            reader r;
+            t.assert_true("the file keeps what landed before the drive filled" + what, r.load(path) && r.bytes.size() > 40);
+            t.assert_true("and nothing past the cap" + what, r.bytes.size() <= 16*1024);
+            remove(path.c_str());
+        }
+        setrlimit(RLIMIT_FSIZE, &was);
+        signal(SIGXFSZ, SIG_DFL);
     });
 
     return t.summary();

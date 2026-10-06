@@ -39,7 +39,8 @@
 // A floor's records are written in row order, floors in the order they run, so the records of one call are
 // contiguous. The last floor of a read-in sees only the rows that produce output, so it is not logged when it
 // sees fewer rows than its call has; writing (every row an output) logs every floor. The graph's warmup pass
-// (a slip of every book) is skipped. A server killed mid-run leaves a truncated last record: drop it.
+// (a slip of every book) is skipped. A server killed mid-run leaves a truncated last record: drop it. A write that
+// fails (the drive full) closes the log and says so once in the server log; what was written before stays readable.
 struct llama_moe_stream_statelog {
     static constexpr uint32_t VERSION      = 1;
     static constexpr uint32_t HEADER_BYTES = 40;
@@ -64,11 +65,11 @@ struct llama_moe_stream_statelog {
     int64_t n_records = 0;
     int64_t n_calls   = 0;
     int64_t n_skipped = 0; // stops whose slip was not n_slip wide (the warmup sweep) or whose shapes disagree
+    bool    failed    = false; // could not open, or a write failed (the drive full): off from then on, said once
 
 private:
     std::mutex mtx;
     FILE *     file   = nullptr;
-    bool       failed = false;   // could not open: off from then on
     uint32_t   n_slip = 0, n_cur = 0, n_scores = 0, n_shexp = 0; // fixed by the first record
     int64_t    call    = -1;
     int32_t    last_il = INT32_MAX;
@@ -76,6 +77,7 @@ private:
     std::vector<uint8_t> rec;    // scratch: one record
 
     bool open_locked(uint32_t n_slip, uint32_t n_cur, uint32_t n_scores, uint32_t n_shexp);
+    void fail_locked(const char * what); // a write failed: close, say so once, and stay off
 };
 
 // LLAMA_MOE_STREAM_STATE_LOG, read where the book manager reads its other switches; empty = off

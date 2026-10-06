@@ -8,12 +8,15 @@
 //   - off writes no file; on, the file holds one record per word per streamed floor of every single-wave call;
 //   - each record's router scores, router input (the floor's second hc_mixed: the FFN's, after attention's) and
 //     shared expert output are the f16 of what the graph computed (caught by the eval callback), its slip is the
-//     top n_expert_used of those scores, and a second run without the callback writes the same file.
+//     top n_expert_used of those scores, and a second run without the callback writes the same file;
+//   - that second run guesses two floors ahead (LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2) and fetches books by it: the
+//     logging op still runs the lookahead it replaced.
 
 #include "test-moe-room-model.h"
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 
 #include <unistd.h>
 
@@ -188,6 +191,8 @@ int main(int argc, char ** argv) {
     remove(path_nocb.c_str());
 
     unsetenv(g_env);
+    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD"); // the lookahead at its default width, as in every rung
+    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2");
     std::vector<float> ref, off, on, nocb;
     std::vector<decode_cap> c_ref, c_off, c_on;
     check(run_script(ref_model, ref, &c_ref), "no streaming: the words ran");
@@ -217,13 +222,25 @@ int main(int argc, char ** argv) {
         check(run_script(m_on, on, &c_on), "log on: the words ran");
         llama_model_free(m_on); // closes the log
     }
+    // the second run with the log on also guesses two floors ahead: the logging op must still hand the lookahead
+    // its logits (its fifth input), or the log would silently cost every rung's prefetch
     setenv(g_env, path_nocb.c_str(), 1);
+    setenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2", "4", 1);
     llama_model * m_nocb = load(c);
+    int64_t la2_issued = 0;
     if (m_nocb) {
-        check(run_script(m_nocb, nocb, nullptr), "log on, no eval callback: the words ran");
+        check(run_script(m_nocb, nocb, nullptr), "log on, no eval callback, two floors ahead: the words ran");
+        {
+            llama_moe_stream * ms = m_nocb->moe_stream();
+            std::unique_lock<std::mutex> lk(ms->mtx);
+            la2_issued = ms->stats.n_la2_issued;
+        }
         llama_model_free(m_nocb);
     }
+    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2");
     unsetenv(g_env);
+    check(la2_issued > 0, "the logging stop still runs the lookahead: " + std::to_string(la2_issued) +
+            " books fetched two floors ahead with the log on");
 
     check(!g_cap_bad, "every caught tensor was a contiguous F32");
     check(nonzero(ref) && nonzero(all_moe(c_ref)), "the reference logits and MoE outputs carry signal");
