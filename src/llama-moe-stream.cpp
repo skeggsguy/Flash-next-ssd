@@ -79,6 +79,9 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
         gpu_slot = std::max(0, atoi(s));
     }
 
+    // the keep rule (llama-moe-stream-keep.cpp); the GPU slot servicer picks victims without it
+    la_keep = gpu_slot == 0 && llama_moe_stream_lookahead_keep_env();
+
     if (const char * s = std::getenv("LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB")) {
         alloc_chunk_bytes = (size_t) std::max<int64_t>(0, std::atoll(s)) << 20;
     }
@@ -189,6 +192,9 @@ ggml_tensor * llama_moe_stream::create_cache_tensor(
         sl->seen         .resize(n_expert, 0);
         sl->keep         .resize(n_slots, 0);
         sl->slot_of      .resize(n_expert, -1);
+        sl->slot_la1     .resize(n_slots, -1);
+        sl->slot_la2     .resize(n_slots, -1);
+        sl->slot_kept    .resize(n_slots, 0);
 
         if (gpu_slot) {
             if (!ctx_state) {
@@ -295,12 +301,14 @@ void llama_moe_stream::alloc_bufs(bool no_alloc) {
 }
 
 // least valuable evictable slot: empty first, then coldest resident (min route hotness, oldest use
-// as tiebreak); LOADING and keep slots are never candidates. returns -1 when no candidate exists
-int32_t llama_moe_stream::pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep) const {
+// as tiebreak); LOADING and keep slots are never candidates, nor with spare_kept a guessed book whose floor
+// has not stopped (the keep rule, llama-moe-stream-keep.cpp). returns -1 when no candidate exists
+int32_t llama_moe_stream::pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep, bool spare_kept) const {
     int32_t v = -1;
+    spare_kept = spare_kept && sl.slot_kept.size() == (size_t) sl.n_slots;
 
     for (uint32_t s = 0; s < sl.n_slots; s++) {
-        if ((keep && keep[s]) || sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
+        if ((keep && keep[s]) || sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING || (spare_kept && sl.slot_kept[s])) {
             continue;
         }
         if (sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_EMPTY) {
@@ -332,6 +340,7 @@ int32_t llama_moe_stream::pick_victim_locked(llama_moe_stream_layer & sl, const 
 // bind expert -> slot and mark it LOADING: evict the slot's prior occupant, bump slot_gen (so any
 // in-flight load for the old occupant is recognized as stale), and update the expert_slot index
 void llama_moe_stream::reserve_slot_locked(llama_moe_stream_layer & sl, int32_t expert, int32_t slot) {
+    keep_forget_locked(sl, slot); // a guess's tags never outlive its book in the slot
     if (sl.slot_expert[slot] >= 0) {
         if (debug) {
             LLAMA_LOG_DEBUG("%s: layer %d: evict expert %d from slot %d\n", __func__, sl.il, sl.slot_expert[slot], slot);

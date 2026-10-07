@@ -110,6 +110,12 @@ struct llama_moe_stream_layer {
     std::vector<int64_t>                 slot_last_use; // [n_slots] LRU stamps
     std::unordered_map<int32_t, int32_t> expert_slot;   // RESIDENT and LOADING entries
     std::vector<int32_t>                 slot_la2;      // [n_slots] book a two-floors-ahead fetch put here, -1 none
+    std::vector<int32_t>                 slot_la1;      // [n_slots] book a one-floor-ahead guess put here, -1 none
+    // [n_slots] a guessed book whose floor has not stopped yet (llama-moe-stream-keep.cpp): 0 none, 1 guessed one
+    // floor ahead, 2 two floors ahead. Set at the guess, cleared at the floor's stop or when the slot is reused;
+    // with LLAMA_MOE_STREAM_LOOKAHEAD_KEEP the victim rule spares it
+    std::vector<uint8_t>                 slot_kept;
+    int32_t                              n_slot_kept = 0; // slots with slot_kept set, so a stop with none skips the sweep
 
     std::vector<uint32_t> route_hotness; // [n_expert] decayed selection counts, for eviction
     std::vector<uint8_t>  seen;          // [n_expert] for cold-miss attribution

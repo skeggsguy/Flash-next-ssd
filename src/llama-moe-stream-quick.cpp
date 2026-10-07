@@ -20,9 +20,10 @@
 //     on the next graph (the floor before it guesses for it), by which time the scheduler has waited for
 //     this graph's GPU work to finish. The lock never covered the GPU's read; the order of the ops does.
 //   - What it writes without the lock is graph-thread data that no runner touches: the call counter, the
-//     route hotness and its decay, the hit counters, the LRU stamps, slot_la2, the borrowing log (all of them
-//     are read by other threads only from print_stats, between decodes). Each is updated exactly as the
-//     locked path updates it, in the same order, so the desk (hotness, LRU, eviction choices) is identical.
+//     route hotness and its decay, the hit counters, the LRU stamps, the guesses' tags and kept flags (slot_la1,
+//     slot_la2, slot_kept), the borrowing log (all of them are read by other threads only from print_stats,
+//     between decodes). Each is updated exactly as the locked path updates it, in the same order, so the desk
+//     (hotness, LRU, eviction choices) is identical.
 //   - What the locked path does that the quick path skips, and why each is a no-op or moves elsewhere:
 //     the stats dump (the quick path steps aside when one is due, so the locked path does it), starting the
 //     runners (already started, or the quick path steps aside), the load-failed check (a failed load never
@@ -64,19 +65,26 @@ void llama_moe_stream::c2_init() {
     }
 }
 
-// the remap's last step, shared by both paths: each pick's slot, its LRU stamp, and the two-floors-ahead count
+// the remap's last step, shared by both paths: each pick's slot, its LRU stamp, the guesses' "used" counts,
+// and the end of the floor's stop: its guessed books are no longer kept (llama-moe-stream-keep.cpp)
 void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n) {
     auto * mgr = sl.mgr;
     mgr->n_one_lookup += mgr->one_lookup;
+    const bool tagged = sl.slot_la1.size() == (size_t) sl.n_slots && sl.slot_la2.size() == (size_t) sl.n_slots;
     for (int64_t i = 0; i < n; i++) {
         const int32_t s = mgr->one_lookup ? sl.slot_of[ids[i]] : sl.expert_slot.at(ids[i]);
         sl.slot_last_use[s] = ++sl.use_counter;
         out[i] = s;
-        if (!sl.slot_la2.empty() && sl.slot_la2[s] == ids[i]) {
+        if (tagged && sl.slot_la2[s] == ids[i]) {
             sl.slot_la2[s] = -1; // a two-floors-ahead fetch, read by its floor
             mgr->stats.n_la2_used++;
         }
+        if (tagged && sl.slot_la1[s] == ids[i]) {
+            sl.slot_la1[s] = -1; // a one-floor-ahead guess, read by its floor
+            mgr->stats.n_la1_used++;
+        }
     }
+    llama_moe_stream_keep_release(sl);
 }
 
 // The quick path (see the top of the file). Returns false, having changed nothing the locked path reads,

@@ -28,6 +28,11 @@ struct llama_moe_stream_stats {
     int64_t n_preload_ready  = 0; // wave experts already resident from the previous preload
     int64_t n_la2_issued     = 0; // books fetched two floors ahead (LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2)
     int64_t n_la2_used       = 0; // of those, read by their floor while still in their slot
+    int64_t n_la1_issued     = 0; // books fetched one floor ahead by the lookahead's guess
+    int64_t n_la1_used       = 0; // of those, read by their floor while still in their slot
+    int64_t n_la1_put_back   = 0; // one-floor guesses put back unread before their floor stopped
+    int64_t n_la2_put_back   = 0; // two-floor guesses put back unread before their floor stopped
+    int64_t n_keep_forced    = 0; // LLAMA_MOE_STREAM_LOOKAHEAD_KEEP: a floor's own need took a kept slot rather than wait
 
     // Decode has no waves, so n_preload_ready above is unreachable there and reads as 0 - it
     // cannot say whether the lookahead prefetch is working. These two split a demand HIT by the

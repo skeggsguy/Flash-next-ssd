@@ -2005,9 +2005,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     n_la++;
                 }
                 if (n_la > 0) {
-                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers%s%s\n", __func__, k, n_la,
+                    LLAMA_LOG_WARN("%s: MoE lookahead prefetch: top-%u on %u layers%s%s%s\n", __func__, k, n_la,
                             llama_moe_stream_lookahead_all_env() ? ", every token of a small batch" : "",
-                            llama_moe_stream_lookahead_depth2_env() > 0 ? ", and two floors ahead" : "");
+                            llama_moe_stream_lookahead_depth2_env() > 0 ? ", and two floors ahead" : "",
+                            pimpl->moe_stream->la_keep ? ", kept until their floor stops" : "");
                 }
             }
         }
