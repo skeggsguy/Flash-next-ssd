@@ -23,7 +23,9 @@
 // always has (the backlog, the slots a guess may take). Unset, "" or "0": each word's top_k2 books by z, rank by
 // rank, as the untrained guess picks them.
 //
-// Unset GUESSER: today's graph and pick exactly (CONF alone refuses to start: it reads the guesser's scores).
+// Unset GUESSER: today's graph and pick exactly (CONF alone refuses to start: it reads the guesser's scores). A model
+// with no lookahead at all (the apprentice's sidecar: one streamed floor, opened with the library's switches) loads
+// with GUESSER set and nothing attached; a library whose lookahead guesses one floor only (DEPTH2 unset) refuses.
 // Words never change either way: a guess only says which books are fetched, and when.
 
 #include "ggml-cpp.h"

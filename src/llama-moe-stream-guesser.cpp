@@ -231,6 +231,24 @@ void llama_moe_stream_guesser_attach(llama_moe_stream & ms, const std::vector<co
     if (no_alloc) {
         return; // sizing only: no bytes to read
     }
+    // The switch is read by every model the server opens with the library's settings, the apprentice's sidecar
+    // too (one streamed floor, so no lookahead at all): that one has no guess to serve, and is left untouched
+    // rather than refused, or the apprentice could never sit beside the trained guess. A library whose lookahead
+    // is on but guesses one floor only (LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 unset) is refused, before the file is read.
+    bool any_la = false, any_two = false;
+    for (const auto & sl : ms.layers) {
+        any_la  = any_la  || (sl && sl->la);
+        any_two = any_two || (sl && sl->la && sl->la->sl_next2);
+    }
+    if (!any_la) {
+        LLAMA_LOG_WARN("%s: moe stream: two-floor guess: the trained guesser %s is not loaded here: no floor guesses ahead "
+                "(one streamed floor, or LLAMA_MOE_STREAM_LOOKAHEAD=0)\n", __func__, path);
+        return;
+    }
+    if (!any_two) {
+        throw std::runtime_error(format("the trained guesser %s serves no floor: it is the two-floor guess, so it needs "
+                "LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 and the lookahead on", path));
+    }
     // floor n's guesser shares its router's device (the mtp word list's rule, llama-mtp-vocab.cpp)
     auto buft_of = [&](int32_t n) -> ggml_backend_buffer_type_t {
         const ggml_tensor * r = (size_t) n < routers.size() ? routers[n] : nullptr;
@@ -271,8 +289,8 @@ void llama_moe_stream_guesser_attach(llama_moe_stream & ms, const std::vector<co
         }
     }
     if (n_on == 0) {
-        throw std::runtime_error(format("the trained guesser %s serves no floor: it is the two-floor guess, so it needs "
-                "LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 and the lookahead on", path));
+        throw std::runtime_error(format("the trained guesser %s serves no floor: its floors %d..%d are none of the "
+                "library's two-floor guesses", path, g->first, g->last));
     }
     char pick[96];
     if (cut > 0.0f) {

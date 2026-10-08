@@ -351,9 +351,16 @@ int main(int argc, char ** argv) {
                     f.sl(0)->la->conf_cut == 0.0f && f.sl(0)->la->top_k2 == 4);
         }
         {
-            floors f(2); // no floor has a two-floor guess
+            floors f(2); // the lookahead is on, one floor ahead only (DEPTH2 unset): no floor has a two-floor guess
             t.assert_true("a guesser serving no floor refuses",
                     throws([&] { llama_moe_stream_guesser_attach(*f.mgr, routers, 8, 4, false); }, "serves no floor"));
+        }
+        {
+            floors f(1); // the apprentice's sidecar: one streamed floor, so no lookahead at all, opened with the
+                         // library's switches (common_init_from_params passes them on)
+            llama_moe_stream_guesser_attach(*f.mgr, routers, 8, 4, false);
+            t.assert_true("a model with no lookahead loads untouched, with nothing attached (the apprentice beside the "
+                    "trained guess)", f.mgr->guesser == nullptr && f.sl(0)->la == nullptr && f.sl(0)->la_guess == nullptr);
         }
         {
             floors f(4, /*gpu_slot =*/ 3);
