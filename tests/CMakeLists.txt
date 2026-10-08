@@ -165,6 +165,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-moe-stream-split.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
+    # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
+    # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
+    llama_build_and_test(test-moe-stream-guesser.cpp)
     llama_build_and_test(test-moe-room-gemm.cpp)
     llama_build_and_test(test-moe-room-size.cpp)
     llama_build_and_test(test-moe-room-belt.cpp)
@@ -361,10 +364,12 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-stream-lookahead-all.cpp)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
     llama_build(test-moe-stream-lookahead-keep.cpp)
+    llama_build(test-moe-stream-lookahead-guesser.cpp)
     llama_build(test-moe-stream-statelog-model.cpp)
     llama_build(test-moe-stream-c2.cpp)
     foreach (E64_NGL 99 0)
-        foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-lookahead-keep test-moe-stream-statelog-model)
+        foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-lookahead-keep test-moe-stream-lookahead-guesser
+                 test-moe-stream-statelog-model)
             llama_test(
                 ${E64_TEST}
                 NAME ${E64_TEST}-qwen4exp-ngl${E64_NGL}
@@ -376,7 +381,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             )
         endforeach()
         # the keep rule's hang trap (a floor waiting on a desk full of kept books) shows as a hang: fail it fast
-        set_tests_properties(test-moe-stream-lookahead-keep-qwen4exp-ngl${E64_NGL} PROPERTIES TIMEOUT 300)
+        set_tests_properties(test-moe-stream-lookahead-keep-qwen4exp-ngl${E64_NGL} test-moe-stream-lookahead-guesser-qwen4exp-ngl${E64_NGL}
+                PROPERTIES TIMEOUT 300)
     endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
              test-moe-stream-c2)

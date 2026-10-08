@@ -43,6 +43,7 @@ bool moe_stream_partition();
 
 struct llama_moe_room;
 struct llama_moe_stream_statelog;
+struct llama_moe_stream_guesser;
 
 struct llama_moe_stream {
     uint32_t n_slots      = 0; // expert cache slots per streamed layer
@@ -289,6 +290,8 @@ struct llama_moe_stream {
     // until its own floor's stop. Off (unset or "0"), the desk chooses exactly as before; the tags and counters
     // below are recorded either way, so an off arm reports its put-back books too.
     bool la_keep = false;
+    // the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, llama-moe-stream-guesser.h), null = off
+    std::unique_ptr<llama_moe_stream_guesser> guesser;
     int32_t pick_victim_need_locked(llama_moe_stream_layer & sl, const uint8_t * keep); // a floor's own need
     void keep_mark_locked(llama_moe_stream_layer & sl, int32_t slot, int32_t book, bool two_ahead); // at a guess
     void keep_forget_locked(llama_moe_stream_layer & sl, int32_t slot); // the slot is reused (reserve_slot_locked)

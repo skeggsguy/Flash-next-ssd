@@ -20,14 +20,19 @@
 // (llama-moe-room-lend-ops.cpp) a guess keeps the book it puts back and is copied back from the belt
 // when its book is there; the guesses' keeps are copied out by the next floor's remap op, or by the
 // guess's own worker at its gate, whichever comes first.
-// the top_k predicted books of one token's row of next-floor logits, most likely first
+// the top_k predicted books of one token's row of next-floor logits, most likely first; raw: the trained guesser's
+// scores, ranked as they are
 static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, const float * logits,
-        std::vector<int32_t> & picks, uint32_t n, const std::vector<float> & bias, uint32_t top_k) {
+        std::vector<int32_t> & picks, uint32_t n, const std::vector<float> & bias, uint32_t top_k, bool raw = false) {
     picks.clear();
     la->score.resize(n);
     for (uint32_t e = 0; e < n; e++) {
         // same selection rule as build_moe_ffn for this arch: sqrt(softplus(x)) then the bias
         const float x = logits[e];
+        if (raw) {
+            la->score[e] = x;
+            continue;
+        }
         float p = x > 20.0f ? x : log1pf(expf(x));   // softplus, guarded for large x
         p = sqrtf(p);
         la->score[e] = p + (bias.empty() ? 0.0f : bias[e]);
@@ -109,9 +114,18 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
     }
     const uint32_t n2 = la->sl_next2->n_expert;
     const int64_t first = (n_tok > 1 && n_tok <= 16 && la->all) ? 0 : n_tok - 1;
+    auto & st = la->sl_next2->mgr->stats; // the guesser's counts: graph thread only (llama-moe-stream-stats.h)
+    if (la->guessed && la->conf_cut > 0.0f) { // by the trained guesser's confidence (llama-moe-stream-guesser.h)
+        llama_moe_stream_guess_pick(rows + n1, stride, first, n_tok, n2, la->conf_cut, la->conf_scale, la->conf_max,
+                LLAMA_MOE_STREAM_GUESS_PER_WORD, books, la->conf_scratch, st.n_guess_under);
+        st.n_guess_stops++;
+        st.n_guess_words  += n_tok - first;
+        st.n_guess_picked += (int64_t) books.size();
+        return;
+    }
     std::vector<std::vector<int32_t>> picks((size_t) n_tok);
     for (int64_t t = first; t < n_tok; t++) {
-        llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2);
+        llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2, la->guessed);
     }
     std::vector<uint8_t> seen(n2, 0);
     books.clear();
@@ -123,6 +137,11 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
                 books.push_back(e);
             }
         }
+    }
+    if (la->guessed) {
+        st.n_guess_stops++;
+        st.n_guess_words  += n_tok - first;
+        st.n_guess_picked += (int64_t) books.size();
     }
 }
 

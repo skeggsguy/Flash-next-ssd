@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h"
+#include "llama-moe-stream-guesser.h"
 
 #include <cstdint>
 #include <memory>
@@ -82,6 +83,15 @@ struct llama_moe_stream_lookahead {
     ggml_tensor *            bias_src2  = nullptr;
     bool                     bias2_read = false;
     std::vector<float>       bias2;
+
+    // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER (llama-moe-stream-guesser.h): the two-floor scores are the trained
+    // guesser's z, ranked as they are (no router transform, no bias2); conf_cut > 0 (LLAMA_MOE_STREAM_LOOKAHEAD_CONF)
+    // picks by confidence instead of top_k2
+    bool                     guessed    = false;
+    float                    conf_cut   = 0.0f;
+    float                    conf_scale = 10.0f;
+    float                    conf_max   = 1.0f;
+    llama_moe_stream_guess_scratch conf_scratch;
 };
 
 struct llama_moe_stream_layer;
@@ -191,6 +201,8 @@ struct llama_moe_stream_layer {
     // build_moe_ffn can reach the NEXT layer's router without a signature change.
     ggml_tensor * la_gate_inp = nullptr;   // next layer's ffn_gate_inp
     ggml_tensor * la_gate_inp2 = nullptr;  // the layer after next's, with LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2
+    ggml_tensor * la_guess    = nullptr;   // the trained guesser's floor L+2 matrix, in place of la_gate_inp2 (GUESSER)
+    ggml_tensor * la_guess_b  = nullptr;   // and its bias
     ggml_tensor * la_bias_src = nullptr;   // next layer's exp_probs_b, may be null
     struct llama_moe_stream_lookahead * la = nullptr;
 };

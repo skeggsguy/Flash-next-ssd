@@ -132,6 +132,15 @@ void llama_moe_stream::maybe_dump_stats_locked() {
                 LLAMA_LOG_WARN("%s: moe stream: lookahead keep: forced %lld\n", __func__,
                         (long long) (stats.n_keep_forced - stats_prev.n_keep_forced));
             }
+            // the trained guesser (llama-moe-stream-guesser.h): floor stops that guessed with it, the words scored, the
+            // books handed to the issue loop, and the books of the words' 24 best left under the confidence cut
+            const int64_t d_gs = stats.n_guess_stops - stats_prev.n_guess_stops;
+            if (guesser && d_gs > 0) {
+                LLAMA_LOG_WARN("%s: moe stream: lookahead guesser: floor stops %lld, words %lld, picked %lld, under the cut %lld\n",
+                        __func__, (long long) d_gs, (long long) (stats.n_guess_words - stats_prev.n_guess_words),
+                        (long long) (stats.n_guess_picked - stats_prev.n_guess_picked),
+                        (long long) (stats.n_guess_under - stats_prev.n_guess_under));
+            }
         }
 
         if (room) {

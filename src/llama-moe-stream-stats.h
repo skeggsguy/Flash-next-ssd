@@ -33,6 +33,14 @@ struct llama_moe_stream_stats {
     int64_t n_la1_put_back   = 0; // one-floor guesses put back unread before their floor stopped
     int64_t n_la2_put_back   = 0; // two-floor guesses put back unread before their floor stopped
     int64_t n_keep_forced    = 0; // LLAMA_MOE_STREAM_LOOKAHEAD_KEEP: a floor's own need took a kept slot rather than wait
+    // the trained guesser's pick (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER): floor stops that guessed two floors ahead
+    // with it, the words it scored, the books it handed the issue loop, and (LLAMA_MOE_STREAM_LOOKAHEAD_CONF) the
+    // books in some word's 24 best that never reached the cut. Written by the lookahead on the graph thread, with or
+    // without the lock (the quick path), and read by the stats dump on the same thread.
+    int64_t n_guess_stops    = 0;
+    int64_t n_guess_words    = 0;
+    int64_t n_guess_picked   = 0;
+    int64_t n_guess_under    = 0;
 
     // Decode has no waves, so n_preload_ready above is unreachable there and reads as 0 - it
     // cannot say whether the lookahead prefetch is working. These two split a demand HIT by the

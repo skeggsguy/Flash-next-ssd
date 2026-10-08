@@ -55,6 +55,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-gpu-slot.cpp
     llama-moe-stream-io.cpp
     llama-moe-stream-keep.cpp
+    llama-moe-stream-guesser.cpp
     llama-moe-stream-remap.cpp
     llama-moe-stream-lookahead.cpp
     llama-moe-stream-quick.cpp
