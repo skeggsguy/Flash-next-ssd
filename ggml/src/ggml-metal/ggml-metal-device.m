@@ -1784,13 +1784,10 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                 GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
                 GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
                 GGML_LOG_INFO("%s: small-batch mat-vec   = up to %d columns (GGML_METAL_MV_EXT_MAX)\n", __func__, dev->props.mv_ext_max);
-                if (dev->props.staff_mv && dev->props.has_tensor) {
-                    GGML_LOG_INFO("%s: staff mat-vec (Q8_0)  = on, up to %d columns on %d+ rows (GGML_METAL_STAFF_MV)\n", __func__,
-                            ggml_metal_staff_mv_limit(dev->props.staff_mv, dev->props.has_tensor), GGML_METAL_STAFF_MV_ROWS);
-                } else if (dev->props.staff_mv) {
-                    GGML_LOG_INFO("%s: staff mat-vec (Q8_0)  = off: it needs the tensor API (GGML_METAL_STAFF_MV)\n", __func__);
-                } else {
-                    GGML_LOG_INFO("%s: staff mat-vec (Q8_0)  = off, today's route (GGML_METAL_STAFF_MV=0)\n", __func__);
+                {
+                    // again at WARN from each context's init (ggml_metal_init): a server's log callback misses this one
+                    char route[160];
+                    GGML_LOG_INFO("%s: %s\n", __func__, ggml_metal_staff_mv_route_line(route, sizeof(route), dev->props.staff_mv, dev->props.has_tensor));
                 }
 
 #if TARGET_OS_OSX || (TARGET_OS_IOS && __clang_major__ >= 15)

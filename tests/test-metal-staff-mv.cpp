@@ -15,6 +15,8 @@
 //   within F32's bound (the kernel redoes such a share in F32), and the columns beside it within half's;
 // - the bytes: a product repeated gives the same bytes, and a column's bytes do not depend on the columns
 //   beside it at the same padding (5 columns are the first 5 of 8, 9 the first 9 of 16).
+// Beside them, the route's start-up line: its three texts, and one line a context from ggml_metal_init at WARN
+// (a server installs its log callback after the device init, and shows the library's INFO only at -lv 4).
 //
 // ctest runs it with the switch unset and at "0" (today's sums, which the bound holds too).
 
@@ -32,6 +34,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Metal-internal (ggml-metal-staff-mv.h), linked from ggml-metal
@@ -39,6 +42,7 @@ extern "C" int  ggml_metal_staff_mv_parse(const char * s, bool * bad);
 extern "C" int  ggml_metal_staff_mv_limit(int staff_mv, bool has_tensor);
 extern "C" int  ggml_metal_staff_mv_min_cols(int64_t ne00);
 extern "C" bool ggml_metal_staff_mv_takes(const struct ggml_tensor * op, int limit);
+extern "C" const char * ggml_metal_staff_mv_route_line(char * buf, size_t size, int staff_mv, bool has_tensor);
 
 namespace {
 
@@ -47,8 +51,15 @@ const std::string STAFF_BASE = "kernel_mul_mv_staff_q8_0_f32_m";
 // the pipelines the Metal library compiled, from its debug log
 std::set<std::string> g_compiled;
 
+// the route's start-up lines as logged, with their level
+const char * ROUTE_KEY = "staff mat-vec (Q8_0)  = ";
+std::vector<std::pair<ggml_log_level, std::string>> g_route;
+
 void log_cb(enum ggml_log_level level, const char * text, void * user) {
     (void) user;
+    if (strstr(text, ROUTE_KEY) != nullptr) {
+        g_route.emplace_back(level, text);
+    }
     const char * key = "compiling pipeline: base = '";
     const char * p   = strstr(text, key);
     if (p != nullptr) {
@@ -240,6 +251,45 @@ void test_rule(testing & t) {
     ggml_free(ctx);
 }
 
+void test_line(testing & t) {
+    char buf[160];
+    auto line = [&](int staff_mv, bool has_tensor) {
+        return std::string(ggml_metal_staff_mv_route_line(buf, sizeof(buf), staff_mv, has_tensor));
+    };
+    t.assert_equal("on", std::string("staff mat-vec (Q8_0)  = on, up to 16 columns on 2048+ rows (GGML_METAL_STAFF_MV)"), line(1, true));
+    t.assert_equal("on without the tensor API", std::string("staff mat-vec (Q8_0)  = off: it needs the tensor API (GGML_METAL_STAFF_MV)"), line(1, false));
+    t.assert_equal("\"0\"", std::string("staff mat-vec (Q8_0)  = off, today's route (GGML_METAL_STAFF_MV=0)"), line(0, true));
+    t.assert_equal("\"0\" without the tensor API", line(0, true), line(0, false));
+    char small[12];
+    t.assert_equal("a short buffer: cut, ended", std::string("staff mat-"), std::string(ggml_metal_staff_mv_route_line(small, 11, 1, true)));
+}
+
+// the context lines (ggml_metal_init's) so far
+std::vector<std::pair<ggml_log_level, std::string>> context_lines() {
+    std::vector<std::pair<ggml_log_level, std::string>> res;
+    for (const auto & l : g_route) {
+        if (l.second.rfind("ggml_metal_init: ", 0) == 0) {
+            res.push_back(l);
+        }
+    }
+    return res;
+}
+
+void test_startup(testing & t, ggml_backend_dev_t dev, bool on) {
+    char buf[160];
+    const std::string want = std::string("ggml_metal_init: ") + ggml_metal_staff_mv_route_line(buf, sizeof(buf), on, true) + "\n";
+    auto lines = context_lines();
+    t.assert_equal("one route line from the first context", (size_t) 1, lines.size());
+    ggml_backend_t second = ggml_backend_dev_init(dev, nullptr);
+    ggml_backend_free(second);
+    lines = context_lines();
+    t.assert_equal("one more from a second context", (size_t) 2, lines.size());
+    for (const auto & l : lines) {
+        t.assert_equal("the line says the route asked for", want, l.second);
+        t.assert_true("at WARN, so a server log shows it at its default verbosity", l.first == GGML_LOG_LEVEL_WARN);
+    }
+}
+
 void test_route(testing & t, ggml_backend_t backend, bool on) {
     run(backend, { 2048, 2560, 3 });
     t.assert_true("3 columns of a mul_mv_ext shape: no staff kernel", !compiled(STAFF_BASE));
@@ -307,6 +357,7 @@ int main(int argc, char ** argv) {
 
     t.test("the switch", test_switch);
     t.test("the rule", test_rule);
+    t.test("the route line", test_line);
 
     ggml_log_set(log_cb, nullptr);
     ggml_backend_load_all();
@@ -316,6 +367,7 @@ int main(int argc, char ** argv) {
         return t.summary();
     }
     ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
+    t.test("the start-up lines", [&](testing & t) { test_startup(t, dev, on); });
     // the route first: a pipeline is compiled (and logged) only the first time it is asked for
     t.test("the route", [&](testing & t) { test_route(t, backend, on); });
     t.test("the sums", [&](testing & t) { test_sums(t, backend, on); });

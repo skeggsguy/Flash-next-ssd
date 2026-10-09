@@ -29,6 +29,21 @@ int ggml_metal_staff_mv_limit(int staff_mv, bool has_tensor) {
     return staff_mv && has_tensor ? GGML_METAL_STAFF_MV_MAX : 0;
 }
 
+const char * ggml_metal_staff_mv_route_line(char * buf, size_t size, int staff_mv, bool has_tensor) {
+    if (size == 0) {
+        return buf;
+    }
+    if (staff_mv && has_tensor) {
+        snprintf(buf, size, "staff mat-vec (Q8_0)  = on, up to %d columns on %d+ rows (GGML_METAL_STAFF_MV)",
+                ggml_metal_staff_mv_limit(staff_mv, has_tensor), GGML_METAL_STAFF_MV_ROWS);
+    } else if (staff_mv) {
+        snprintf(buf, size, "staff mat-vec (Q8_0)  = off: it needs the tensor API (GGML_METAL_STAFF_MV)");
+    } else {
+        snprintf(buf, size, "staff mat-vec (Q8_0)  = off, today's route (GGML_METAL_STAFF_MV=0)");
+    }
+    return buf;
+}
+
 int ggml_metal_staff_mv_min_cols(int64_t ne00) {
     return ne00 % 128 == 0 ? GGML_METAL_STAFF_MV_MIN_EXT : 2;
 }

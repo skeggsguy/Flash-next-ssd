@@ -17,7 +17,9 @@
 //   GGML_METAL_STAFF_MV unset or "1"   on (when the device has the Metal 4 tensor API, M5 on)
 //   GGML_METAL_STAFF_MV=0              today's route (mul_mv_ext, mul_mm past its limit)
 //
-// Read once at device init (ggml_metal_device_props.staff_mv); the startup line says which.
+// Read once at device init (ggml_metal_device_props.staff_mv). The start-up line says which: at INFO from the
+// device init, and again at WARN from each context's init (ggml_metal_init), since a server installs its log
+// callback after the device init and shows the library's INFO only at -lv 4.
 
 #pragma once
 
@@ -42,6 +44,11 @@ int ggml_metal_staff_mv_parse(const char * s, bool * bad);
 // the most columns the staff mat-vec takes: 0 when the switch is off or the device has no tensor API (the
 // kernel is matmul2d's), else GGML_METAL_STAFF_MV_MAX
 int ggml_metal_staff_mv_limit(int staff_mv, bool has_tensor);
+
+// the route's start-up line, without a "name: " prefix or newline: "staff mat-vec (Q8_0)  = on, up to 16 columns
+// on 2048+ rows (GGML_METAL_STAFF_MV)", "... = off: it needs the tensor API (...)" or "... = off, today's route
+// (GGML_METAL_STAFF_MV=0)" (the study's gates and rungs grep for these); written into buf, cut to size; returns buf
+const char * ggml_metal_staff_mv_route_line(char * buf, size_t size, int staff_mv, bool has_tensor);
 
 // the fewest columns for rows of ne00 values: GGML_METAL_STAFF_MV_MIN_EXT where mul_mv_ext takes the product
 // (ne00 a multiple of 128), else 2
