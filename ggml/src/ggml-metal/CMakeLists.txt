@@ -14,6 +14,7 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-fusion.cpp
                          ggml-metal-fusion-fn.cpp
                          ggml-metal-mv-ext.cpp
+                         ggml-metal-staff-mv.cpp
                          ggml-metal-ops.cpp
                          ggml-metal-ops-fn.cpp
                          ggml-metal-tuning.cpp
@@ -37,6 +38,7 @@ set(METALLIB_KERNELS_QUANTIZE   "${CMAKE_CURRENT_SOURCE_DIR}/kernels/quantize.h"
 set(METALLIB_KERNEL_SOURCES
     kernels/fa.metal
     kernels/mul_mv.metal
+    kernels/mul_mv_staff.metal
     kernels/mul_mm.metal
     kernels/quantize.metal
     kernels/softmax.metal

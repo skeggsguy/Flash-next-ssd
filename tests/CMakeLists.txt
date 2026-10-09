@@ -212,6 +212,16 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             llama_test(test-metal-mv-ext NAME test-metal-mv-ext-${MX})
             set_tests_properties(test-metal-mv-ext-${MX} PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=${MX}")
         endforeach()
+        # STAFF-MATRIX-PLAN step 2 (#23): with the staff mat-vec at "0", Q8_0's 11-16 columns on 4,096+ rows are mul_mm's
+        llama_test(test-metal-mv-ext NAME test-metal-mv-ext-16-staff0)
+        set_tests_properties(test-metal-mv-ext-16-staff0 PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=16;GGML_METAL_STAFF_MV=0")
+        # STAFF-MATRIX-PLAN step 2 (#23): the staff's Q8_0 mat-vec on the matrix units for 2-16 columns,
+        # GGML_METAL_STAFF_MV unset (on) and 0
+        llama_build(test-metal-staff-mv.cpp)
+        target_link_libraries(test-metal-staff-mv PRIVATE ggml-metal)
+        llama_test(test-metal-staff-mv NAME test-metal-staff-mv-on)
+        llama_test(test-metal-staff-mv NAME test-metal-staff-mv-0)
+        set_tests_properties(test-metal-staff-mv-0 PROPERTIES ENVIRONMENT "GGML_METAL_STAFF_MV=0")
         # #10b step 1.2: GGML_METAL_KPROF's node map names each node's first source (staff vs the rest), on and off
         llama_build(test-metal-kprof.cpp)
         foreach (KP 1 0)

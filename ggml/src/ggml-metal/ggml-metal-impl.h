@@ -121,6 +121,8 @@
 #define FC_FUSION_FN                   1900 // fix 2 (GGML_METAL_FUSION_FN): merged steps in existing kernels
 
 // op-specific constants
+#define OP_MUL_MV_STAFF_NSG 4 // #23 (GGML_METAL_STAFF_MV): simdgroups splitting a row's blocks, kernels/mul_mv_staff.metal
+
 #define OP_FLASH_ATTN_EXT_NQPSG 8
 #define OP_FLASH_ATTN_EXT_NCPSG 64
 
