@@ -13,8 +13,11 @@
 //   copied:   on, a seq copied with seq_cp shares the source's undo slots and inherits their reach: n refused,
 //             n - 1 taken, and its rolled-back summary and replay are the source's.
 //   copies:   the graph's copies into the summaries for one round, counted through cb_eval: with the
-//             switch on they no longer depend on the ceiling (n_rs_seq 5 against 10), off they do, and a
-//             round of K or more tokens writes the same with both.
+//             switch on the state's and the PLE conv history's no longer depend on the ceiling (n_rs_seq 5
+//             against 10), off they do, and a round of K or more tokens writes the same with both. The
+//             delta-net conv history (cache_r_l) is written exactly as off at every round and ceiling:
+//             without those copies Metal's graph order and rounding change and the real model's words with
+//             them (llama-rs-skip.h), which no generated model's words show.
 //
 // The generated models' logits cannot see a stale conv history (qwen35-dense replays byte-equal logits
 // from a wrong one), so every check compares the states' bytes too.
@@ -39,10 +42,14 @@ static int n_fail  = 0;
 
 struct copy_count {
     bool counting = false;
-    int  copies   = 0;
+    int  conv     = 0;  // cache_r_l*: the delta-net conv history
+    int  ssm      = 0;  // cache_s_l*: the delta-net state
+    int  ple      = 0;  // cache_ple_r_l*: the PLE conv history
+
+    int all() const { return conv < 0 ? -1 : conv + ssm + ple; }
 };
 
-// a copy into the recurrent memory's rows: cache_r_l*, cache_s_l*, cache_ple_r_l*
+// a copy into the recurrent memory's rows, by summary
 static bool count_copies(ggml_tensor * t, bool ask, void * user_data) {
     auto * c = (copy_count *) user_data;
     if (!ask || !c->counting) {
@@ -51,9 +58,12 @@ static bool count_copies(ggml_tensor * t, bool ask, void * user_data) {
     const ggml_tensor * dst = t->src[1];
     if (t->op == GGML_OP_CPY && dst != nullptr && dst->view_src != nullptr) {
         const char * name = dst->view_src->name;
-        if (strncmp(name, "cache_r_l", 9) == 0 || strncmp(name, "cache_s_l", 9) == 0 ||
-            strncmp(name, "cache_ple_r_l", 13) == 0) {
-            ++c->copies;
+        if (strncmp(name, "cache_r_l", 9) == 0) {
+            ++c->conv;
+        } else if (strncmp(name, "cache_s_l", 9) == 0) {
+            ++c->ssm;
+        } else if (strncmp(name, "cache_ple_r_l", 13) == 0) {
+            ++c->ple;
         }
     }
     return false;
@@ -264,33 +274,42 @@ static void test_copied(llama_model * model) {
     fprintf(stderr, "%s: a copied seq inherits the source's reach and rolls back to the source's slot\n", __func__);
 }
 
-// the copies into the summaries one round makes, after a prefill
-static int round_copies(llama_model * model, bool skip, uint32_t n_rs_seq, uint32_t n) {
+// the copies into the summaries one round makes, after a prefill (conv -1: the round failed)
+static copy_count round_copies(llama_model * model, bool skip, uint32_t n_rs_seq, uint32_t n) {
     copy_count cc;
     auto ctx = make_ctx(model, skip, n_rs_seq, &cc);
     if (!ctx || !decode(ctx.get(), 0, 16, 0)) {
-        return -1;
+        cc.conv = -1;
+        return cc;
     }
     cc.counting = true;
-    const bool ok = decode(ctx.get(), 16, 16 + (llama_pos) n, 1);
-    return ok ? cc.copies : -1;
+    if (!decode(ctx.get(), 16, 16 + (llama_pos) n, 1)) {
+        cc.conv = -1;
+    }
+    return cc;
 }
 
 static void test_copies(llama_model * model) {
     for (uint32_t n : { 1u, 3u }) {
-        const int off5 = round_copies(model, false, 5, n), off10 = round_copies(model, false, 10, n);
-        const int on5  = round_copies(model, true,  5, n), on10  = round_copies(model, true,  10, n);
-        fprintf(stderr, "%s: a round of %u: copies into the summaries off %d / %d, on %d / %d (ceiling 5 / 10)\n",
-                __func__, n, off5, off10, on5, on10);
-        CHECK(off5 > 0 && on5 > 0, "round of %u: no copies counted", n);
-        CHECK(on5 == on10, "round of %u: with the switch on the copies still depend on the ceiling", n);
-        CHECK(off10 > off5, "round of %u: off, the ceiling's copies did not show", n);
-        CHECK(on5 < off5, "round of %u: the switch skipped nothing", n);
+        const copy_count off5 = round_copies(model, false, 5, n), off10 = round_copies(model, false, 10, n);
+        const copy_count on5  = round_copies(model, true,  5, n), on10  = round_copies(model, true,  10, n);
+        fprintf(stderr, "%s: a round of %u: copies into the summaries off %d / %d, on %d / %d (ceiling 5 / 10); "
+                "conv history %d / %d, state %d / %d, PLE %d / %d on\n", __func__, n, off5.all(), off10.all(),
+                on5.all(), on10.all(), on5.conv, on10.conv, on5.ssm, on10.ssm, on5.ple, on10.ple);
+        CHECK(off5.all() > 0 && on5.all() > 0, "round of %u: no copies counted", n);
+        CHECK(off10.all() > off5.all(), "round of %u: off, the ceiling's copies did not show", n);
+        CHECK(on5.all() < off5.all(), "round of %u: the switch skipped nothing", n);
+        CHECK(on5.ssm == on10.ssm && on5.ple == on10.ple,
+                "round of %u: with the switch on the state's or PLE's copies still depend on the ceiling", n);
+        CHECK(on5.conv == off5.conv && on10.conv == off10.conv, "round of %u: on, the conv history's copies "
+                "differ from off's (%d / %d against %d / %d): Metal's graph order changes", n,
+                on5.conv, on10.conv, off5.conv, off10.conv);
     }
     // a round of K or more writes every slot either way
-    const int off_k = round_copies(model, false, 5, 6), on_k = round_copies(model, true, 5, 6);
-    CHECK(off_k == on_k && off_k > 0, "a round of K: off %d, on %d copies", off_k, on_k);
-    CHECK(round_copies(model, true, 5, 1) < round_copies(model, true, 5, 3), "on, a longer round wrote no more slots");
+    const copy_count off_k = round_copies(model, false, 5, 6), on_k = round_copies(model, true, 5, 6);
+    CHECK(off_k.all() == on_k.all() && off_k.all() > 0, "a round of K: off %d, on %d copies", off_k.all(), on_k.all());
+    CHECK(round_copies(model, true, 5, 1).all() < round_copies(model, true, 5, 3).all(),
+            "on, a longer round wrote no more slots");
 }
 
 int main(int argc, char ** argv) {

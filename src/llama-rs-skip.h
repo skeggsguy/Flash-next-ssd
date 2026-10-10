@@ -18,7 +18,14 @@
 // rejected words: r <= n - 1. With the switch on a round writes only slots 0..min(n, K)-1, and the memory
 // remembers how far back this seq's last round can roll (its reach, min(n - 1, n_rs_seq)); a rollback past
 // the reach is refused without touching the memory (the caller falls back to its bookmark copy, as it does
-// past n_rs_seq today). Words never change: a slot that is skipped is a slot nothing reads.
+// past n_rs_seq today). A slot that is skipped is a slot nothing reads.
+//
+// Not reading a slot is not enough on Metal, so qwen4exp's delta-net conv history (cache_r_l) keeps every
+// slot with the switch on too. Its copies are small (~120 KiB a floor a slot, a twenty-fifth of the
+// state's), but without them Metal's graph order (ggml_graph_optimize) packs a short round's nodes
+// differently, its fused kernels round differently, and the real model's words drift after ~80 tokens
+// (gate-prose at n3, 2026-10-10: 46750edd against off's 05da8e0c; on and off agree with fusion off, or
+// with this history's slots kept). The PLE conv history's slots and the state's clamp still skip.
 //
 // LLAMA_RS_SKIP_SLOTS (read when the context is made, so per context): "1" skips; anything else, unset or
 // "0", is today's graph and memory exactly.

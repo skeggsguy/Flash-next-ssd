@@ -2493,13 +2493,15 @@ struct llama_model_qwen4exp : public llama_model_base {
         // build_rs writes the state tensor in place, so one gather per cache tensor is reused
         std::map<ggml_tensor *, ggml_tensor *> rs_rows;
 
-        // one conv history per cache tensor: delta-net and PLE each have their own
+        // one conv history per cache tensor: delta-net and PLE each have their own; skip_slots writes only
+        // the undo slots a rollback after the round can read (the ceiling tax, llama-rs-skip.h)
         ggml_tensor * build_conv_state_at(
              llm_graph_input_rs * inp,
                     ggml_tensor * conv_states_all,
                     ggml_tensor * x,
                         int64_t   state_cols,
                         int64_t   channels,
+                           bool   skip_slots,
                             int   il);
 
         ggml_tensor * build_inp_ple(
