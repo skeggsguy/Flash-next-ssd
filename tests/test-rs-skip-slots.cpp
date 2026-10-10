@@ -10,6 +10,8 @@
 //             and n - 1 is then taken; off, n is taken (on qwen4exp it reads the round's start exactly).
 //   restored: on, a state read back (a bookmark copy) carries no undo copies: rollback 1 is refused until
 //             the next round.
+//   copied:   on, a seq copied with seq_cp shares the source's undo slots and inherits their reach: n refused,
+//             n - 1 taken, and its rolled-back summary and replay are the source's.
 //   copies:   the graph's copies into the summaries for one round, counted through cb_eval: with the
 //             switch on they no longer depend on the ceiling (n_rs_seq 5 against 10), off they do, and a
 //             round of K or more tokens writes the same with both.
@@ -57,14 +59,15 @@ static bool count_copies(ggml_tensor * t, bool ask, void * user_data) {
     return false;
 }
 
-static llama_context_ptr make_ctx(llama_model * model, bool skip, uint32_t n_rs_seq, copy_count * cc = nullptr) {
+static llama_context_ptr make_ctx(llama_model * model, bool skip, uint32_t n_rs_seq, copy_count * cc = nullptr,
+        uint32_t n_seq_max = 1) {
     // the switch is read once, when the context is made
     setenv("LLAMA_RS_SKIP_SLOTS", skip ? "1" : "0", 1);
     auto cparams = llama_context_default_params();
     cparams.n_ctx     = 256;
     cparams.n_batch   = 64;
     cparams.n_ubatch  = 64;
-    cparams.n_seq_max = 1;
+    cparams.n_seq_max = n_seq_max;
     cparams.n_rs_seq  = n_rs_seq;
     if (cc != nullptr) {
         cparams.cb_eval           = count_copies;
@@ -79,11 +82,11 @@ static llama_token tok(llama_pos pos, int salt) {
     return (llama_token) ((7*(uint32_t) pos + 13*(uint32_t) salt + 1) % (uint32_t) n_vocab);
 }
 
-// one batch [p0, p1) on seq 0, every logit kept
-static bool decode(llama_context * ctx, llama_pos p0, llama_pos p1, int salt) {
+// one batch [p0, p1) on one seq, every logit kept
+static bool decode(llama_context * ctx, llama_pos p0, llama_pos p1, int salt, llama_seq_id seq = 0) {
     llama_batch batch = llama_batch_init(p1 - p0, 0, 1);
     for (llama_pos pos = p0; pos < p1; ++pos) {
-        common_batch_add(batch, tok(pos, salt), pos, { 0 }, true);
+        common_batch_add(batch, tok(pos, salt), pos, { seq }, true);
     }
     const bool ok = llama_decode(ctx, batch) == 0;
     llama_batch_free(batch);
@@ -91,10 +94,10 @@ static bool decode(llama_context * ctx, llama_pos p0, llama_pos p1, int salt) {
 }
 
 // the seq's saved state: the recurrent rows only (the slot a pending rollback reads), or everything
-static std::vector<uint8_t> state(llama_context * ctx, bool recurrent_only) {
+static std::vector<uint8_t> state(llama_context * ctx, bool recurrent_only, llama_seq_id seq = 0) {
     const llama_state_seq_flags flags = recurrent_only ? LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY : 0;
-    std::vector<uint8_t> buf(llama_state_seq_get_size_ext(ctx, 0, flags));
-    buf.resize(llama_state_seq_get_data_ext(ctx, buf.data(), buf.size(), 0, flags));
+    std::vector<uint8_t> buf(llama_state_seq_get_size_ext(ctx, seq, flags));
+    buf.resize(llama_state_seq_get_data_ext(ctx, buf.data(), buf.size(), seq, flags));
     return buf;
 }
 
@@ -107,12 +110,12 @@ static std::vector<float> logits(llama_context * ctx, int n_out) {
     return out;
 }
 
-static bool rollback(llama_context * ctx, llama_pos to) {
-    return llama_memory_seq_rm(llama_get_memory(ctx), 0, to, -1);
+static bool rollback(llama_context * ctx, llama_pos to, llama_seq_id seq = 0) {
+    return llama_memory_seq_rm(llama_get_memory(ctx), seq, to, -1);
 }
 
-static llama_pos pos_max(llama_context * ctx) {
-    return llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+static llama_pos pos_max(llama_context * ctx, llama_seq_id seq = 0) {
+    return llama_memory_seq_pos_max(llama_get_memory(ctx), seq);
 }
 
 constexpr uint32_t  N_RS_SEQ = 5;  // the everyday ceiling
@@ -227,6 +230,40 @@ static void test_restored(llama_model * model) {
     fprintf(stderr, "%s: a restored state (one seq or the whole context) refuses rollbacks until its next round\n", __func__);
 }
 
+// a saved seq state past its 8-byte header (a magic and the seq id), so two seqs' states can be compared
+static std::vector<uint8_t> body(const std::vector<uint8_t> & s) {
+    return std::vector<uint8_t>(s.begin() + std::min<size_t>(8, s.size()), s.end());
+}
+
+// a copy of a seq (seq_cp, the server's seat copy) shares the source's cell and so its undo slots: it
+// inherits their reach, refuses what the source refuses, and a rollback on it reads the source's slot
+static void test_copied(llama_model * model) {
+    constexpr uint32_t n = 3;
+    auto on  = make_ctx(model, true, N_RS_SEQ, nullptr, 2);
+    auto ref = make_ctx(model, true, N_RS_SEQ, nullptr, 2);
+    if (!on || !ref || !prefill_and_round(on.get(), n) || !prefill_and_round(ref.get(), n)) {
+        CHECK(false, "setup failed");
+        return;
+    }
+    llama_memory_seq_cp(llama_get_memory(on.get()), 0, 1, -1, -1);
+    CHECK(pos_max(on.get(), 1) == P + (llama_pos) n - 1, "the copy is at the wrong position");
+
+    CHECK(!rollback(on.get(), P, 1),    "the copy took a rollback of the whole round");
+    CHECK(rollback(on.get(), P + 1, 1), "the copy refused a rollback of n - 1, the source's reach");
+    CHECK(rollback(ref.get(), P + 1, 0), "the source refused a rollback of n - 1");
+    CHECK(body(state(on.get(), true, 1)) == body(state(ref.get(), true, 0)),
+            "the copy's rolled-back summary is not the source's");
+
+    const bool ok = decode(on.get(), P + 1, P + 3, 2, 1) && decode(ref.get(), P + 1, P + 3, 2, 0);
+    CHECK(ok, "replay failed");
+    if (ok) {
+        CHECK(logits(on.get(), 2) == logits(ref.get(), 2), "the copy's replay logits differ from the source's");
+        // the summaries only: the attention cache's saved state names the seq's stream, so it differs by seq
+        CHECK(body(state(on.get(), true, 1)) == body(state(ref.get(), true, 0)), "the copy's summaries after the replay differ");
+    }
+    fprintf(stderr, "%s: a copied seq inherits the source's reach and rolls back to the source's slot\n", __func__);
+}
+
 // the copies into the summaries one round makes, after a prefill
 static int round_copies(llama_model * model, bool skip, uint32_t n_rs_seq, uint32_t n) {
     copy_count cc;
@@ -284,6 +321,7 @@ int main(int argc, char ** argv) {
     test_exact(model.get());
     test_refused(model.get(), strcmp(arch, "qwen4exp") == 0);
     test_restored(model.get());
+    test_copied(model.get());
     test_copies(model.get());
 
     fprintf(stderr, "%s: %s, %d failure(s)\n", arch, n_fail == 0 ? "OK" : "FAILED", n_fail);
