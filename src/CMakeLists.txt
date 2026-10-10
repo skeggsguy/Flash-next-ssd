@@ -67,6 +67,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-wave-plan.cpp
     llama-moe-stream-wave-stage.cpp
     llama-mtp-record.cpp
+    llama-rs-skip.cpp
     llama-mtp-vocab.cpp
     llama-ple-shelf.cpp
     llama-ple-shelf-io.cpp

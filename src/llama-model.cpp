@@ -2832,7 +2832,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             std::max((uint32_t) 1, cparams.n_seq_max),
                             cparams.n_seq_max,
                             cparams.n_rs_seq,
-                            nullptr);
+                            nullptr,
+                            cparams.rs_skip_slots);
                 } else if (llm_arch_is_hybrid(arch) && !mtp_on_hybrid_qwen && !mtp_on_hybrid_nemotron) {
                     // The main difference between hybrid architectures is the
                     // layer filters, so pick the right one here
@@ -2887,7 +2888,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* rs_skip_slots     */ cparams.rs_skip_slots);
                     } else if (needs_mem_idx) {
                         // sparse attention over a per-token indexer cache, in its own memory type
                         res = new llama_memory_hybrid_idx(
@@ -2909,7 +2911,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* n_ubatch          */ cparams.n_ubatch,
                             /* filter_attn       */ std::move(filter_attn),
                             /* filter_recr       */ std::move(filter_recr),
-                            /* filter_idx        */ std::move(filter_idx));
+                            /* filter_idx        */ std::move(filter_idx),
+                            /* rs_skip_slots     */ cparams.rs_skip_slots);
                     } else {
                         res = new llama_memory_hybrid(
                             /* model             */ *this,
@@ -2928,7 +2931,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* rs_skip_slots     */ cparams.rs_skip_slots);
                     }
                 } else {
                     llama_kv_cache::layer_filter_cb filter = nullptr;

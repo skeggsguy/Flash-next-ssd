@@ -149,6 +149,7 @@ if (LLAMA_LLGUIDANCE)
 endif ()
 
 llama_build(test-recurrent-state-rollback.cpp)
+llama_build(test-rs-skip-slots.cpp)
 llama_build(test-save-load-state.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
@@ -495,6 +496,30 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
         ENVIRONMENT "LLAMA_QSA_KEEP=1"
     )
+
+    # the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, src/llama-rs-skip.h): a round writes only the undo copies a
+    # rollback can reach, byte-equal to off, and a rollback past the round is refused; the rollback harness
+    # runs again with the switch on (its rollbacks past the round assert refusal instead)
+    foreach (RS_MODEL qwen4exp-moe qwen35-dense)
+        llama_test(
+            test-rs-skip-slots
+            NAME test-rs-skip-slots-${RS_MODEL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${RS_MODEL}.gguf"
+        )
+        llama_test(
+            test-recurrent-state-rollback
+            NAME test-recurrent-state-rollback-${RS_MODEL}-rs-skip
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${RS_MODEL}.gguf"
+        )
+        set_tests_properties(test-rs-skip-slots-${RS_MODEL} test-recurrent-state-rollback-${RS_MODEL}-rs-skip PROPERTIES
+            FIXTURES_REQUIRED generate-models
+        )
+        set_tests_properties(test-recurrent-state-rollback-${RS_MODEL}-rs-skip PROPERTIES
+            ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=1"
+        )
+    endforeach()
 
     llama_test(
         test-save-load-state

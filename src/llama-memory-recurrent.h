@@ -24,7 +24,8 @@ public:
                      uint32_t   mem_size,
                      uint32_t   n_seq_max,
                      uint32_t   n_rs_seq,
-        const layer_filter_cb & filter);
+        const layer_filter_cb & filter,
+                         bool   rs_skip_slots = false);
 
     ~llama_memory_recurrent() = default;
 
@@ -77,6 +78,14 @@ public:
     std::vector<uint32_t> rs_idx;
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
+
+    // the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, llama-rs-skip.h): rounds write only the undo slots a rollback
+    // can reach, and rs_reach[seq] is how deep a rollback of seq's last round may go (0: none). A rollback
+    // past it is refused. Unused (and never consulted) with the switch off
+    bool rs_skip_slots = false;
+    std::vector<uint32_t> rs_reach;
+
+    void set_rs_reach(llama_seq_id seq_id, uint32_t reach);
 
     // computed before each graph build
     uint32_t n = 0;

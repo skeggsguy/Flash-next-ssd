@@ -6,6 +6,7 @@
 #include "llama-memory-recurrent.h"
 #include "llama-mtp-record.h"
 #include "llama-mtp-vocab.h"
+#include "llama-rs-skip.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -1982,7 +1983,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
     const size_t row_size = ggml_row_size(conv_states_all->type, row_total);
     const uint32_t mem_size = mctx_cur->get_size();
 
-    const int64_t n_slots = (int64_t) cparams.n_rs_seq + 1;
+    // the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, llama-rs-skip.h): with the switch on only slots 0..n-1, the
+    // ones a rollback after this round can read; off, every slot (those past n hold the round's start)
+    const int64_t n_slots = llama_rs_slots_written(cparams.rs_skip_slots, ubatch.n_seq_tokens,
+            (int64_t) cparams.n_rs_seq + 1);
 
     for (int64_t slot = 0; slot < n_slots; ++slot) {
         const int64_t s_idx = std::max<int64_t>(0, conv_input->ne[0] - state_cols - slot);

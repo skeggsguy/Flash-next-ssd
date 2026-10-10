@@ -607,7 +607,10 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
 
     ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
 
-    if (n_written < K) {
+    // the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, llama-rs-skip.h): a rollback after this round reads at most
+    // slot n - 1, so the clamped undo copies past it are never read and are not written; the memory
+    // refuses any rollback deeper than this round instead
+    if (n_written < K && !cparams.rs_skip_slots) {
         // groups [n_written, K) would otherwise keep stale content from earlier batches,
         // and a rollback that reads them restores a wrong state. clamp them to the
         // batch-start state (the ring-gathered input s), matching the conv-history clamp:

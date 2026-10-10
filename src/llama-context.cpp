@@ -15,6 +15,7 @@
 #include "llama-model.h"
 #include "llama-moe-stream.h"
 #include "llama-mtp-record.h"
+#include "llama-rs-skip.h"
 #include "llama-ext.h"
 #include "llama-sampler.h"
 #include "llama.h"
@@ -113,6 +114,8 @@ llama_context::llama_context(
                         __func__, cparams.n_rs_seq);
         cparams.n_rs_seq = 0;
     }
+    // the ceiling tax: only the undo slots a rollback can reach (LLAMA_RS_SKIP_SLOTS, per context; llama-rs-skip.h)
+    cparams.rs_skip_slots = llama_rs_skip_slots_init(getenv("LLAMA_RS_SKIP_SLOTS"), cparams.n_rs_seq);
 
     cparams.n_threads               = params.n_threads;
     cparams.n_threads_batch         = params.n_threads_batch;
