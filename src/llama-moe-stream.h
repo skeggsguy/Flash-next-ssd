@@ -109,6 +109,24 @@ struct llama_moe_stream {
                ((int64_t) expert*100) / (int64_t) n_expert >= (int64_t) alt_split;
     }
 
+    // The drive choice by load (LLAMA_MOE_STREAM_DYN_DRIVE=1). The id split fixes each book's drive
+    // before anyone knows how busy the drives are: on 2026-10-11 the GPU waited on books 19% of
+    // writing with the drives each only about half busy. With this on, each slab goes to the runner
+    // with fewer reads in flight, and the id split decides only when the two are level. The bytes
+    // are the same on both runners, so only the timing can change, never the words.
+    bool drive_by_load = false;
+    // runner threads at the interactive service class (LLAMA_MOE_STREAM_QOS=1, macOS only), so a
+    // trip is not queued behind background work
+    bool runner_qos    = false;
+
+    // which runner reads this slab now (under mtx: it reads busy_n)
+    bool pick_alt(int32_t expert, uint32_t n_expert) const {
+        if (drive_by_load && !files_alt.empty() && busy_n[0] != busy_n[1]) {
+            return busy_n[1] < busy_n[0];
+        }
+        return use_alt(expert, n_expert);
+    }
+
     size_t  max_nb_expert      = 0;
     int64_t hot_decay_interval = 0; // remap calls between route-hotness halvings (0 = no decay)
 

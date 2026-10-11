@@ -88,7 +88,12 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
         LLAMA_LOG_WARN("%s: MoE expert streaming uses two runners: expert ids below %d%% of a layer "
                        "from %s, the rest from %s\n",
                 __func__, alt_split, paths[0].c_str(), alt_paths[0].c_str());
+        LLAMA_LOG_WARN("%s: MoE expert streaming picks the runner %s (LLAMA_MOE_STREAM_DYN_DRIVE=%d)\n",
+                __func__, drive_by_load ? "with fewer reads in flight, the id split only on a tie" : "by expert id",
+                drive_by_load ? 1 : 0);
     }
+    LLAMA_LOG_WARN("%s: MoE expert streaming runner threads at %s (LLAMA_MOE_STREAM_QOS=%d)\n",
+            __func__, runner_qos ? "the interactive service class" : "the default service class", runner_qos ? 1 : 0);
 
     // fall back to buffered when O_DIRECT is unusable: either the open did not honor it (macOS,
     // Windows, unsupported filesystems), or it opened but a probe read fails (some network/overlay

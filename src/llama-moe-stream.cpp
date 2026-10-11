@@ -101,6 +101,14 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
         q_spec_max = (size_t) std::max(0, atoi(s));
     }
 
+    // the plumbing: the drive choice by load and the runners' service class (llama-moe-stream.h)
+    if (const char * s = std::getenv("LLAMA_MOE_STREAM_DYN_DRIVE")) {
+        drive_by_load = atoi(s) != 0;
+    }
+    if (const char * s = std::getenv("LLAMA_MOE_STREAM_QOS")) {
+        runner_qos = atoi(s) != 0;
+    }
+
     c2_init(); // the C2 switches (llama-moe-stream-quick.cpp)
 }
 

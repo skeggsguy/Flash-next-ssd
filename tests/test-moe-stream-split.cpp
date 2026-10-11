@@ -7,6 +7,8 @@
 //   - the id split must put alt_split percent of a layer's expert ids on the model's own path.
 //     Getting it wrong still runs, still reads, and quietly measures a different stripe than the
 //     one the rung config claims.
+//   - the drive choice by load (LLAMA_MOE_STREAM_DYN_DRIVE) must send a slab to the runner with
+//     fewer reads in flight, fall back to the id split on a tie, and stay off unless set.
 
 #include "testing.h"
 
@@ -114,6 +116,71 @@ int main(int argc, char ** argv) {
             half += mgr.use_alt(e, 128) ? 0 : 1;
         }
         t.assert_equal("half of 128", 64, half);
+    });
+
+    t.test("drive_by_load", [&](testing & t) {
+        llama_moe_stream mgr(/*n_layer =*/ 1, /*n_slots =*/ 8, /*n_io_threads =*/ 1, /*direct =*/ false);
+        mgr.alt_split = 53;
+
+        // with it on but one runner, there is nowhere else to send a slab
+        mgr.drive_by_load = true;
+        mgr.busy_n[0] = 3;
+        t.assert_true("one runner, home whatever the load", !mgr.pick_alt(0, 512));
+
+        mgr.files_alt.emplace_back(some_file().release());
+
+        // off: the id split alone, however lopsided the reads in flight
+        mgr.drive_by_load = false;
+        t.assert_true("off: id 0 home though home is busier", !mgr.pick_alt(0, 512));
+        mgr.busy_n[0] = 0;
+        mgr.busy_n[1] = 3;
+        t.assert_true("off: id 511 alt though alt is busier", mgr.pick_alt(511, 512));
+
+        // on: the runner with fewer reads in flight, whatever the id
+        mgr.drive_by_load = true;
+        t.assert_true("on: id 511 home when alt is busier", !mgr.pick_alt(511, 512));
+        mgr.busy_n[0] = 2;
+        mgr.busy_n[1] = 1;
+        t.assert_true("on: id 0 alt when home is busier", mgr.pick_alt(0, 512));
+
+        // on, level: the id split decides, so an idle pair still stripes the books as before
+        mgr.busy_n[0] = 1;
+        mgr.busy_n[1] = 1;
+        t.assert_true("on, level: id 271 home", !mgr.pick_alt(271, 512));
+        t.assert_true("on, level: id 272 alt",   mgr.pick_alt(272, 512));
+        mgr.busy_n[0] = 0;
+        mgr.busy_n[1] = 0;
+        int home = 0;
+        for (int e = 0; e < 512; e++) {
+            home += mgr.pick_alt(e, 512) ? 0 : 1;
+        }
+        t.assert_equal("on, idle: the same 272 of 512", 272, home);
+    });
+
+    t.test("plumbing_is_off_unless_set", [&](testing & t) {
+        unsetenv("LLAMA_MOE_STREAM_DYN_DRIVE");
+        unsetenv("LLAMA_MOE_STREAM_QOS");
+        {
+            llama_moe_stream mgr(1, 8, 1, false);
+            t.assert_true("drive by load off", !mgr.drive_by_load);
+            t.assert_true("runner qos off",    !mgr.runner_qos);
+        }
+        setenv("LLAMA_MOE_STREAM_DYN_DRIVE", "1", 1);
+        setenv("LLAMA_MOE_STREAM_QOS", "1", 1);
+        {
+            llama_moe_stream mgr(1, 8, 1, false);
+            t.assert_true("drive by load on", mgr.drive_by_load);
+            t.assert_true("runner qos on",    mgr.runner_qos);
+        }
+        setenv("LLAMA_MOE_STREAM_DYN_DRIVE", "0", 1);
+        setenv("LLAMA_MOE_STREAM_QOS", "", 1);
+        {
+            llama_moe_stream mgr(1, 8, 1, false);
+            t.assert_true("\"0\" is off", !mgr.drive_by_load);
+            t.assert_true("empty is off", !mgr.runner_qos);
+        }
+        unsetenv("LLAMA_MOE_STREAM_DYN_DRIVE");
+        unsetenv("LLAMA_MOE_STREAM_QOS");
     });
 
     return t.summary();
