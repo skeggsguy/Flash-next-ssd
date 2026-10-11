@@ -8,7 +8,7 @@
 //     Getting it wrong still runs, still reads, and quietly measures a different stripe than the
 //     one the rung config claims.
 //   - the drive choice by load (LLAMA_MOE_STREAM_DYN_DRIVE) must send a slab to the runner with
-//     fewer reads in flight, fall back to the id split on a tie, and stay off unless set.
+//     fewer reads in flight, fall back to the id split on a tie, and be on unless set to "0".
 
 #include "testing.h"
 
@@ -157,13 +157,13 @@ int main(int argc, char ** argv) {
         t.assert_equal("on, idle: the same 272 of 512", 272, home);
     });
 
-    t.test("plumbing_is_off_unless_set", [&](testing & t) {
+    t.test("plumbing_is_on_unless_0", [&](testing & t) {
         unsetenv("LLAMA_MOE_STREAM_DYN_DRIVE");
         unsetenv("LLAMA_MOE_STREAM_QOS");
         {
             llama_moe_stream mgr(1, 8, 1, false);
-            t.assert_true("drive by load off", !mgr.drive_by_load);
-            t.assert_true("runner qos off",    !mgr.runner_qos);
+            t.assert_true("unset: drive by load on", mgr.drive_by_load);
+            t.assert_true("unset: runner qos on",    mgr.runner_qos);
         }
         setenv("LLAMA_MOE_STREAM_DYN_DRIVE", "1", 1);
         setenv("LLAMA_MOE_STREAM_QOS", "1", 1);
