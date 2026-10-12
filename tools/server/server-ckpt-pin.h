@@ -110,6 +110,15 @@ server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat,
 // there is no pin or it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat): then nothing is saved.
 common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat);
 
+// One copy of the opening (Tom, decisions 2026-10-12; cleric's review of step 1): the saved entry carries no bookmark
+// copies. A seat stepped back to its pin holds exactly the opening, so a new chat that takes the entry reads on from
+// its end with no restore, and its read-in makes its own copy at its first user message, which rule 3 pins; the
+// pinned copy inside the entry (~113 MiB + ~2 KB a token) would never be used. `save` runs with the seat's copies set
+// aside, so the store neither copies them nor counts them against its limit, and they are put back afterwards (also
+// if save throws), at the same addresses: the seat keeps its pin for the tie, where it serves the new chat itself.
+// Returns what save returns.
+bool server_ckpt_save_without_copies(server_ckpt_list & ckpts, const std::function<bool()> & save);
+
 // A first chat keeps its opening too: with the switch on (and the pin, with room for it), a chat task's copy made at
 // its first user message's start takes the pin when no copy holds one yet. The read-in already makes that copy (it
 // breaks there), so no batch changes. The split rule still moves the pin later.

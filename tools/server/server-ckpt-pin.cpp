@@ -198,3 +198,13 @@ bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_chec
     }
     return false;
 }
+
+bool server_ckpt_save_without_copies(server_ckpt_list & ckpts, const std::function<bool()> & save) {
+    struct put_back {
+        server_ckpt_list & to;
+        server_ckpt_list   kept;
+        ~put_back() { to.swap(kept); }
+    } guard{ckpts, {}};
+    guard.kept.swap(ckpts);
+    return save();
+}

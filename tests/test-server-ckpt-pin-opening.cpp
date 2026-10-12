@@ -5,6 +5,8 @@
 //   a chat task takes from it; the same chat going on (a follow-up, a retry) neither saves nor loads, so the save
 //   never fires on a follow-up; with the switch off every hand-on saves and loads, as upstream
 // - rule 2, opening only: the step back keeps the pinned copy alone, and nothing without a pin
+// - one copy of the opening: the store's save sees none of the seat's copies (the entry carries none), and the seat
+//   gets them all back, at the same addresses, whether the save succeeds, fails or throws
 // - rule 3, a first chat pinned: with no pin yet, a chat's copy at its first user message takes the pin; and over
 //   generated long first chats the pin stays there however many copies roll past, so the step back finds it,
 //   where with the switch off the opening's copy rolls out and the step back finds nothing
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <random>
+#include <stdexcept>
 
 static const int64_t OPENING = 4211;
 
@@ -142,6 +145,56 @@ static void test_opening_keep_pin() {
     CHECK(server_ckpt_keep_pin(past, OPENING - 1) == nullptr && past.size() == 3);
 }
 
+static void test_opening_save_without_copies() {
+    // a long chat stepped back to its pin (one copy left), and a seat still holding its pin and two rolling copies
+    for (bool stepped_back : {true, false}) {
+        for (int outcome : {0, 1, 2}) { // the save succeeds, fails (over the limit, already stored), or throws
+            server_ckpt_list ckpts;
+            add(ckpts, true, 3, 8192, 1, OPENING, true);
+            add(ckpts, true, 3, 8192, 5, 18000);
+            add(ckpts, true, 3, 8192, 5, 20000);
+            const common_prompt_checkpoint * pin = stepped_back ? server_ckpt_keep_pin(ckpts, 21000) : &ckpts.front();
+            const size_t n_before = ckpts.size();
+            std::vector<const common_prompt_checkpoint *> before;
+            for (const auto & cur : ckpts) {
+                before.push_back(&cur);
+            }
+
+            server_ckpt_list entry; // what the store's alloc copies from the seat's prompt
+            bool threw = false;
+            bool got   = false;
+            try {
+                got = server_ckpt_save_without_copies(ckpts, [&]() {
+                    entry = ckpts;
+                    if (outcome == 2) {
+                        throw std::runtime_error("bad_alloc in clone");
+                    }
+                    return outcome == 0;
+                });
+            } catch (const std::runtime_error &) {
+                threw = true;
+            }
+            CHECK(threw == (outcome == 2));
+            CHECK(got == (outcome == 0));
+            CHECK(entry.empty()); // the entry carries no copies
+            // the seat keeps every copy, in order, at the same addresses (the step back's pin pointer stays good)
+            CHECK(ckpts.size() == n_before);
+            size_t i = 0;
+            for (const auto & cur : ckpts) {
+                CHECK(i < before.size() && &cur == before[i]);
+                i++;
+            }
+            CHECK(n_pinned(ckpts) == 1 && find_at(ckpts, OPENING) == pin && pin->pinned);
+        }
+    }
+
+    // a seat with no copies: the save still runs, and nothing appears
+    server_ckpt_list none;
+    int n_calls = 0;
+    CHECK(server_ckpt_save_without_copies(none, [&]() { n_calls++; return true; }));
+    CHECK(n_calls == 1 && none.empty());
+}
+
 static void test_opening_first_pin() {
     const auto a = first_turn(800);
     const server_ckpt_list empty;
@@ -255,6 +308,7 @@ void test_opening() {
     test_opening_hand_on();
     test_opening_hand_on_generated();
     test_opening_keep_pin();
+    test_opening_save_without_copies();
     test_opening_first_pin();
     test_opening_first_chat_generated();
 }

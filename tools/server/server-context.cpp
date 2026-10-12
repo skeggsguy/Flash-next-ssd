@@ -2645,7 +2645,8 @@ private:
     // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the
     // seat is first stepped back to its pinned copy with the checkpoint restore (load the fixed summary, drop the
     // context memory past it in the library and the apprentice, trim the tokens, keep only that copy), or nothing is
-    // saved without a pin. The caller decides the lane, and must overwrite or clear the seat after a step back.
+    // saved without a pin; the saved entry carries no copies, the seat keeps its pin. The caller decides the lane, and
+    // must overwrite or clear the seat after a step back.
     bool slot_store_save(server_slot & slot) {
         if (!params_base.cache_ram_opening) {
             return slot.prompt_save(*prompt_cache);
@@ -2670,11 +2671,14 @@ private:
         slot.prompt.tokens.keep_first(pin->n_tokens);
         slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
 
+        // the entry carries no copies: one copy of the opening, the state itself (server_ckpt_save_without_copies)
         const size_t n_states = prompt_cache->states.size();
-        const bool saved = slot.prompt_save(*prompt_cache);
+        const bool saved = server_ckpt_save_without_copies(slot.prompt.checkpoints,
+                [&]() { return slot.prompt_save(*prompt_cache); });
         if (saved) {
-            SLT_WRN(slot, "opening copy: saved %d of %d tokens, %.3f MiB (store: %zu -> %zu entries, %.3f MiB)\n",
+            SLT_WRN(slot, "opening copy: saved %d of %d tokens, %.3f MiB, %zu copies in the entry, the seat keeps %zu (store: %zu -> %zu entries, %.3f MiB)\n",
                     slot.prompt.n_tokens(), n_seat, prompt_cache->states.back().size() / (1024.0 * 1024.0),
+                    prompt_cache->states.back().prompt.checkpoints.size(), slot.prompt.checkpoints.size(),
                     n_states, prompt_cache->states.size(), prompt_cache->size() / (1024.0 * 1024.0));
         } else {
             SLT_WRN(slot, "opening copy: not saved, %d of %d tokens already in the store or over its limit\n",
