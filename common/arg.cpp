@@ -1737,6 +1737,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_IDLE_SLOTS").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--cache-ram-opening"},
+        "with --cache-ram: keep only chat's opening in the cache. A chat leaving the slot is stepped back to its "
+        "pinned context checkpoint (the bookmark pin, needs -ctxcp 2 or more) and only that is saved; a background "
+        "slot (--chat-window-header) is never saved and a background request never loads, and a follow-up in the "
+        "same chat neither saves nor loads. With no pin yet, a chat's checkpoint at its first user message takes "
+        "it. Lanes come from the chat window: with --chat-window 0 every request is chat (default: disabled)",
+        [](common_params & params) {
+            params.cache_ram_opening = true;
+        }
+    ).set_env("LLAMA_ARG_CACHE_RAM_OPENING").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
         string_format("whether to use context shift on infinite text generation (default: %s)", params.ctx_shift ? "enabled" : "disabled"),

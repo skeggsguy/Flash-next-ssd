@@ -235,7 +235,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     target_link_libraries(test-chat PRIVATE server-context)
     llama_build_and_test(test-json-schema-to-grammar.cpp)
     # BOOKMARK-PIN-PLAN.md step 1: the bookmark pin's rules (server-ckpt-pin.h), no model
-    llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
+    # CHAT-RETURN-PLAN.md step 1: the opening copy's rules (--cache-ram-opening), test-server-ckpt-pin-opening.cpp
+    llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp test-server-ckpt-pin-opening.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
     llama_build_and_test(test-server-anthropic.cpp)

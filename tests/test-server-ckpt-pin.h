@@ -1,6 +1,7 @@
 #pragma once
 
-// helpers shared by test-server-ckpt-pin.cpp and test-server-ckpt-pin-chats.cpp (one test, two files to stay short)
+// helpers shared by test-server-ckpt-pin.cpp, test-server-ckpt-pin-chats.cpp and test-server-ckpt-pin-opening.cpp
+// (one test, three files to stay short)
 
 #include "server-ckpt-pin.h"
 
@@ -55,3 +56,6 @@ inline void add(server_ckpt_list & ckpts, bool pin_on, int n_max, int min_step, 
 void test_pin_target();
 void test_restore_pick();
 void test_handback_chats();
+
+// in test-server-ckpt-pin-opening.cpp (--cache-ram-opening, CHAT-RETURN-PLAN.md step 1)
+void test_opening();

@@ -85,3 +85,33 @@ void server_ckpt_invalidate(server_ckpt_list & ckpts, llama_pos pos_next, const 
 common_prompt_checkpoint & server_ckpt_add(server_ckpt_list & ckpts, bool pin_on, int32_t n_max, int32_t min_step,
         int id_task, int64_t n_tokens_new, llama_pos pos_min, llama_pos pos_max, bool pin,
         const server_ckpt_on_erase & on_erase);
+
+// The opening copy (--cache-ram-opening, study CHAT-RETURN-PLAN.md step 1, decisions 2026-10-12): the saved-prompts
+// store (--cache-ram) keeps chat's opening only. When a chat leaves the seat, the seat is stepped back to its pinned
+// copy (the end of sidekick's opening, ~4.2K tokens) and only that is saved, so a new chat after a coding request
+// reads in only its own message. The stock store saves the whole chat (682 MiB at 8K, 1.06 GiB at 21K), and a new
+// chat shares too little of a long one for the store to hand it back (it wants 25%). A seat's lane is chat or code
+// (server-lane.h); every request is chat while the chat window is off.
+
+// what the store does when the seat is handed to another task (get_available_slot's save point)
+struct server_ckpt_hand_on {
+    bool save; // save the seat (with the switch: stepped back to its pinned copy first)
+    bool load; // look in the store for the new prompt (stock: load a better entry, else clear the seat)
+};
+
+// Stock (opening_on false): save and load. With the switch: the same chat going on (seat and task both chat, a shared
+// start whose split is not a new chat's, server_ckpt_split_is_new_chat: a follow-up, a retry, or a prompt extending
+// the seat) does neither, so the seat keeps its whole bookmark; otherwise only a chat seat is saved and only a chat
+// task takes from the store, so coding never takes chat's copy.
+server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat,
+        const common_chat_msg_spans & spans_new, int64_t n_past, int64_t n_old, int64_t n_new);
+
+// The step back's list: erases every copy but the pinned one and returns it. nullptr, leaving the list untouched, when
+// there is no pin or it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat): then nothing is saved.
+common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat);
+
+// A first chat keeps its opening too: with the switch on (and the pin, with room for it), a chat task's copy made at
+// its first user message's start takes the pin when no copy holds one yet. The read-in already makes that copy (it
+// breaks there), so no batch changes. The split rule still moves the pin later.
+bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_checkpoints, bool task_chat,
+        const server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_tokens_start);

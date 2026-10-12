@@ -1,6 +1,7 @@
 #include "server-ckpt-pin.h"
 
 #include <cstdlib>
+#include <iterator>
 
 bool server_ckpt_pin_parse(const char * value) {
     return value == nullptr ? true : std::atoi(value) > 0;
@@ -154,4 +155,46 @@ common_prompt_checkpoint & server_ckpt_add(server_ckpt_list & ckpts, bool pin_on
     cur.update_pos(n_tokens_new, pos_min, pos_max);
 
     return cur;
+}
+
+server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat,
+        const common_chat_msg_spans & spans_new, int64_t n_past, int64_t n_old, int64_t n_new) {
+    if (!opening_on) {
+        return { true, true };
+    }
+    if (seat_chat && task_chat && n_past > 0 && !server_ckpt_split_is_new_chat(spans_new, n_past, n_old, n_new)) {
+        return { false, false };
+    }
+    return { seat_chat, task_chat };
+}
+
+common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat) {
+    auto pin = ckpts.begin();
+    while (pin != ckpts.end() && !pin->pinned) {
+        ++pin;
+    }
+    if (pin == ckpts.end() || pin->n_tokens <= 0 || pin->n_tokens > n_tokens_seat) {
+        return nullptr;
+    }
+    ckpts.erase(ckpts.begin(), pin);
+    ckpts.erase(std::next(ckpts.begin()), ckpts.end());
+    return &ckpts.front();
+}
+
+bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_checkpoints, bool task_chat,
+        const server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_tokens_start) {
+    if (!opening_on || !pin_on || n_ctx_checkpoints < 2 || !task_chat || n_tokens_start <= 0) {
+        return false;
+    }
+    for (const auto & cur : ckpts) {
+        if (cur.pinned) {
+            return false;
+        }
+    }
+    for (const auto & span : spans.spans) {
+        if (span.role == COMMON_CHAT_ROLE_USER) {
+            return (int64_t) span.pos == n_tokens_start;
+        }
+    }
+    return false;
 }

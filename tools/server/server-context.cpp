@@ -576,6 +576,10 @@ struct server_slot {
     int64_t pin_target = -1;
     int64_t pin_split  = -1;
 
+    // the lane of the last task this seat ran (server-lane.h), kept past the task for the store's save point
+    // (--cache-ram-opening saves chat seats only); NONE (window off, or a fresh seat) counts as chat
+    server_lane lane_last = SERVER_LANE_NONE;
+
     // sampling
     json json_schema;
 
@@ -1649,6 +1653,17 @@ private:
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
+        if (params_base.cache_ram_opening) {
+            if (!prompt_cache) {
+                SRV_WRN("%s", "opening copy: off, it needs --cache-ram\n");
+            } else if (!ckpt_pin || params_base.n_ctx_checkpoints < 2) {
+                SRV_WRN("opening copy: on, but with no bookmark pin (LLAMA_CKPT_PIN %s, -ctxcp %d) nothing is ever saved\n",
+                        ckpt_pin ? "on" : "0", params_base.n_ctx_checkpoints);
+            } else {
+                SRV_WRN("opening copy: on, the store (--cache-ram %d MiB) keeps chat's opening only: a chat seat stepped back to its pinned copy; lanes %s\n",
+                        params_base.cache_ram_mib, params_base.chat_window > 0 ? "from the chat window's header" : "off (the chat window is off: every request is chat)");
+            }
+        }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
 
         if (params_base.n_ctx_checkpoints > 0) {
@@ -1951,9 +1966,23 @@ private:
 
                 const int64_t t_start = ggml_time_us();
 
-                ret->prompt_save(*prompt_cache);
+                // --cache-ram-opening: chat seats only, stepped back to the pin; chat tasks only take from the store;
+                // the same chat going on neither saves nor loads (server_ckpt_opening_hand_on)
+                const int64_t n_past = params_base.cache_ram_opening ? ret->prompt.tokens.get_common_prefix(task.tokens) : 0;
+                const server_ckpt_hand_on hand = server_ckpt_opening_hand_on(params_base.cache_ram_opening,
+                        ret->lane_last != SERVER_LANE_CODE, task.lane != SERVER_LANE_CODE,
+                        task.params.message_spans, n_past, ret->prompt.n_tokens(), task.n_tokens());
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                if (params_base.cache_ram_opening && !hand.save && ret->prompt.n_tokens() > 0) {
+                    SLT_WRN(*ret, "opening copy: not saved, %s (%d tokens, shares %" PRId64 " with task %d, %s)\n",
+                            ret->lane_last == SERVER_LANE_CODE ? "the seat's last task was code" : "the same chat goes on",
+                            ret->prompt.n_tokens(), n_past, task.id, server_lane_name(task.lane));
+                }
+                if (hand.save) {
+                    slot_store_save(*ret);
+                }
+
+                if (hand.load && !ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear();
                 }
 
@@ -2125,6 +2154,7 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+        slot.lane_last = slot.task->lane;
 
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
@@ -2612,6 +2642,47 @@ private:
         return true;
     }
 
+    // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the
+    // seat is first stepped back to its pinned copy with the checkpoint restore (load the fixed summary, drop the
+    // context memory past it in the library and the apprentice, trim the tokens, keep only that copy), or nothing is
+    // saved without a pin. The caller decides the lane, and must overwrite or clear the seat after a step back.
+    bool slot_store_save(server_slot & slot) {
+        if (!params_base.cache_ram_opening) {
+            return slot.prompt_save(*prompt_cache);
+        }
+
+        const int n_seat = slot.prompt.n_tokens();
+        if (n_seat == 0) {
+            return false;
+        }
+
+        auto * pin = server_ckpt_keep_pin(slot.prompt.checkpoints, n_seat);
+        if (pin == nullptr) {
+            SLT_WRN(slot, "opening copy: not saved, no pinned copy (%d tokens, %zu copies)\n", n_seat, slot.prompt.checkpoints.size());
+            return false;
+        }
+
+        // as the read-in's restore of a copy (SLOT_STATE_STARTED): the apprentice's record is a no-op unless copied
+        pin->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        pin->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        common_speculative_set_state(spec.get(), slot.id, pin->data_spec);
+
+        slot.prompt.tokens.keep_first(pin->n_tokens);
+        slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+
+        const size_t n_states = prompt_cache->states.size();
+        const bool saved = slot.prompt_save(*prompt_cache);
+        if (saved) {
+            SLT_WRN(slot, "opening copy: saved %d of %d tokens, %.3f MiB (store: %zu -> %zu entries, %.3f MiB)\n",
+                    slot.prompt.n_tokens(), n_seat, prompt_cache->states.back().size() / (1024.0 * 1024.0),
+                    n_states, prompt_cache->states.size(), prompt_cache->size() / (1024.0 * 1024.0));
+        } else {
+            SLT_WRN(slot, "opening copy: not saved, %d of %d tokens already in the store or over its limit\n",
+                    slot.prompt.n_tokens(), n_seat);
+        }
+        return saved;
+    }
+
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     // pin: this copy becomes the bookmark pin (the batch starts at slot.pin_target)
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max, bool pin = false) {
@@ -2645,8 +2716,10 @@ private:
                 params_base.checkpoint_min_step, id_task, slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max,
                 pin, on_erase);
 
-        if (pin) {
+        if (pin && slot.pin_target >= 0 && cur.n_tokens == slot.pin_target) {
             SLT_WRN(slot, "bookmark pin: split at %" PRId64 ", pinned at %" PRId64 " (was %" PRId64 ")\n", slot.pin_split, cur.n_tokens, pin_was);
+        } else if (pin) {
+            SLT_WRN(slot, "bookmark pin: no pin yet, pinned at %" PRId64 ", the first user message (opening copy)\n", cur.n_tokens);
         }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -2802,7 +2875,11 @@ private:
                             if (!slot.is_processing()) {
                                 SLT_TRC(slot, "%s", "saving idle slot to prompt cache\n");
 
-                                if (slot.prompt_save(*prompt_cache)) {
+                                // --cache-ram-opening steps the seat back, so only when it is cleared right after
+                                const bool save = !params_base.cache_ram_opening ||
+                                    (params_base.kv_unified && slot.lane_last != SERVER_LANE_CODE);
+
+                                if (save && slot_store_save(slot)) {
                                     SLT_DBG(slot, "%s", "__TEST_TAG_CACHE_IDLE_SLOT__\n");
                                     prompt_cache->update();
                                 }
@@ -4087,7 +4164,11 @@ private:
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
                     //       yet processed and therefore it is not part of the checkpoint.
                     if (do_checkpoint) {
-                        create_checkpoint(slot, n_tokens_cur, pos_min, pos_max, is_pin_start);
+                        // --cache-ram-opening: with no pin yet, a chat's copy at its first user message takes it
+                        const bool is_first_pin = server_ckpt_pin_first_user(params_base.cache_ram_opening, ckpt_pin,
+                                params_base.n_ctx_checkpoints, slot.task->lane != SERVER_LANE_CODE,
+                                slot.prompt.checkpoints, spans, n_tokens_start);
+                        create_checkpoint(slot, n_tokens_cur, pos_min, pos_max, is_pin_start || is_first_pin);
                     }
                     if (is_pin_start) {
                         slot.pin_target = -1; // one chance: a batch past the split never pins
