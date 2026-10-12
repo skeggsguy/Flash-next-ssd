@@ -2,8 +2,9 @@
 // without a model. Part of test-server-ckpt-pin (main in test-server-ckpt-pin.cpp).
 //
 // - rule 1, chat only: the store saves a seat whose last task was chat, never one whose last task was code, and only
-//   a chat task takes from it; the same chat going on (a follow-up, a retry) neither saves nor loads, so the save
-//   never fires on a follow-up; with the switch off every hand-on saves and loads, as upstream
+//   a chat task takes from it; a chat seat handed to a chat (a follow-up, a retry, or a new chat, which keeps the
+//   opening from the seat) neither saves nor loads, so the save fires only when coding takes the seat; an empty chat
+//   seat looks in the store; with the switch off every hand-on saves and loads, as upstream
 // - rule 2, opening only: the step back keeps the pinned copy alone, and nothing without a pin
 // - one copy of the opening: the store's save sees none of the seat's copies (the entry carries none), and the seat
 //   gets them all back, at the same addresses, whether the save succeeds, fails or throws
@@ -40,72 +41,52 @@ static bool same(server_ckpt_hand_on h, bool save, bool load) {
 }
 
 static void test_opening_hand_on() {
-    const auto b = first_turn(600); // a new chat B: shares the opening and the start of the memory block
-    const auto code = spans_of({{COMMON_CHAT_ROLE_SYSTEM, 0}, {COMMON_CHAT_ROLE_USER, 9000},
-                                {COMMON_CHAT_ROLE_ASSISTANT, 40000}}, 40010);
-    const auto fu = follow_up(4900, 21000, 21500);
-
     // the switch off: every hand-on saves the whole seat and loads, whatever the lanes (upstream)
     for (bool seat_chat : {false, true}) {
         for (bool task_chat : {false, true}) {
-            CHECK(same(server_ckpt_opening_hand_on(false, seat_chat, task_chat, fu, 20000, 21000, 21500), true, true));
-            CHECK(same(server_ckpt_opening_hand_on(false, seat_chat, task_chat, b,  OPENING + 3, 21000, 4821), true, true));
+            for (int64_t n_seat : {0, 4821, 21500}) {
+                CHECK(same(server_ckpt_opening_hand_on(false, seat_chat, task_chat, n_seat), true, true));
+            }
         }
     }
 
     // scenario 1: a long chat A (21K) leaves the seat for code (~40K): saved, and code takes nothing from the store
-    CHECK(same(server_ckpt_opening_hand_on(true, true,  false, code, 0, 21000, 40010), true,  false));
+    CHECK(same(server_ckpt_opening_hand_on(true, true,  false, 21000), true,  false));
     // ... then new chat B on the code seat: code is never saved, chat B looks in the store
-    CHECK(same(server_ckpt_opening_hand_on(true, false, true,  b,    0, 40010, 4821),  false, true));
+    CHECK(same(server_ckpt_opening_hand_on(true, false, true,  40010), false, true));
     // scenario 5: code then code: nothing saved, nothing taken
-    CHECK(same(server_ckpt_opening_hand_on(true, false, false, code, 30, 40010, 40010), false, false));
-    // a code seat sharing a start with a code task: still nothing (no same-chat test needed for code)
-    CHECK(same(server_ckpt_opening_hand_on(true, false, false, code, 9500, 40010, 40010), false, false));
+    CHECK(same(server_ckpt_opening_hand_on(true, false, false, 40010), false, false));
 
-    // scenario 4: a follow-up in the same chat (split inside the reply, or at its start): neither, the seat keeps all
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, fu, 20000, 21000, 21500), false, false));
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, fu, 4900,  21000, 21500), false, false));
-    // a retry of the same prompt (no split inside the new prompt), and a prompt extending the whole seat
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, fu, 21500, 22000, 21500), false, false));
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, fu, 10000, 10000, 21500), false, false));
-    // ... then a new chat: split inside the first user message (the memory block), or inside the system prompt
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, b, OPENING + 3, 21500, 4821), true, true));
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, b, 40,          21500, 4821), true, true));
-    // a chat sharing nothing with the chat seat: saved (n_past 0 is no follow-up)
-    CHECK(same(server_ckpt_opening_hand_on(true, true, true, b, 0, 21500, 4821), true, true));
-    // a follow-up's shape but the task is code: not the same chat (a lane never changes within one)
-    CHECK(same(server_ckpt_opening_hand_on(true, true, false, fu, 20000, 21000, 21500), true, false));
+    // scenario 4: a follow-up in the same chat: neither, the seat keeps its whole bookmark
+    CHECK(same(server_ckpt_opening_hand_on(true, true, true, 21000), false, false));
+    // scenario 6 (the fix round): a new chat right after a long chat (A 21.5K, B shares only the opening, f_keep < 0.5)
+    // neither saves nor loads: the seat holds the pinned opening and the read-in's restore steps back to it. Saving
+    // here put a second copy of the opening in the store beside the seat's own
+    CHECK(same(server_ckpt_opening_hand_on(true, true, true, 21500), false, false));
+    // an empty chat seat holds no opening: it looks in the store (and has nothing to save)
+    CHECK(same(server_ckpt_opening_hand_on(true, true, true, 0), false, true));
+    // an empty code seat: the lanes alone decide
+    CHECK(same(server_ckpt_opening_hand_on(true, false, true, 0), false, true));
 }
 
-// generated: with the switch on, a chat seat handed to the same chat going on is never saved; a new chat always is
+// generated: with the switch on, the lanes and the seat's size alone decide: a chat seat is saved only for a code task,
+// a chat task takes from the store only from a code seat or an empty one, a code task never takes from it
 static void test_opening_hand_on_generated() {
     std::mt19937 rng(20261012);
-    int n_follow = 0;
-    int n_new    = 0;
+    int n_empty = 0;
     for (int i = 0; i < 20000; i++) {
-        const int64_t reply_at = OPENING + 1 + (int64_t) (rng() % 4000);
-        const int64_t user2_at = reply_at + 1 + (int64_t) (rng() % 30000);
-        const int64_t n        = user2_at + 20 + (int64_t) (rng() % 5000);
-        const int64_t n_old    = reply_at + 1 + (int64_t) (rng() % (n - reply_at + 2000));
-        const auto spans = follow_up(reply_at, user2_at, n);
-        const int64_t n_past = 1 + (int64_t) (rng() % (std::min(n_old, n) + 10));
+        const bool seat_chat = rng() % 2;
+        const bool task_chat = rng() % 2;
+        const int64_t n_seat = rng() % 5 == 0 ? 0 : 1 + (int64_t) (rng() % 200000);
+        n_empty += n_seat == 0;
 
-        const auto h = server_ckpt_opening_hand_on(true, true, true, spans, n_past, n_old, n);
-        if (n_past >= reply_at) {
-            // at or after the first reply, or the whole of either prompt: the same chat goes on
-            CHECK(same(h, false, false));
-            n_follow++;
-        } else {
-            // before the first reply (so inside both prompts, which reach past it): a new chat
-            CHECK(same(h, true, true));
-            n_new++;
-        }
-        // the lanes decide alone whenever either is code
-        CHECK(same(server_ckpt_opening_hand_on(true, false, true,  spans, n_past, n_old, n), false, true));
-        CHECK(same(server_ckpt_opening_hand_on(true, true,  false, spans, n_past, n_old, n), true,  false));
-        CHECK(same(server_ckpt_opening_hand_on(true, false, false, spans, n_past, n_old, n), false, false));
+        const auto h = server_ckpt_opening_hand_on(true, seat_chat, task_chat, n_seat);
+        CHECK(h.save == (seat_chat && !task_chat));
+        CHECK(h.load == (task_chat && (!seat_chat || n_seat == 0)));
+        CHECK(!(h.save && h.load)); // one copy: never saved and taken back in the same hand-on
+        CHECK(same(server_ckpt_opening_hand_on(false, seat_chat, task_chat, n_seat), true, true));
     }
-    CHECK(n_follow > 1000 && n_new > 1000); // both kinds generated
+    CHECK(n_empty > 1000 && n_empty < 19000); // both kinds of seat generated
 }
 
 static void test_opening_keep_pin() {

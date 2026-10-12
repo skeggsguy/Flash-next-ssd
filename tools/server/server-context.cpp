@@ -1966,16 +1966,16 @@ private:
 
                 const int64_t t_start = ggml_time_us();
 
-                // --cache-ram-opening: chat seats only, stepped back to the pin; chat tasks only take from the store;
-                // the same chat going on neither saves nor loads (server_ckpt_opening_hand_on)
+                // --cache-ram-opening: chat seats only, stepped back to the pin, saved when a code task takes the seat;
+                // chat tasks only take from the store; a chat seat handed to a chat neither saves nor loads, so the
+                // seat keeps its opening (server_ckpt_opening_hand_on)
                 const int64_t n_past = params_base.cache_ram_opening ? ret->prompt.tokens.get_common_prefix(task.tokens) : 0;
                 const server_ckpt_hand_on hand = server_ckpt_opening_hand_on(params_base.cache_ram_opening,
-                        ret->lane_last != SERVER_LANE_CODE, task.lane != SERVER_LANE_CODE,
-                        task.params.message_spans, n_past, ret->prompt.n_tokens(), task.n_tokens());
+                        ret->lane_last != SERVER_LANE_CODE, task.lane != SERVER_LANE_CODE, ret->prompt.n_tokens());
 
                 if (params_base.cache_ram_opening && !hand.save && ret->prompt.n_tokens() > 0) {
                     SLT_WRN(*ret, "opening copy: not saved, %s (%d tokens, shares %" PRId64 " with task %d, %s)\n",
-                            ret->lane_last == SERVER_LANE_CODE ? "the seat's last task was code" : "the same chat goes on",
+                            ret->lane_last == SERVER_LANE_CODE ? "the seat's last task was code" : "the chat seat keeps its opening",
                             ret->prompt.n_tokens(), n_past, task.id, server_lane_name(task.lane));
                 }
                 if (hand.save) {

@@ -99,12 +99,14 @@ struct server_ckpt_hand_on {
     bool load; // look in the store for the new prompt (stock: load a better entry, else clear the seat)
 };
 
-// Stock (opening_on false): save and load. With the switch: the same chat going on (seat and task both chat, a shared
-// start whose split is not a new chat's, server_ckpt_split_is_new_chat: a follow-up, a retry, or a prompt extending
-// the seat) does neither, so the seat keeps its whole bookmark; otherwise only a chat seat is saved and only a chat
-// task takes from the store, so coding never takes chat's copy.
-server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat,
-        const common_chat_msg_spans & spans_new, int64_t n_past, int64_t n_old, int64_t n_new);
+// Stock (opening_on false): save and load. With the switch, a chat seat handed to a chat task does neither: the same
+// chat going on (a follow-up, a retry) keeps its whole bookmark, and a new chat keeps the opening from the seat itself,
+// since the seat already holds the pinned copy and the read-in's own restore steps back to it (the path from before the
+// switch). The copy is saved when coding takes the seat. Saving here as well kept a second copy of the opening in the
+// store beside the seat's (fix round of step 3's review, 2026-10-12). An empty chat seat (n_seat 0) holds no opening,
+// so it still looks in the store. Otherwise only a chat seat is saved and only a chat task takes from the store, so
+// coding never takes chat's copy.
+server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat, int64_t n_seat);
 
 // The step back's list: erases every copy but the pinned one and returns it. nullptr, leaving the list untouched, when
 // there is no pin or it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat): then nothing is saved.

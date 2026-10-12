@@ -157,13 +157,12 @@ common_prompt_checkpoint & server_ckpt_add(server_ckpt_list & ckpts, bool pin_on
     return cur;
 }
 
-server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat,
-        const common_chat_msg_spans & spans_new, int64_t n_past, int64_t n_old, int64_t n_new) {
+server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat, int64_t n_seat) {
     if (!opening_on) {
         return { true, true };
     }
-    if (seat_chat && task_chat && n_past > 0 && !server_ckpt_split_is_new_chat(spans_new, n_past, n_old, n_new)) {
-        return { false, false };
+    if (seat_chat && task_chat) {
+        return { false, n_seat == 0 };
     }
     return { seat_chat, task_chat };
 }
