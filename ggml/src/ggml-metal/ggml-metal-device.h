@@ -341,6 +341,7 @@ struct ggml_metal_device_props {
     int op_offload_min_batch_size;
 
     int mv_ext_max; // the most columns the small-batch mat-vec takes (GGML_METAL_MV_EXT_MAX, ggml-metal-mv-ext.h)
+    int staff_mv;   // 1: the staff's Q8_0 mat-vec takes 2-16 columns, with the tensor API (GGML_METAL_STAFF_MV, ggml-metal-staff-mv.h)
 };
 
 typedef struct ggml_metal_event * ggml_metal_event_t;

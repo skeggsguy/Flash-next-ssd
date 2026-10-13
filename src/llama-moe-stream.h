@@ -42,6 +42,8 @@ bool moe_stream_partition();
 // one context can evict slots referenced by the other's in-flight graph.
 
 struct llama_moe_room;
+struct llama_moe_stream_statelog;
+struct llama_moe_stream_guesser;
 
 struct llama_moe_stream {
     uint32_t n_slots      = 0; // expert cache slots per streamed layer
@@ -105,6 +107,25 @@ struct llama_moe_stream {
     bool use_alt(int32_t expert, uint32_t n_expert) const {
         return !files_alt.empty() && n_expert > 0 &&
                ((int64_t) expert*100) / (int64_t) n_expert >= (int64_t) alt_split;
+    }
+
+    // The drive choice by load (LLAMA_MOE_STREAM_DYN_DRIVE, on unless "0"). The id split fixes each book's drive
+    // before anyone knows how busy the drives are: on 2026-10-11 the GPU waited on books 19% of
+    // writing with the drives each only about half busy. With this on, each slab goes to the runner
+    // with fewer reads in flight, and the id split decides only when the two are level. The bytes
+    // are the same on both runners, so only the timing can change, never the words. On by default since
+    // rungs C-plumb-code (+12.5%) and C-plumb-chat (+10.3%), 2026-10-12.
+    bool drive_by_load = true;
+    // runner threads at the interactive service class (LLAMA_MOE_STREAM_QOS, on unless "0"; macOS only), so a
+    // trip is not queued behind background work
+    bool runner_qos    = true;
+
+    // which runner reads this slab now (under mtx: it reads busy_n)
+    bool pick_alt(int32_t expert, uint32_t n_expert) const {
+        if (drive_by_load && !files_alt.empty() && busy_n[0] != busy_n[1]) {
+            return busy_n[1] < busy_n[0];
+        }
+        return use_alt(expert, n_expert);
     }
 
     size_t  max_nb_expert      = 0;
@@ -246,6 +267,10 @@ struct llama_moe_stream {
     // says how many tokens the call routed, not why: with the MTP draft on, a verification ubatch
     // is several tokens and is written as kind 1.
     std::string trace_path;                // LLAMA_MOE_STREAM_TRACE, empty = off
+
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG, llama-moe-stream-statelog.h): the router's input, scores and
+    // the shared expert's output at every single-wave floor stop; null = off, and then the graph is unchanged
+    std::unique_ptr<llama_moe_stream_statelog> state_log;
     FILE *      trace_file    = nullptr;
     int64_t     trace_records = 0;         // records written since the last flush
     int64_t     trace_skipped = 0;         // calls whose routing width was not n_expert_used
@@ -275,9 +300,20 @@ struct llama_moe_stream {
     // internals
     void start_workers_locked();
     void worker_loop();
-    int32_t pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep) const;
+    // spare_kept: also skip slots holding a guessed book whose floor has not stopped (the keep rule's guesses)
+    int32_t pick_victim_locked(llama_moe_stream_layer & sl, const uint8_t * keep, bool spare_kept = false) const;
     void reserve_slot_locked(llama_moe_stream_layer & sl, int32_t expert, int32_t slot);
     void promote_slot_locked(llama_moe_stream_layer & sl, int32_t slot);
+
+    // The keep rule (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP, llama-moe-stream-keep.cpp): a guessed book stays on the desk
+    // until its own floor's stop. Off (unset or "0"), the desk chooses exactly as before; the tags and counters
+    // below are recorded either way, so an off arm reports its put-back books too.
+    bool la_keep = false;
+    // the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, llama-moe-stream-guesser.h), null = off
+    std::unique_ptr<llama_moe_stream_guesser> guesser;
+    int32_t pick_victim_need_locked(llama_moe_stream_layer & sl, const uint8_t * keep); // a floor's own need
+    void keep_mark_locked(llama_moe_stream_layer & sl, int32_t slot, int32_t book, bool two_ahead); // at a guess
+    void keep_forget_locked(llama_moe_stream_layer & sl, int32_t slot); // the slot is reused (reserve_slot_locked)
 
     // multi-pass prefill helpers (called by llama_moe_stream_wave_ids, all under mtx)
     void plan_waves_locked(llama_moe_stream_layer & sl, const int32_t * ids, int64_t n);
@@ -323,6 +359,16 @@ bool llama_moe_stream_lookahead_all_env();
 uint32_t llama_moe_stream_lookahead_all_ranks_env();
 // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: also fetch floor L+2's K most likely books (0 or unset: off)
 uint32_t llama_moe_stream_lookahead_depth2_env();
+// LLAMA_MOE_STREAM_LOOKAHEAD_KEEP set and not "0": the keep rule (llama-moe-stream-keep.cpp). Read at load.
+bool llama_moe_stream_lookahead_keep_env();
+
+// start loading the listed guessed books into floor sl's desk, most likely first (under mtx); stops when the
+// backlog is full or no slot may be taken. two_ahead: guessed two floors ahead (llama-moe-stream-lookahead.cpp)
+void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const std::vector<int32_t> & books, bool two_ahead);
+
+// floor sl's stop is over (any of its ops: the remap, a wave, the reading room's desk op): none of its guessed
+// books is kept any longer, read or not. Graph-thread data, so the quick path calls it without the lock.
+void llama_moe_stream_keep_release(llama_moe_stream_layer & sl);
 
 // Identity on the ubatch token ids, with a side effect: start the loads for every hash-routed
 // layer. The hash layers take their tid2eid get_rows index from this op's output, which is what

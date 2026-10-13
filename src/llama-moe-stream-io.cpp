@@ -16,6 +16,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
+
 // page-aligned allocation, required both for O_DIRECT reads and for Metal private-buffer uploads
 void * moe_aligned_alloc(size_t n) {
 #ifdef _WIN32
@@ -101,7 +105,14 @@ void llama_moe_stream::start_workers_locked() {
     workers_started = true;
     workers.reserve(n_io_threads);
     for (int32_t i = 0; i < n_io_threads; i++) {
-        workers.emplace_back([this]() { worker_loop(); });
+        workers.emplace_back([this]() {
+#ifdef __APPLE__
+            if (runner_qos) {
+                pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+            }
+#endif
+            worker_loop();
+        });
     }
 }
 
@@ -157,9 +168,10 @@ void llama_moe_stream::worker_loop() {
             continue;
         }
 
-        // two runners: low expert ids from the model's own shards, high ids from the alt copy.
-        // The offset is the same in both, because the alt shards are byte-identical copies.
-        const bool alt = use_alt(w.expert, sl.n_expert);
+        // two runners: low expert ids from the model's own shards, high ids from the alt copy - or,
+        // with the drive choice by load on, whichever has fewer reads in flight. The offset is the
+        // same in both, because the alt shards are byte-identical copies.
+        const bool alt = pick_alt(w.expert, sl.n_expert);
 
         // Read into the cache slot itself when the backend hands out a host pointer - on unified
         // memory the slot IS host memory, so staging then uploading is a pure extra copy of the

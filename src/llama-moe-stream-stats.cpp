@@ -109,11 +109,37 @@ void llama_moe_stream::maybe_dump_stats_locked() {
             LLAMA_LOG_WARN("%s: moe stream: drives busy file/alt = %5.1f%%/%5.1f%% | %5.2f/%5.2f GB/s\n",
                     __func__, dt > 0 ? 100.0*d_tf/dt : 0.0, dt > 0 ? 100.0*d_ta/dt : 0.0,
                     d_tf > 0 ? d_bf/1e3/d_tf : 0.0, d_ta > 0 ? d_ba/1e3/d_ta : 0.0);
-            const int64_t d_la2_i = stats.n_la2_issued - stats_prev.n_la2_issued;
-            const int64_t d_la2_u = stats.n_la2_used   - stats_prev.n_la2_used;
+            // the lookahead's guesses: fetched, read by their floor, and put back unread before their floor
+            // stopped (llama-moe-stream-keep.cpp); the keep rule's line says how often a floor's own need took a
+            // kept slot rather than wait. The "lookahead 2 floors: fetched N, used M" prefix is parsed as it is.
+            const int64_t d_la1_i = stats.n_la1_issued   - stats_prev.n_la1_issued;
+            const int64_t d_la1_u = stats.n_la1_used     - stats_prev.n_la1_used;
+            const int64_t d_la1_p = stats.n_la1_put_back - stats_prev.n_la1_put_back;
+            const int64_t d_la2_i = stats.n_la2_issued   - stats_prev.n_la2_issued;
+            const int64_t d_la2_u = stats.n_la2_used     - stats_prev.n_la2_used;
+            const int64_t d_la2_p = stats.n_la2_put_back - stats_prev.n_la2_put_back;
+            if (d_la1_i > 0 || d_la1_u > 0) {
+                LLAMA_LOG_WARN("%s: moe stream: lookahead 1 floor: fetched %lld, used %lld (%.1f%%), put back unread %lld\n",
+                        __func__, (long long) d_la1_i, (long long) d_la1_u, d_la1_i > 0 ? 100.0*d_la1_u/d_la1_i : 0.0,
+                        (long long) d_la1_p);
+            }
             if (d_la2_i > 0 || d_la2_u > 0) {
-                LLAMA_LOG_WARN("%s: moe stream: lookahead 2 floors: fetched %lld, used %lld (%.1f%%)\n", __func__,
-                        (long long) d_la2_i, (long long) d_la2_u, d_la2_i > 0 ? 100.0*d_la2_u/d_la2_i : 0.0);
+                LLAMA_LOG_WARN("%s: moe stream: lookahead 2 floors: fetched %lld, used %lld (%.1f%%), put back unread %lld\n",
+                        __func__, (long long) d_la2_i, (long long) d_la2_u, d_la2_i > 0 ? 100.0*d_la2_u/d_la2_i : 0.0,
+                        (long long) d_la2_p);
+            }
+            if (la_keep) {
+                LLAMA_LOG_WARN("%s: moe stream: lookahead keep: forced %lld\n", __func__,
+                        (long long) (stats.n_keep_forced - stats_prev.n_keep_forced));
+            }
+            // the trained guesser (llama-moe-stream-guesser.h): floor stops that guessed with it, the words scored, the
+            // books handed to the issue loop, and the books of the words' 24 best left under the confidence cut
+            const int64_t d_gs = stats.n_guess_stops - stats_prev.n_guess_stops;
+            if (guesser && d_gs > 0) {
+                LLAMA_LOG_WARN("%s: moe stream: lookahead guesser: floor stops %lld, words %lld, picked %lld, under the cut %lld\n",
+                        __func__, (long long) d_gs, (long long) (stats.n_guess_words - stats_prev.n_guess_words),
+                        (long long) (stats.n_guess_picked - stats_prev.n_guess_picked),
+                        (long long) (stats.n_guess_under - stats_prev.n_guess_under));
             }
         }
 

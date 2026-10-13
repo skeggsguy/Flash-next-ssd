@@ -85,3 +85,44 @@ void server_ckpt_invalidate(server_ckpt_list & ckpts, llama_pos pos_next, const 
 common_prompt_checkpoint & server_ckpt_add(server_ckpt_list & ckpts, bool pin_on, int32_t n_max, int32_t min_step,
         int id_task, int64_t n_tokens_new, llama_pos pos_min, llama_pos pos_max, bool pin,
         const server_ckpt_on_erase & on_erase);
+
+// The opening copy (--cache-ram-opening, study CHAT-RETURN-PLAN.md step 1, decisions 2026-10-12): the saved-prompts
+// store (--cache-ram) keeps chat's opening only. When a chat leaves the seat, the seat is stepped back to its pinned
+// copy (the end of sidekick's opening, ~4.2K tokens) and only that is saved, so a new chat after a coding request
+// reads in only its own message. The stock store saves the whole chat (682 MiB at 8K, 1.06 GiB at 21K), and a new
+// chat shares too little of a long one for the store to hand it back (it wants 25%). A seat's lane is chat or code
+// (server-lane.h); every request is chat while the chat window is off.
+
+// what the store does when the seat is handed to another task (get_available_slot's save point)
+struct server_ckpt_hand_on {
+    bool save; // save the seat (with the switch: stepped back to its pinned copy first)
+    bool load; // look in the store for the new prompt (stock: load a better entry, else clear the seat)
+};
+
+// Stock (opening_on false): save and load. With the switch, a chat seat handed to a chat task does neither: the same
+// chat going on (a follow-up, a retry) keeps its whole bookmark, and a new chat keeps the opening from the seat itself,
+// since the seat already holds the pinned copy and the read-in's own restore steps back to it (the path from before the
+// switch). The copy is saved when coding takes the seat. Saving here as well kept a second copy of the opening in the
+// store beside the seat's (fix round of step 3's review, 2026-10-12). An empty chat seat (n_seat 0) holds no opening,
+// so it still looks in the store. Otherwise only a chat seat is saved and only a chat task takes from the store, so
+// coding never takes chat's copy.
+server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat, int64_t n_seat);
+
+// The step back's list: erases every copy but the pinned one and returns it. nullptr, leaving the list untouched, when
+// there is no pin or it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat): then nothing is saved.
+common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat);
+
+// One copy of the opening (Tom, decisions 2026-10-12; cleric's review of step 1): the saved entry carries no bookmark
+// copies. A seat stepped back to its pin holds exactly the opening, so a new chat that takes the entry reads on from
+// its end with no restore, and its read-in makes its own copy at its first user message, which rule 3 pins; the
+// pinned copy inside the entry (~113 MiB + ~2 KB a token) would never be used. `save` runs with the seat's copies set
+// aside, so the store neither copies them nor counts them against its limit, and they are put back afterwards (also
+// if save throws), at the same addresses: the seat keeps its pin for the tie, where it serves the new chat itself.
+// Returns what save returns.
+bool server_ckpt_save_without_copies(server_ckpt_list & ckpts, const std::function<bool()> & save);
+
+// A first chat keeps its opening too: with the switch on (and the pin, with room for it), a chat task's copy made at
+// its first user message's start takes the pin when no copy holds one yet. The read-in already makes that copy (it
+// breaks there), so no batch changes. The split rule still moves the pin later.
+bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_checkpoints, bool task_chat,
+        const server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_tokens_start);

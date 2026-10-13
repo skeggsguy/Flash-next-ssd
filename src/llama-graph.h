@@ -1108,6 +1108,12 @@ struct llm_graph_context {
 
     llama_moe_stream * mstream;
 
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG, src/llama-moe-stream-statelog.h): on for this graph's context
+    // (never the apprentice's); a model that builds its shared expert before build_moe_ffn sets the output
+    // here for the floor stop to log, and clears it after
+    bool moe_stream_state_log_on() const;
+    mutable ggml_tensor * moe_stream_shexp = nullptr;
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     const llm_graph_cb & cb_func;
@@ -1259,7 +1265,7 @@ struct llm_graph_context {
     // a one-wave ubatch's GEMMs read, then the expert GEMMs in one pass or in waves; msl null = the
     // layer is not streamed, and both fall through to what build_moe_ffn does without streaming
     ggml_tensor * build_moe_stream_ids(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
-            ggml_tensor * cur, ggml_tensor * selected_experts, int il) const;
+            ggml_tensor * cur, ggml_tensor * logits, ggml_tensor * selected_experts, int il) const;
     ggml_tensor * build_moe_stream_experts(llama_moe_stream_layer * msl, const llm_moe_stream_shape & shape,
             const llm_moe_gemms & gemms, ggml_tensor * cur, ggml_tensor * ids_gemm, ggml_tensor * selected_experts,
             int64_t n_expert_used, bool weight_before_ffn) const;

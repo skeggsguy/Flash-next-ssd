@@ -12,6 +12,7 @@
 // - with the pin on, invariants over generated sequences: never more than -ctxcp copies, at most one pinned,
 //   and the pin is never thrown out to make room
 // - a copy saves the apprentice's record only when its memory can't be trimmed (FULL, RS; COPY-FIX-PLAN.md step 1)
+// - in test-server-ckpt-pin-opening.cpp: the opening copy's rules (--cache-ram-opening, CHAT-RETURN-PLAN.md step 1)
 
 #include "test-server-ckpt-pin.h"
 
@@ -330,6 +331,7 @@ int main() {
     test_pin_beyond_split_dropped();
     test_upstream_picks();
     test_pin_invariants();
+    test_opening();
 
     if (n_fail > 0) {
         std::fprintf(stderr, "test-server-ckpt-pin: %d check(s) failed\n", n_fail);

@@ -8,6 +8,7 @@
 #import "ggml-metal-ops.h"
 #import "ggml-metal-fusion.h"
 #import "ggml-metal-fusion-fn.h"
+#import "ggml-metal-staff-mv.h"
 
 #import <Foundation/Foundation.h>
 
@@ -196,6 +197,14 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
         GGML_LOG_INFO("%s: use fusion         = %s\n", __func__, ggml_metal_fusion_info_enabled(res->finfo) ? "true" : "false");
         GGML_LOG_INFO("%s: use concurrency    = %s\n", __func__, res->use_concurrency    ? "true" : "false");
         GGML_LOG_INFO("%s: use graph optimize = %s\n", __func__, res->use_graph_optimize ? "true" : "false");
+
+        {
+            // #23's route, once per context and at WARN: the device init's line comes before a server installs its
+            // log callback, and the library's INFO reaches a server log only at -lv 4 (the study's gates, perplexity
+            // arms and rungs read this one)
+            char route[160];
+            GGML_LOG_WARN("%s: %s\n", __func__, ggml_metal_staff_mv_route_line(route, sizeof(route), props_dev->staff_mv, props_dev->has_tensor));
+        }
 
         res->capture_compute = 0;
         res->capture_started = false;

@@ -10,6 +10,7 @@
 #include "ggml-metal-fusion.h"
 #include "ggml-metal-fusion-fn.h"
 #include "ggml-metal-mv-ext.h"
+#include "ggml-metal-staff-mv.h"
 #include "ggml-metal-tuning.h"
 
 #include <cassert>
@@ -2564,6 +2565,11 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
 
     // the most columns the small-batch kernels take (8 upstream; up to 16, ggml-metal-mv-ext.h)
     const int mv_ext_limit = ggml_metal_mv_ext_limit(ne01, props_dev->mv_ext_max);
+
+    // #23: the staff's Q8_0 at 2-16 columns on the matrix units, each weight read once (ggml-metal-staff-mv.h)
+    if (ggml_metal_staff_mv_takes(op, ggml_metal_staff_mv_limit(props_dev->staff_mv, props_dev->has_tensor))) {
+        return ggml_metal_staff_mv_encode(lib, enc, op);
+    }
 
     // first try to use small-batch mat-mv kernels
     // these should be efficient for BS [2, ~8]

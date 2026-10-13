@@ -22,6 +22,11 @@
 // WRITING-PLAN.md step 3b (the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX) adds MUL_MAT at
 // n = 2..16 for the small-batch kernel's types: against the build before it, 2-8 columns must list the same
 // hashes with the switch unset, and every line with GGML_METAL_MV_EXT_MAX=8 (today's route).
+//
+// STAFF-MATRIX-PLAN step 2 (#23, the staff's Q8_0 mat-vec on the matrix units, GGML_METAL_STAFF_MV) adds Q8_0
+// MUL_MAT at n = 2..16 on 37 and 4,099 rows (k 640 and 2,560) and a broadcast batch: against the build before
+// it (build/bin.4d080cede: ggml is unchanged from there to b4745dbc3), every line must list the same hash at
+// "0"; with the switch unset, only the 4,099-row lines at 4-16 columns may differ (the staff kernel's sums).
 
 #include "testing.h"
 
@@ -49,9 +54,19 @@ struct mv_case {
     int64_t   k;
     int64_t   n;  // tokens
     ggml_type type = GGML_TYPE_Q8_0;
+    int64_t   m    = M; // MUL_MAT's rows
+    int64_t   b0   = 1; // MUL_MAT's src0 matrices
+    int64_t   b1   = 1; // MUL_MAT's src1 batches (broadcast over src0's)
 
     std::string name() const {
-        return std::string(id ? "mul_mat_id " : "mul_mat ") + ggml_type_name(type) + " k=" + std::to_string(k) + " n=" + std::to_string(n);
+        std::string s = std::string(id ? "mul_mat_id " : "mul_mat ") + ggml_type_name(type) + " k=" + std::to_string(k) + " n=" + std::to_string(n);
+        if (m != M) {
+            s += " m=" + std::to_string(m);
+        }
+        if (b0 != 1 || b1 != 1) {
+            s += " b=" + std::to_string(b0) + "/" + std::to_string(b1);
+        }
+        return s;
     }
 };
 
@@ -73,6 +88,17 @@ std::vector<mv_case> all_cases() {
             }
             cases.push_back({ false, 1024, n, type });
         }
+    }
+    // #23: the staff's Q8_0 mat-vec, rows under and past its 2,048 (off 32's multiple), and a broadcast batch
+    for (int64_t k : { 640, 2560 }) {
+        for (int64_t m : { 37, 4099 }) {
+            for (int64_t n = 2; n <= 16; n++) {
+                cases.push_back({ false, k, n, GGML_TYPE_Q8_0, m });
+            }
+        }
+    }
+    for (int64_t n = 2; n <= 16; n++) {
+        cases.push_back({ false, 640, n, GGML_TYPE_Q8_0, 37, 2, 4 });
     }
     return cases;
 }
@@ -142,15 +168,16 @@ std::vector<uint8_t> run(ggml_backend_t backend, const mv_case & c) {
         ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32,  N_USED, c.n);
         out = ggml_mul_mat_id(ctx, a, b, ids);
     } else {
-        a   = ggml_new_tensor_2d(ctx, c.type, c.k, M);
-        b   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32,  c.k, c.n);
+        a   = ggml_new_tensor_3d(ctx, c.type, c.k, c.m, c.b0);
+        b   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32,  c.k, c.n, c.b1);
         out = ggml_mul_mat(ctx, a, b);
     }
 
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
     GGML_ASSERT(buf != nullptr);
 
-    std::mt19937 rng(1234u + (uint32_t) (2*c.k + c.n + (c.id ? 100000 : 0)) + (c.type == GGML_TYPE_Q8_0 ? 0u : 7919u*(uint32_t) c.type));
+    std::mt19937 rng(1234u + (uint32_t) (2*c.k + c.n + (c.id ? 100000 : 0)) + (c.type == GGML_TYPE_Q8_0 ? 0u : 7919u*(uint32_t) c.type) +
+                     (c.m == M ? 0u : 31u*(uint32_t) c.m) + (c.b1 == 1 ? 0u : 13u*(uint32_t) c.b1));
     fill_src0(a, rng);
     fill_f32(b, rng);
     if (ids) {

@@ -131,8 +131,8 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
             const int64_t t_send0 = stops ? llama_moe_stream_stops::now_ns() : 0;
             const uint64_t lent = lender ? lender->lend_find_locked(*sl, e, false) : 0; // pinned before any keep
             int32_t v;
-            while ((v = mgr->pick_victim_locked(*sl, sl->keep.data())) < 0) {
-                // every allowed slot is loading; wait for a commit and retry
+            while ((v = mgr->pick_victim_need_locked(*sl, sl->keep.data())) < 0) {
+                // every allowed slot is loading; wait for a commit and retry (a kept guess is taken, not waited for)
                 const int64_t t_w0 = stops ? llama_moe_stream_stops::now_ns() : 0;
                 mgr->cv_done.wait(lk);
                 if (stops) {
@@ -286,7 +286,7 @@ void llama_moe_stream_prefetch_hash(ggml_tensor * dst, const ggml_tensor * a, in
             if (sl.expert_slot.find(e) != sl.expert_slot.end()) {
                 continue; // reserved by an earlier token of this same ubatch
             }
-            const int32_t v = mgr->pick_victim_locked(sl, nullptr);
+            const int32_t v = mgr->pick_victim_locked(sl, nullptr, mgr->la_keep); // a guess: spares kept slots
             if (v < 0) {
                 break; // every slot busy; the layer's own remap will demand-load it
             }

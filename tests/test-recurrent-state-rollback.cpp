@@ -10,6 +10,8 @@
 #include <clocale>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <set>
 #include <vector>
@@ -86,6 +88,13 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     return init_ctx(model, cparams, fill);
 }
 
+// LLAMA_RS_SKIP_SLOTS=1 (the ceiling tax, src/llama-rs-skip.h): a round writes only the undo slots a
+// rollback after it can reach, and a rollback past the last round is refused
+static bool rs_skip_slots() {
+    const char * v = getenv("LLAMA_RS_SKIP_SLOTS");
+    return v != nullptr && strcmp(v, "1") == 0;
+}
+
 static float logit_diff(float a, float b) {
     return std::isfinite(a) && std::isfinite(b) ? std::fabs(a - b) : std::numeric_limits<float>::infinity();
 }
@@ -102,6 +111,13 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     constexpr uint32_t  n_rollback = 3;
     constexpr uint32_t  n_replay   = 40; // > n_ubatch so each seq spans multiple ubatches
     constexpr llama_pos p0         = n_prompt - n_rollback;
+
+    // with the switch on, a rollback of the whole tail is past its round's reach: ctx_roll's tail starts
+    // one token earlier (so it is n_rollback + 1 long and still ends at n_prompt - 1), its whole rollback
+    // must be refused, and the n_rollback one then lands on p0 as before
+    const bool      skip   = rs_skip_slots();
+    const uint32_t  n_round = n_rollback + (skip ? 1 : 0);
+    const llama_pos p_tail = (llama_pos) n_prompt - (llama_pos) n_round;
 
     const auto make_ctx_multi = [&]() {
         auto cparams = common_context_params_to_llama(params);
@@ -138,23 +154,28 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
 
     bool ok = true;
 
-    // both contexts decode the identical [0, p0) prefill; only ctx_roll decodes
-    // the tail, which is then rolled back so its restore is pending at replay
-    for (uint32_t s = 0; s < n_seqs && ok; ++s) {
+    // both contexts decode the identical [0, p0) prefill (ctx_roll [0, p_tail) with the switch on); only
+    // ctx_roll decodes the tail, which is then rolled back so its restore is pending at replay
+    const auto decode_range = [&](llama_context * ctx, uint32_t s, llama_pos from, llama_pos to) {
         llama_batch batch = llama_batch_init(n_prompt, 0, 1);
-        for (llama_pos pos = 0; pos < (llama_pos) p0; ++pos) {
+        for (llama_pos pos = from; pos < to; ++pos) {
             common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
         }
-        ok = ok && llama_decode(ctx_roll, batch) == 0;
-        ok = ok && llama_decode(ctx_ref,  batch) == 0;
-
-        common_batch_clear(batch);
-        for (llama_pos pos = p0; pos < (llama_pos) n_prompt; ++pos) {
-            common_batch_add(batch, tok(s, pos), pos, { (llama_seq_id) s }, false);
-        }
-        ok = ok && llama_decode(ctx_roll, batch) == 0;
+        const bool res = llama_decode(ctx, batch) == 0;
         llama_batch_free(batch);
+        return res;
+    };
+    for (uint32_t s = 0; s < n_seqs && ok; ++s) {
+        ok = ok && decode_range(ctx_roll, s, 0, p_tail);
+        ok = ok && decode_range(ctx_ref,  s, 0, p0);
+        ok = ok && decode_range(ctx_roll, s, p_tail, (llama_pos) n_prompt);
 
+        if (skip) {
+            // the whole round (n_round) and one more: refused, and the seq keeps its last position
+            ok = ok && !llama_memory_seq_rm(llama_get_memory(ctx_roll), (llama_seq_id) s, p_tail, -1);
+            ok = ok && !llama_memory_seq_rm(llama_get_memory(ctx_roll), (llama_seq_id) s, p_tail - 1, -1);
+            ok = ok && llama_memory_seq_pos_max(llama_get_memory(ctx_roll), (llama_seq_id) s) == (llama_pos) n_prompt - 1;
+        }
         ok = ok && llama_memory_seq_rm(llama_get_memory(ctx_roll), (llama_seq_id) s, p0, -1);
 
         // a second partial removal while one is pending must be refused
@@ -353,6 +374,25 @@ static int test_rollback(const common_params & params, llama_model * model, uint
         return 1;
     }
 
+    if (rs_skip_slots()) {
+        // the replay was three one-token rounds: rolling all three back is past the last round's reach.
+        // Refused on both, with nothing moved; then both read the prompt in again and roll it back
+        // as the first time, so the partial checkpoint below restores a reachable slot
+        for (llama_context * ctx : { ctx_src, ctx_dst }) {
+            llama_memory_t mem = llama_get_memory(ctx);
+            const llama_pos pos_max = llama_memory_seq_pos_max(mem, 0);
+            if (llama_memory_seq_rm(mem, 0, rollback_pos, -1) || llama_memory_seq_rm(mem, 0, pos_max, -1) ||
+                llama_memory_seq_pos_max(mem, 0) != pos_max) {
+                fprintf(stderr, "%s : a rollback past the last round was not refused\n", __func__);
+                return 1;
+            }
+            llama_memory_clear(mem, true);
+            if (!decode_tokens(ctx, tokens, n_tokens)) {
+                fprintf(stderr, "%s : failed to decode prompt again\n", __func__);
+                return 1;
+            }
+        }
+    }
     if (!llama_memory_seq_rm(llama_get_memory(ctx_src), 0, rollback_pos, -1) ||
         !llama_memory_seq_rm(llama_get_memory(ctx_dst), 0, rollback_pos, -1)) {
         fprintf(stderr, "%s : partial rollback failed\n", __func__);

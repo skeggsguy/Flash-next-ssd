@@ -10145,6 +10145,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // #23: the staff's Q8_0 mat-vec on the matrix units (GGML_METAL_STAFF_MV, ggml-metal-staff-mv.h): 2-16
+    // columns on 2,048+ rows; rows off 32's multiple, k off the simdgroups' 4 blocks (k 320: 10 blocks, the
+    // library's hc up; k 2592: 81), a batch of 2 and a broadcast batch (src1 twice src0's)
+    for (int n = 2; n <= 16; ++n) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 2051, n, 2560, { 1, 1 }, { 1, 1 }));
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 2048, n,  320, { 2, 1 }, { 1, 1 }));
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 2080, n, 2592, { 1, 1 }, { 2, 1 }));
+    }
+
     // Multi-column MMVQ coverage for the Q4_K weight-reuse path and a Q5_K control.
     for (ggml_type type_a : { GGML_TYPE_Q4_K, GGML_TYPE_Q5_K }) {
         for (int n = 1; n <= 8; ++n) {

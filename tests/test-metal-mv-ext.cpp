@@ -14,6 +14,11 @@
 //   mul_mm. Rows not a multiple of a threadgroup's and every column count 9-16 exercise the kernel's tails.
 //
 // ctest runs it twice: GGML_METAL_MV_EXT_MAX unset (16) and =8.
+//
+// STAFF-MATRIX-PLAN step 2 (#23): with GGML_METAL_STAFF_MV on (unset), Q8_0 on 2,048+ rows at 4-16 columns
+// takes the staff mat-vec (ggml-metal-staff-mv.h), whatever this limit, and its columns' bytes do not depend
+// on the columns beside them, so 9-16 columns there are the bytes of two small batches. ctest also runs it
+// at 16 with GGML_METAL_STAFF_MV=0.
 
 #include "testing.h"
 
@@ -152,11 +157,14 @@ void test_table(testing & t) {
 
 // the route's expectation, written out here rather than asked of ggml_metal_mv_ext_limit, so a change to the
 // helper that the device follows too still shows as red: ctest sets GGML_METAL_MV_EXT_MAX to 16 or 8
-int expected_limit(int64_t rows, int mv_ext_max) {
+int expected_limit(ggml_type ty, int64_t rows, int mv_ext_max, bool staff_mv) {
+    if (ty == GGML_TYPE_Q8_0 && staff_mv && rows >= 2048) {
+        return 16; // the staff mat-vec's
+    }
     return rows >= 4096 ? std::min(mv_ext_max, 10) : mv_ext_max;
 }
 
-void test_route(testing & t, ggml_backend_t backend, int mv_ext_max) {
+void test_route(testing & t, ggml_backend_t backend, int mv_ext_max, bool staff_mv) {
     struct shape { int64_t m, k; };
     const shape shapes[] = { { M_SMALL, 768 }, { M_SMALL, 2560 }, { M_BIG, 768 } }; // k a whole number of K-quant blocks
     const ggml_type types[] = { GGML_TYPE_Q8_0, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q4_0,
@@ -164,7 +172,7 @@ void test_route(testing & t, ggml_backend_t backend, int mv_ext_max) {
     for (ggml_type ty : types) {
         for (const shape & sh : shapes) {
             const int64_t k = sh.k;
-            const int lim = expected_limit(sh.m, mv_ext_max);
+            const int lim = expected_limit(ty, sh.m, mv_ext_max, staff_mv);
             for (int64_t n = 9; n <= 16; n++) {
                 const std::string name = std::string(ggml_type_name(ty)) + " m=" + std::to_string(sh.m) + " k=" + std::to_string(k) + " n=" + std::to_string(n);
                 const int64_t n1 = (n + 1)/2; // two batches of 5-8 (mul_mv_ext today, K-quants included)
@@ -174,7 +182,7 @@ void test_route(testing & t, ggml_backend_t backend, int mv_ext_max) {
                 split.insert(split.end(), rest.begin(), rest.end());
                 t.assert_true(name + ": nonzero", any_nonzero(whole));
                 if (n <= lim) {
-                    t.assert_true(name + ": mul_mv_ext, the bytes of two small batches", whole == split);
+                    t.assert_true(name + ": mul_mv_ext (or the staff's), the bytes of two small batches", whole == split);
                 } else {
                     t.assert_true(name + ": mul_mm (past the limit " + std::to_string(lim) + "), other sums", whole != split);
                 }
@@ -195,6 +203,9 @@ int main(int argc, char ** argv) {
     const int mv_ext_max = env && strcmp(env, "8") == 0 ? 8 : env == nullptr || strcmp(env, "16") == 0 ? 16 :
                            ggml_metal_mv_ext_max_parse(env, nullptr);
     printf("GGML_METAL_MV_EXT_MAX=%s: up to %d columns\n", env ? env : "(unset)", mv_ext_max);
+    const char * staff_env = getenv("GGML_METAL_STAFF_MV");
+    const bool staff_mv = staff_env == nullptr || strcmp(staff_env, "0") != 0;
+    printf("GGML_METAL_STAFF_MV=%s: the staff mat-vec %s\n", staff_env ? staff_env : "(unset)", staff_mv ? "on" : "off");
 
     t.test("the switch", test_switch);
     t.test("the table", test_table);
@@ -206,7 +217,7 @@ int main(int argc, char ** argv) {
         return t.summary();
     }
     ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
-    t.test("the route", [&](testing & t) { test_route(t, backend, mv_ext_max); });
+    t.test("the route", [&](testing & t) { test_route(t, backend, mv_ext_max, staff_mv); });
     ggml_backend_free(backend);
     return t.summary();
 }

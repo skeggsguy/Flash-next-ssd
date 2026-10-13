@@ -18,6 +18,7 @@ static std::unique_lock<std::mutex> stage_wave_for_op(llama_moe_stream_layer & s
     mgr->stats.n_wave_calls++;
 
     if (w == 0) {
+        llama_moe_stream_keep_release(sl); // the floor's stop: its waves never wait on a kept guess
         mgr->plan_waves_locked(sl, ids, n);
         // the ubatch's own routing, recorded once per layer rather than once per wave. Always
         // kind 1: the multi-wave path only runs when a ubatch touches more experts than the cache

@@ -6,6 +6,7 @@
 #include "llama-memory-recurrent.h"
 #include "llama-mtp-record.h"
 #include "llama-mtp-vocab.h"
+#include "llama-rs-skip.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -1689,8 +1690,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     // the channels must match how load_arch_tensors sizes wqkv, not ssm_d_inner
     const int64_t conv_channels    = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads;
 
+    // the ceiling tax keeps every slot of this history (llama-rs-skip.h): without its copies Metal's graph
+    // order, and so its fused kernels' rounding, changes and the words with it
     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
-            conv_kernel_size - 1, conv_channels, il);
+            conv_kernel_size - 1, conv_channels, /*skip_slots =*/ false, il);
 
     ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
@@ -1767,25 +1770,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
 
-    ggml_tensor * moe_out =
-        build_moe_ffn(cur,
-            model.layers[il].ffn_gate_inp,
-            model.layers[il].ffn_up_exps,
-            model.layers[il].ffn_gate_exps,
-            model.layers[il].ffn_down_exps,
-            nullptr,
-            n_expert, n_expert_used,
-            LLM_FFN_SILU, true,
-            hparams.expert_weights_scale,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-            nullptr, model.layers[il].ffn_gate_up_exps,
-            model.layers[il].ffn_up_exps_s,
-            model.layers[il].ffn_gate_exps_s,
-            model.layers[il].ffn_down_exps_s);
-    cb(moe_out, "ffn_moe_out", il);
-
     // shared experts, as in the Qwen3Next reference
-    if (model.layers[il].ffn_up_shexp != nullptr) {
+    const auto build_shexp = [&]() {
         ggml_tensor * ffn_shexp =
             build_ffn(cur,
                 model.layers[il].ffn_up_shexp, NULL, model.layers[il].ffn_up_shexp_s,
@@ -1804,7 +1790,39 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
 
         ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
         cb(ffn_shexp, "ffn_shexp_gated", il);
+        return ffn_shexp;
+    };
 
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG) reads the shared expert's output at the floor stop, so with it
+    // on the shared expert is built first and handed over; off, the graph is built exactly as before
+    ggml_tensor * ffn_shexp = nullptr;
+    if (model.layers[il].ffn_up_shexp != nullptr && moe_stream_state_log_on()) {
+        ffn_shexp = build_shexp();
+        moe_stream_shexp = ffn_shexp;
+    }
+
+    ggml_tensor * moe_out =
+        build_moe_ffn(cur,
+            model.layers[il].ffn_gate_inp,
+            model.layers[il].ffn_up_exps,
+            model.layers[il].ffn_gate_exps,
+            model.layers[il].ffn_down_exps,
+            nullptr,
+            n_expert, n_expert_used,
+            LLM_FFN_SILU, true,
+            hparams.expert_weights_scale,
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+            nullptr, model.layers[il].ffn_gate_up_exps,
+            model.layers[il].ffn_up_exps_s,
+            model.layers[il].ffn_gate_exps_s,
+            model.layers[il].ffn_down_exps_s);
+    cb(moe_out, "ffn_moe_out", il);
+    moe_stream_shexp = nullptr;
+
+    if (model.layers[il].ffn_up_shexp != nullptr) {
+        if (ffn_shexp == nullptr) {
+            ffn_shexp = build_shexp();
+        }
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
     } else {
@@ -1934,6 +1952,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
         ggml_tensor *        x,
         int64_t              state_cols,
         int64_t              channels,
+        bool                 skip_slots,
         int                  il) {
     const auto * mctx_cur = inp->mctx;
 
@@ -1967,7 +1986,10 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
     const size_t row_size = ggml_row_size(conv_states_all->type, row_total);
     const uint32_t mem_size = mctx_cur->get_size();
 
-    const int64_t n_slots = (int64_t) cparams.n_rs_seq + 1;
+    // the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, llama-rs-skip.h): skipping, only slots 0..n-1, the ones a
+    // rollback after this round can read; otherwise every slot (those past n hold the round's start)
+    const int64_t n_slots = llama_rs_slots_written(skip_slots, ubatch.n_seq_tokens,
+            (int64_t) cparams.n_rs_seq + 1);
 
     for (int64_t slot = 0; slot < n_slots; ++slot) {
         const int64_t s_idx = std::max<int64_t>(0, conv_input->ne[0] - state_cols - slot);
@@ -2065,7 +2087,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_ple(
     // [hist + n_seq_tokens, hc_dim, n_seqs], tokens on ne[0]
     ggml_tensor * padded = build_conv_state_at(inp, inp->mctx->get_p_l(il),
             ggml_reshape_3d(ctx0, normalized, hc_dim, n_seq_tokens, n_seqs),
-            hist, hc_dim, il);
+            hist, hc_dim, cparams.rs_skip_slots, il);
 
     ggml_tensor * conv_out = nullptr;
     for (int64_t k = 0; k < kern; ++k) {

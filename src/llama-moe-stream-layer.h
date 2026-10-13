@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h"
+#include "llama-moe-stream-guesser.h"
 
 #include <cstdint>
 #include <memory>
@@ -82,6 +83,15 @@ struct llama_moe_stream_lookahead {
     ggml_tensor *            bias_src2  = nullptr;
     bool                     bias2_read = false;
     std::vector<float>       bias2;
+
+    // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER (llama-moe-stream-guesser.h): the two-floor scores are the trained
+    // guesser's z, ranked as they are (no router transform, no bias2); conf_cut > 0 (LLAMA_MOE_STREAM_LOOKAHEAD_CONF)
+    // picks by confidence instead of top_k2
+    bool                     guessed    = false;
+    float                    conf_cut   = 0.0f;
+    float                    conf_scale = 10.0f;
+    float                    conf_max   = 1.0f;
+    llama_moe_stream_guess_scratch conf_scratch;
 };
 
 struct llama_moe_stream_layer;
@@ -110,6 +120,12 @@ struct llama_moe_stream_layer {
     std::vector<int64_t>                 slot_last_use; // [n_slots] LRU stamps
     std::unordered_map<int32_t, int32_t> expert_slot;   // RESIDENT and LOADING entries
     std::vector<int32_t>                 slot_la2;      // [n_slots] book a two-floors-ahead fetch put here, -1 none
+    std::vector<int32_t>                 slot_la1;      // [n_slots] book a one-floor-ahead guess put here, -1 none
+    // [n_slots] a guessed book whose floor has not stopped yet (llama-moe-stream-keep.cpp): 0 none, 1 guessed one
+    // floor ahead, 2 two floors ahead. Set at the guess, cleared at the floor's stop or when the slot is reused;
+    // with LLAMA_MOE_STREAM_LOOKAHEAD_KEEP the victim rule spares it
+    std::vector<uint8_t>                 slot_kept;
+    int32_t                              n_slot_kept = 0; // slots with slot_kept set, so a stop with none skips the sweep
 
     std::vector<uint32_t> route_hotness; // [n_expert] decayed selection counts, for eviction
     std::vector<uint8_t>  seen;          // [n_expert] for cold-miss attribution
@@ -185,6 +201,8 @@ struct llama_moe_stream_layer {
     // build_moe_ffn can reach the NEXT layer's router without a signature change.
     ggml_tensor * la_gate_inp = nullptr;   // next layer's ffn_gate_inp
     ggml_tensor * la_gate_inp2 = nullptr;  // the layer after next's, with LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2
+    ggml_tensor * la_guess    = nullptr;   // the trained guesser's floor L+2 matrix, in place of la_gate_inp2 (GUESSER)
+    ggml_tensor * la_guess_b  = nullptr;   // and its bias
     ggml_tensor * la_bias_src = nullptr;   // next layer's exp_probs_b, may be null
     struct llama_moe_stream_lookahead * la = nullptr;
 };

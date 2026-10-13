@@ -9,6 +9,7 @@
 #include "llama-model.h"
 #include "llama-moe-room.h"
 #include "llama-moe-stream.h"
+#include "llama-moe-stream-statelog.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -177,10 +178,16 @@ llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * m
     return { n_stream_waves, stream_wave_cap, use_partition };
 }
 
+bool llm_graph_context::moe_stream_state_log_on() const {
+    return mstream && mstream->state_log && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP;
+}
+
 // the ids the expert GEMMs read when the ubatch fits in one wave: slot ids from the CPU remap (with the
-// next floor's lookahead) or from the GPU resolve kernel; the router's ids otherwise
+// next floor's lookahead) or from the GPU resolve kernel; the router's ids otherwise. `logits` are the
+// router's scores, read only by the state log.
 ggml_tensor * llm_graph_context::build_moe_stream_ids(llama_moe_stream_layer * msl,
-        const llm_moe_stream_shape & shape, ggml_tensor * cur, ggml_tensor * selected_experts, int il) const {
+        const llm_moe_stream_shape & shape, ggml_tensor * cur, ggml_tensor * logits, ggml_tensor * selected_experts,
+        int il) const {
     const int64_t  n_tokens       = cur->ne[1];
     const uint32_t n_stream_waves = shape.n_waves;
 
@@ -205,17 +212,35 @@ ggml_tensor * llm_graph_context::build_moe_stream_ids(llama_moe_stream_layer * m
             // The prediction skips the attention and FFN terms between the layers - a lower bound,
             // but the exact version would need layer L+1's attention output, i.e. attention twice
             // per layer.
+            ggml_tensor * la_logits = nullptr;
             if (msl->la && msl->la->sl_next && msl->la_gate_inp) {
-                ggml_tensor * la_logits = ggml_mul_mat(ctx0, msl->la_gate_inp, cur);
+                la_logits = ggml_mul_mat(ctx0, msl->la_gate_inp, cur);
                 ggml_prec_set_acc(la_logits, GGML_PREC_F32);
                 cb(la_logits, "ffn_moe_logits_next", il);
                 if (msl->la_gate_inp2) { // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2: the layer after next, joined below
-                    ggml_tensor * la2 = ggml_mul_mat(ctx0, msl->la_gate_inp2, cur);
+                    // with LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, the trained guesser's line for floor L+2 on this
+                    // floor's input, W . cur + b (llama-moe-stream-guesser.h), in place of L+2's own router
+                    ggml_tensor * la2 = ggml_mul_mat(ctx0, msl->la_guess ? msl->la_guess : msl->la_gate_inp2, cur);
                     ggml_prec_set_acc(la2, GGML_PREC_F32);
+                    if (msl->la_guess) {
+                        la2 = ggml_add(ctx0, la2, msl->la_guess_b);
+                        cb(la2, "ffn_moe_guess", il);
+                    }
                     la_logits = ggml_concat(ctx0, la_logits, la2, 0);
                     cb(la_logits, "ffn_moe_logits_next2", il);
                 }
+            }
 
+            // The state log (LLAMA_MOE_STREAM_STATE_LOG): the same stop, its op also handed the router's scores,
+            // its input and the shared expert's output (built first by the model, moe_stream_shexp), so it
+            // adds no graph split. Only when the floor sees every row of the ubatch: a read-in's last floor
+            // keeps only the output rows, and its records could not be told from writing's.
+            ggml_tensor * shexp = moe_stream_shexp;
+            if (shexp && logits && moe_stream_state_log_on() && cur->ne[1] == this->n_tokens) {
+                ggml_tensor * args[5] = { ids_cont, logits, cur, shexp, la_logits };
+                ids_gemm = ggml_custom_4d(ctx0, GGML_TYPE_I32, ids_cont->ne[0], ids_cont->ne[1], 1, 1,
+                        args, la_logits ? 5 : 4, llama_moe_stream_remap_log, 1, msl);
+            } else if (la_logits) {
                 ids_gemm = ggml_map_custom2(ctx0, ids_cont, la_logits, llama_moe_stream_remap_la, 1, msl->la);
             } else {
                 ids_gemm = ggml_map_custom1(ctx0, ids_cont, llama_moe_stream_remap, 1, msl);

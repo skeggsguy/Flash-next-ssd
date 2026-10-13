@@ -70,12 +70,18 @@ Environment-only switches:
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | 0 (claim the whole cache at once) | Claim the expert cache in steps of this many MiB, with a pause between steps (`LLAMA_MOE_STREAM_ALLOC_PAUSE_MS`, 500 ms when chunking). Opening a 28 GiB cache at once drops macOS's free memory in seconds, and the study's only spill inside a test came at such an opening. Study: **4096**. |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | 180 | Metal un-wires the model's buffers after this many idle seconds, and the next request wires ~41 GiB back at once, a small rush. Study: **10000000** (keep it wired for good). Leave the default if you want the memory back when the server is idle. |
 | `LLAMA_MOE_STREAM_LOOKAHEAD` | the model's experts per token (10) | While writing, fetch this many of the next layer's likely experts ahead of time (about 72% turn out right). `0` turns it off. Lookahead makes the cache's contents depend on timing, but never changes the words. |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER` | none | The trained two-layer guesser's file ([crystal-ball](https://huggingface.co/skeggsguy/crystal-ball), `c1-guesser.gguf`, 121 MB). Each layer scores all 512 experts of the layer after next and fetches the confident ones early. Needs `_DEPTH2` set and the lookahead on; refuses a file of the wrong shape. Never changes the words. Study: **on** (+4.2% writing on code, +8.2% on chat). |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_CONF` | 0.2 | With the guesser: fetch the experts whose confidence is above this. Study: **0.2** (0.1 fetched more and gained less). |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2` | 0 (off) | Also fetch two layers ahead. Without the guesser, the K most likely experts by the next layer's router; with it, the guesser's confident picks. Study: **4**. |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_ALL` | off | Look ahead for every token of a small batch (the draft head's check), not only the last. Study: **1**. |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_KEEP` | off | Keep a guessed expert in the cache until its layer has run, so a right guess is not evicted unread. The cache still takes a kept slot rather than wait. Study: **1**: the keep rule is what turns the guesser's accuracy into speed. |
 | `LLAMA_MOE_STREAM_STATS_MS` | 0 (off) | Print streaming statistics (cache hits, reads, the reading room) every N ms. Handy while tuning: `1000`. |
 
 ## Two drives
 
-A byte-identical copy of the model on a second SSD lets two drives read at once. The split is by
-expert id, so it is stable and proportional, not by how often an expert is used.
+A byte-identical copy of the model on a second SSD lets two drives read at once. Each read goes to
+the drive with fewer reads waiting; the split by expert id below breaks ties, so it still sets each
+drive's share when both are equally busy.
 
 | Option | Env var | Default | What it does |
 |---|---|---|---|
@@ -88,6 +94,13 @@ sequential read (for example Blackmagic Disk Speed Test) and round.
 
 Measured (study, final setup): writing +15%, time to first token −31%, the cache's hit rate
 unchanged. A second drive is worth more than a few GiB of cache.
+
+Environment-only (both on unless set to `0`; they choose where bytes are read from, never which):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LLAMA_MOE_STREAM_DYN_DRIVE` | on | Send each read to the drive with fewer reads in flight, not the drive its expert id names. Measured with the second drive: +12.5% writing on code, +10.4% on chat, together with `_QOS`. |
+| `LLAMA_MOE_STREAM_QOS` | on | Run the read threads at macOS's interactive service class. |
 
 ## The reading room (prompt reading)
 
@@ -157,6 +170,13 @@ If you mostly write prose, try it off (remove `-md` and the `--spec-*` flags) an
 at a time, so at temperature 0 the text can differ from a run without the head. The exam score was
 the same (18/20) either way.
 
+Environment-only, with the draft head:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LLAMA_RS_SKIP_SLOTS` | 0 (off) | Before each check the model saves copies of its recurrent state so it can undo rejected guesses. `1` saves only the copies a rollback can reach, and refuses a rollback past them. Byte-identical output. Study: **1** (+4.3% writing on code, chat level). Off by default because the refusal path is proven only with the draft head. |
+| `GGML_METAL_STAFF_MV` | on with Metal 4 (M5) | The check's Q8_0 matrix-vector work for 2-16 tokens on the GPU's matrix units. It did not clear the study's +3% bar (−0.8% and +1.1% on code), so the study runs **0**, the older route its numbers were measured on. |
+
 ## Context, attention and slots
 
 | Option | Env var | Default | What it does |
@@ -182,7 +202,8 @@ step back to where a new request differs, such as an edited message.
 |---|---|---|---|
 | `-ctxcp N` (`--ctx-checkpoints`) | `LLAMA_ARG_CTX_CHECKPOINTS` | 32 | Checkpoints kept per slot. Each costs ~113 MiB + ~2 MiB per 1K tokens of context, so 32 is far too many here. Study: **3** (one pinned, two rolling). |
 | `-cms N` (`--checkpoint-min-step`) | `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT` | 8192 | The fewest tokens between checkpoints. 8192 instead of 512 cut time to first token by 17%, because a long prompt is read in fewer, bigger pieces. |
-| `--cache-ram N` | `LLAMA_ARG_CACHE_RAM` | 8192 (MiB) | An extra prompt cache in RAM for other conversations. **Set 0** on 64 GB: that memory is better spent on the expert cache. |
+| `--cache-ram N` | `LLAMA_ARG_CACHE_RAM` | 8192 (MiB) | An extra prompt cache in RAM for other conversations. **Set 0** on 64 GB: that memory is better spent on the expert cache. With the chat window, **400** and `--cache-ram-opening`. |
+| `--cache-ram-opening` | | off | Keep only one RAM copy: chat's opening (its system prompt and tools, ~232 MiB here), never a coding agent's conversation. With a coding agent sharing the server, a new chat then starts writing in 4.1 s instead of 14.2 s. Use with the chat window and `--cache-ram 400`. |
 | `--cache-reuse 0` | `LLAMA_ARG_CACHE_REUSE` | 0 | Reuse by shifting the KV cache; keep it off. |
 
 Environment-only: `LLAMA_CKPT_PIN` (default on). One checkpoint stays pinned at the start of the

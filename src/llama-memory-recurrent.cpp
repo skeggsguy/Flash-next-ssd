@@ -5,6 +5,7 @@
 #include "llama-io.h"
 #include "llama-batch.h"
 #include "llama-model.h"
+#include "llama-rs-skip.h"
 
 #include <algorithm>
 #include <cassert>
@@ -25,7 +26,8 @@ llama_memory_recurrent::llama_memory_recurrent(
                  uint32_t   mem_size,
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
-    const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max) {
+    const layer_filter_cb & filter,
+                     bool   rs_skip_slots) : hparams(model.hparams), n_seq_max(n_seq_max) {
     const int32_t n_layer = hparams.n_layer();
 
     head = 0;
@@ -34,6 +36,8 @@ llama_memory_recurrent::llama_memory_recurrent(
 
     this->n_rs_seq = n_rs_seq;
     rs_idx.assign(n_seq_max, 0);
+    this->rs_skip_slots = rs_skip_slots && n_rs_seq > 0;
+    rs_reach.assign(n_seq_max, 0);
 
     cells.clear();
     cells.resize(mem_size);
@@ -156,6 +160,7 @@ void llama_memory_recurrent::clear(bool data) {
     }
 
     std::fill(rs_idx.begin(), rs_idx.end(), 0);
+    std::fill(rs_reach.begin(), rs_reach.end(), 0);
 }
 
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -177,6 +182,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
     const bool rm_all = p0 == 0 && p1 == std::numeric_limits<llama_pos>::max();
     if (rm_all) {
         set_rs_idx(seq_id, 0);
+        set_rs_reach(seq_id, 0);
     }
 
     // models like Mamba or RWKV can't have a state partially erased at the end
@@ -195,10 +201,16 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 const llama_pos rollback = cell.pos - (p0 - 1);
                 // pending rollback is single-use
                 const bool pending = rs_idx[seq_id] != 0;
-                if (!pending && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
+                // with LLAMA_RS_SKIP_SLOTS=1 also no deeper than the last round wrote (llama-rs-skip.h)
+                if (!pending && rollback >= 1 &&
+                        llama_rs_rollback_ok(rs_skip_slots, (uint32_t) rollback, rs_reach[seq_id], n_rs_seq)) {
                     set_rs_idx(seq_id, (uint32_t) rollback);
                     cell.pos = p0 - 1;
                     return true;
+                }
+                if (!pending && rs_skip_slots && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
+                    LLAMA_LOG_WARN("%s: seq %d: a rollback of %d is past the last round's reach (%u): refused "
+                            "(LLAMA_RS_SKIP_SLOTS=1)\n", __func__, seq_id, rollback, rs_reach[seq_id]);
                 }
                 return false;
             }
@@ -280,6 +292,8 @@ void llama_memory_recurrent::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id
             cell_src.seq_id.insert(seq_id_dst);
             tail_dst.tail = tail_src.tail;
         }
+        // the copy shares src's undo slots, so it shares their reach
+        set_rs_reach(seq_id_dst, tail_src.tail >= 0 ? rs_reach[seq_id_src] : 0);
     }
 }
 
@@ -417,6 +431,18 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
     rs_idx[seq_id] = idx;
 }
 
+void llama_memory_recurrent::set_rs_reach(llama_seq_id seq_id, uint32_t reach) {
+    if (seq_id < 0) {
+        std::fill(rs_reach.begin(), rs_reach.end(), 0);
+        return;
+    }
+
+    GGML_ASSERT((uint32_t) seq_id < n_seq_max);
+    GGML_ASSERT(reach <= n_rs_seq);
+
+    rs_reach[seq_id] = reach;
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> ret;
     for (const auto & [_, buf] : ctxs_bufs) {
@@ -484,6 +510,7 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
     auto org_cells = cells;
     auto org_used = used;
     auto org_head = head;
+    auto org_rs_reach = rs_reach;
 
     bool success = true;
 
@@ -498,6 +525,7 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
     cells = std::move(org_cells);
     used = org_used;
     head = org_head;
+    rs_reach = std::move(org_rs_reach);
 
     return success;
 }
@@ -668,6 +696,8 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
             const llama_seq_id seq_id = ubatch.seq_id[i][j];
             cell.seq_id.insert(seq_id);
             cells[seq_id].tail = cell_id;
+            // this round writes undo slots 0..min(n, K)-1 (llama-rs-skip.h)
+            rs_reach[seq_id] = llama_rs_reach(n_seq_tokens, n_rs_seq);
         }
     }
 
@@ -872,6 +902,8 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
 
     if (n_rs_seq != 0) {
         set_rs_idx(seq_id, 0);
+        // a restored state carries no undo slots: no rollback until the next round
+        set_rs_reach(seq_id, 0);
     }
 }
 

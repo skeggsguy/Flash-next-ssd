@@ -6,6 +6,7 @@
 #import "ggml-metal-impl.h"
 #import "ggml-metal-common.h"
 #import "ggml-metal-mv-ext.h"
+#import "ggml-metal-staff-mv.h"
 
 #include <Foundation/Foundation.h>
 
@@ -116,6 +117,7 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
 #define GGML_METAL_LIBS \
     X(FA,              fa)             \
     X(MUL_MV,          mul_mv)         \
+    X(MUL_MV_STAFF,    mul_mv_staff)   \
     X(MUL_MM,          mul_mm)         \
     X(QUANTIZE,        quantize)       \
     X(SOFTMAX,         softmax)        \
@@ -1701,6 +1703,14 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                     }
                 }
 
+                {
+                    bool bad = false;
+                    dev->props.staff_mv = ggml_metal_staff_mv_parse(getenv("GGML_METAL_STAFF_MV"), &bad);
+                    if (bad) {
+                        GGML_LOG_WARN("%s: GGML_METAL_STAFF_MV=%s is not 0 or 1: on\n", __func__, getenv("GGML_METAL_STAFF_MV"));
+                    }
+                }
+
                 dev->props.max_buffer_size            = dev->mtl_device.maxBufferLength;
                 dev->props.max_theadgroup_memory_size = dev->mtl_device.maxThreadgroupMemoryLength;
                 if (@available(macOS 10.12, iOS 16.0, *)) {
@@ -1774,6 +1784,11 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                 GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
                 GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
                 GGML_LOG_INFO("%s: small-batch mat-vec   = up to %d columns (GGML_METAL_MV_EXT_MAX)\n", __func__, dev->props.mv_ext_max);
+                {
+                    // again at WARN from each context's init (ggml_metal_init): a server's log callback misses this one
+                    char route[160];
+                    GGML_LOG_INFO("%s: %s\n", __func__, ggml_metal_staff_mv_route_line(route, sizeof(route), dev->props.staff_mv, dev->props.has_tensor));
+                }
 
 #if TARGET_OS_OSX || (TARGET_OS_IOS && __clang_major__ >= 15)
                 if (@available(macOS 10.12, iOS 16.0, *)) {

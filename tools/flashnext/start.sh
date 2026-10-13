@@ -62,6 +62,7 @@ fi
 . "$SETTINGS"
 MODEL=$(home "$MODEL")
 DRAFT_HEAD=$(home "$DRAFT_HEAD")
+GUESSER=$(home "${GUESSER:-}")
 SECOND_COPY=$(home "$SECOND_COPY")
 BIN=$ROOT/build/bin/llama-server
 
@@ -121,6 +122,12 @@ if [ "$DRIVES" = two-ssds ]; then
 fi
 
 # Advice only: these never stop the start.
+if [ -n "$GUESSER" ] && [ ! -f "$GUESSER" ]; then
+    note "no trained guesser at $GUESSER, so this start runs without it (a few percent" \
+         "slower writing). Download it (README.md, \"Quick start\", step 2), or set GUESSER=" \
+         "(empty) in $CONF to stop this note."
+    GUESSER=
+fi
 if [ "$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)" = 0 ]; then
     note "the GPU's wired-memory limit is macOS's default (75% of RAM). The study raised it:" \
          "docs/flashnext/getting-started.md, step 4."
@@ -133,7 +140,8 @@ if [ "${PILE:-0}" -gt 90000 ]; then
 fi
 
 # --- The command: the guides' everyday settings ------------------------------------------
-ENVS=(LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000)
+ENVS=(LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000
+      GGML_METAL_STAFF_MV=0)   # the matrix-unit check route did not clear its bar: the measured route
 ARGS=(-m "$MODEL" -ngl 99
       --moe-stream --moe-stream-cache "$CACHE_GIB" --moe-stream-io-threads 8 --moe-stream-direct)
 if [ "$DRIVES" = two-ssds ]; then
@@ -144,9 +152,19 @@ if [ -n "$DRAFT_HEAD" ]; then
     ARGS+=(-md "$DRAFT_HEAD" --spec-draft-ngl 99
            --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3
            --spec-max-prompt 0)
+    ENVS+=(LLAMA_RS_SKIP_SLOTS=1)   # fewer undo copies: proven with the draft head on
+fi
+if [ -n "$GUESSER" ]; then
+    ENVS+=(LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER="$GUESSER" LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2
+           LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1
+           LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1)
+fi
+CACHE_RAM=(--cache-ram 0)
+if [ "${CHAT_WINDOW:-0}" != 0 ]; then
+    CACHE_RAM=(--cache-ram 400 --cache-ram-opening)   # one RAM copy of chat's opening
 fi
 ARGS+=(-c "$CONTEXT" -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on
-       --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek)
+       --cache-reuse 0 "${CACHE_RAM[@]}" --jinja --reasoning-format deepseek)
 if [ "${CHAT_WINDOW:-0}" != 0 ]; then
     ARGS+=(--chat-window "$CHAT_WINDOW")
 fi

@@ -42,6 +42,7 @@ void llama_moe_room::desk_locked(std::unique_lock<std::mutex> & lk, llama_moe_ro
     }
 
     release_locked(); // every part earlier floors used
+    llama_moe_stream_keep_release(sl); // this is the floor's stop: no guessed book of it is kept past here
 
     // the desk books this ubatch reads: a LOADING one (a guess, or this read-in's cold fill) counts as on
     // the desk, so wait until it has landed, exactly as the remap does

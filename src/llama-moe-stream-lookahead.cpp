@@ -20,14 +20,19 @@
 // (llama-moe-room-lend-ops.cpp) a guess keeps the book it puts back and is copied back from the belt
 // when its book is there; the guesses' keeps are copied out by the next floor's remap op, or by the
 // guess's own worker at its gate, whichever comes first.
-// the top_k predicted books of one token's row of next-floor logits, most likely first
+// the top_k predicted books of one token's row of next-floor logits, most likely first; raw: the trained guesser's
+// scores, ranked as they are
 static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, const float * logits,
-        std::vector<int32_t> & picks, uint32_t n, const std::vector<float> & bias, uint32_t top_k) {
+        std::vector<int32_t> & picks, uint32_t n, const std::vector<float> & bias, uint32_t top_k, bool raw = false) {
     picks.clear();
     la->score.resize(n);
     for (uint32_t e = 0; e < n; e++) {
         // same selection rule as build_moe_ffn for this arch: sqrt(softplus(x)) then the bias
         const float x = logits[e];
+        if (raw) {
+            la->score[e] = x;
+            continue;
+        }
         float p = x > 20.0f ? x : log1pf(expf(x));   // softplus, guarded for large x
         p = sqrtf(p);
         la->score[e] = p + (bias.empty() ? 0.0f : bias[e]);
@@ -44,9 +49,10 @@ static void llama_moe_stream_lookahead_top(llama_moe_stream_lookahead * la, cons
     }
 }
 
-// start loading the listed books in order; stops when the backlog is full or no slot is free
-static void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const std::vector<int32_t> & books,
-        bool two_ahead = false) {
+// start loading the listed books in order; stops when the backlog is full or no slot is free. Each book is
+// tagged with its slot, so its floor counts it read, and kept there until that floor stops; with the keep
+// rule (llama-moe-stream-keep.cpp) a guess never takes the slot of another guess still kept.
+void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const std::vector<int32_t> & books, bool two_ahead) {
     auto * mgr = sl.mgr;
 
     llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
@@ -59,9 +65,9 @@ static void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const 
         if (mgr->q_spec.size() >= mgr->q_spec_max) {
             break;                     // backlog already deeper than the drive will clear in time
         }
-        const int32_t v = mgr->pick_victim_locked(sl, nullptr);
+        const int32_t v = mgr->pick_victim_locked(sl, nullptr, mgr->la_keep);
         if (v < 0) {
-            break;                     // every slot busy; the layer's own remap will demand-load it
+            break;                     // every slot busy or kept; the layer's own remap will demand-load it
         }
         const uint64_t lent = lender ? lender->lend_find_locked(sl, (int32_t) best, true) : 0; // pinned before any keep
         const uint64_t save = lender ? lender->lend_keep_locked(sl, v, n_kept) : 0;             // before reserve forgets the old book
@@ -75,13 +81,7 @@ static void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const 
             mgr->cv_work.notify_one();
         }
         mgr->stats.n_preload_issued++;
-        if (two_ahead) {
-            if (sl.slot_la2.size() != (size_t) sl.n_slots) {
-                sl.slot_la2.assign((size_t) sl.n_slots, -1);
-            }
-            sl.slot_la2[v] = best;
-            mgr->stats.n_la2_issued++;
-        }
+        mgr->keep_mark_locked(sl, v, (int32_t) best, two_ahead);
     }
 }
 
@@ -114,9 +114,18 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
     }
     const uint32_t n2 = la->sl_next2->n_expert;
     const int64_t first = (n_tok > 1 && n_tok <= 16 && la->all) ? 0 : n_tok - 1;
+    auto & st = la->sl_next2->mgr->stats; // the guesser's counts: graph thread only (llama-moe-stream-stats.h)
+    if (la->guessed && la->conf_cut > 0.0f) { // by the trained guesser's confidence (llama-moe-stream-guesser.h)
+        llama_moe_stream_guess_pick(rows + n1, stride, first, n_tok, n2, la->conf_cut, la->conf_scale, la->conf_max,
+                LLAMA_MOE_STREAM_GUESS_PER_WORD, books, la->conf_scratch, st.n_guess_under);
+        st.n_guess_stops++;
+        st.n_guess_words  += n_tok - first;
+        st.n_guess_picked += (int64_t) books.size();
+        return;
+    }
     std::vector<std::vector<int32_t>> picks((size_t) n_tok);
     for (int64_t t = first; t < n_tok; t++) {
-        llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2);
+        llama_moe_stream_lookahead_top(la, rows + t*stride + n1, picks[(size_t) t], n2, la->bias2, la->top_k2, la->guessed);
     }
     std::vector<uint8_t> seen(n2, 0);
     books.clear();
@@ -128,6 +137,11 @@ static void llama_moe_stream_prefetch_next2(llama_moe_stream_lookahead * la, con
                 books.push_back(e);
             }
         }
+    }
+    if (la->guessed) {
+        st.n_guess_stops++;
+        st.n_guess_words  += n_tok - first;
+        st.n_guess_picked += (int64_t) books.size();
     }
 }
 
@@ -234,7 +248,7 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
             return;
         }
     }
-    llama_moe_stream_lookahead_issue(*la->sl_next, books1);
+    llama_moe_stream_lookahead_issue(*la->sl_next, books1, false);
     if (two) {
         llama_moe_stream_lookahead_issue(*la->sl_next2, books2, true);
     }

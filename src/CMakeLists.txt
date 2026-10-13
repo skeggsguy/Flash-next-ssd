@@ -54,16 +54,20 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-files.cpp
     llama-moe-stream-gpu-slot.cpp
     llama-moe-stream-io.cpp
+    llama-moe-stream-keep.cpp
+    llama-moe-stream-guesser.cpp
     llama-moe-stream-remap.cpp
     llama-moe-stream-lookahead.cpp
     llama-moe-stream-quick.cpp
     llama-moe-stream-stats.cpp
     llama-moe-stream-trace.cpp
+    llama-moe-stream-statelog.cpp
     llama-moe-stream-stops.cpp
     llama-moe-stream-wave-ops.cpp
     llama-moe-stream-wave-plan.cpp
     llama-moe-stream-wave-stage.cpp
     llama-mtp-record.cpp
+    llama-rs-skip.cpp
     llama-mtp-vocab.cpp
     llama-ple-shelf.cpp
     llama-ple-shelf-io.cpp

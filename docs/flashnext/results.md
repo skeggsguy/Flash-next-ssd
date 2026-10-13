@@ -60,6 +60,31 @@ Runs happened on different days and settings, so compare within a line, not down
 | Cheaper per-layer stops | +7.3% writing (15.52 → 16.66) | C-stops |
 | Pinned first checkpoint | a new chat after a long one starts in 4.2 s instead of 14.2 s | pin gate |
 
+## October: coding and chat
+
+From October the study measured on two new sets from the author's own use, each replayed turn by
+turn with the prompt cache on: 24 coding-agent conversations at high thinking effort (`code`), and
+24 chat conversations at medium effort (`chat`). Writing is word-weighted over every reply. Each run
+is A-B-A against the setup before it, the base pair had to agree within 3%, and a change had to
+gain at least 3% (or, for an efficiency fix, stay level within that noise).
+
+| Change | Coding | Chat | Run |
+|---|---|---|---|
+| The trained two-layer guesser with the keep rule | **+4.2%** (17.51 → 18.25 tokens/s) | **+8.2%** (17.62 → 19.06) | K-final |
+| Fewer undo copies (`LLAMA_RS_SKIP_SLOTS=1`) | **+4.3%** (18.07 → 18.84) | level, −2.0% (20.86 → 20.44) | C-tax, C-taxfix-chat |
+| The drive choice by load and read-thread priority (plumbing) | **+12.5%** (18.92 → 21.28) | **+10.4%** (19.14 → 21.13) | C-plumb |
+| Chat's opening kept in RAM | | a new chat after coding work: first token in **4.1 s**, from 14.2 s | chat-return |
+
+The best measured arms: **21.2 tokens/s on code** and **21.1 on chat** (over every paper), against
+17.5 and 17.6 for the same sets before the trained guesser, run in another week: about +21% and
++20%. None of these changes alters an output token (the guesser changes only what is fetched early;
+the undo copies and the plumbing passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
+from 20%.
+
+Tried and not kept in October: the check's matrix work on the M5's matrix units
+(`GGML_METAL_STAFF_MV`, −0.8% and +1.1% on code, below the +3% bar), and raising the draft head's
+ceiling from 5 to 8 guesses (+1.1%, below the bar). Both runs: C-tax.
+
 ## Expert cache size (draft head off)
 
 | Expert cache | Writing | Run |
@@ -79,7 +104,7 @@ Runs happened on different days and settings, so compare within a line, not down
 | Prompt batch 8,192 | +26.8% reading a prompt, but ~4.5 GiB more memory; the reading room instead | U-ub |
 | Drafting 30 tokens ahead | 4.01 tokens/s against 14.20 | X-guess30 |
 | Fetching experts for draft tokens early | +1.8% overall: off | A-fetch |
-| Prefetching two layers ahead | the run spilled: void, parked | A-depth2 |
+| Prefetching two layers ahead, by the router | the run spilled: void, parked; the trained guesser took it up in October | A-depth2 |
 
 ## Compared with others
 

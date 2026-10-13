@@ -149,6 +149,7 @@ if (LLAMA_LLGUIDANCE)
 endif ()
 
 llama_build(test-recurrent-state-rollback.cpp)
+llama_build(test-rs-skip-slots.cpp)
 llama_build(test-save-load-state.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
@@ -161,7 +162,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-llama-grammar.cpp)
     llama_build_and_test(test-batch-alloc.cpp)
     llama_build_and_test(test-moe-stream-trace.cpp)
+    llama_build_and_test(test-moe-stream-statelog.cpp)
     llama_build_and_test(test-moe-stream-split.cpp)
+    # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
+    llama_build_and_test(test-moe-stream-keep.cpp)
+    # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
+    # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
+    llama_build_and_test(test-moe-stream-guesser.cpp)
     llama_build_and_test(test-moe-room-gemm.cpp)
     llama_build_and_test(test-moe-room-size.cpp)
     llama_build_and_test(test-moe-room-belt.cpp)
@@ -206,6 +213,16 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             llama_test(test-metal-mv-ext NAME test-metal-mv-ext-${MX})
             set_tests_properties(test-metal-mv-ext-${MX} PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=${MX}")
         endforeach()
+        # STAFF-MATRIX-PLAN step 2 (#23): with the staff mat-vec at "0", Q8_0's 11-16 columns on 4,096+ rows are mul_mm's
+        llama_test(test-metal-mv-ext NAME test-metal-mv-ext-16-staff0)
+        set_tests_properties(test-metal-mv-ext-16-staff0 PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=16;GGML_METAL_STAFF_MV=0")
+        # STAFF-MATRIX-PLAN step 2 (#23): the staff's Q8_0 mat-vec on the matrix units for 2-16 columns,
+        # GGML_METAL_STAFF_MV unset (on) and 0
+        llama_build(test-metal-staff-mv.cpp)
+        target_link_libraries(test-metal-staff-mv PRIVATE ggml-metal)
+        llama_test(test-metal-staff-mv NAME test-metal-staff-mv-on)
+        llama_test(test-metal-staff-mv NAME test-metal-staff-mv-0)
+        set_tests_properties(test-metal-staff-mv-0 PROPERTIES ENVIRONMENT "GGML_METAL_STAFF_MV=0")
         # #10b step 1.2: GGML_METAL_KPROF's node map names each node's first source (staff vs the rest), on and off
         llama_build(test-metal-kprof.cpp)
         foreach (KP 1 0)
@@ -218,7 +235,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     target_link_libraries(test-chat PRIVATE server-context)
     llama_build_and_test(test-json-schema-to-grammar.cpp)
     # BOOKMARK-PIN-PLAN.md step 1: the bookmark pin's rules (server-ckpt-pin.h), no model
-    llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
+    # CHAT-RETURN-PLAN.md step 1: the opening copy's rules (--cache-ram-opening), test-server-ckpt-pin-opening.cpp
+    llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp test-server-ckpt-pin-opening.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
     llama_build_and_test(test-server-anthropic.cpp)
@@ -357,17 +375,26 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-room-lend-model.cpp)
     llama_build(test-moe-stream-lookahead-all.cpp)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
+    llama_build(test-moe-stream-lookahead-keep.cpp)
+    llama_build(test-moe-stream-lookahead-guesser.cpp)
+    llama_build(test-moe-stream-statelog-model.cpp)
     llama_build(test-moe-stream-c2.cpp)
     foreach (E64_NGL 99 0)
-        llama_test(
-            test-moe-stream-lookahead-depth2
-            NAME test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL}
-            LABEL main
-            ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64l4.gguf" -ngl ${E64_NGL}
-        )
-        set_tests_properties(test-moe-stream-lookahead-depth2-qwen4exp-ngl${E64_NGL} PROPERTIES
-            FIXTURES_REQUIRED generate-models-e64l4
-        )
+        foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-lookahead-keep test-moe-stream-lookahead-guesser
+                 test-moe-stream-statelog-model)
+            llama_test(
+                ${E64_TEST}
+                NAME ${E64_TEST}-qwen4exp-ngl${E64_NGL}
+                LABEL main
+                ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64l4.gguf" -ngl ${E64_NGL}
+            )
+            set_tests_properties(${E64_TEST}-qwen4exp-ngl${E64_NGL} PROPERTIES
+                FIXTURES_REQUIRED generate-models-e64l4
+            )
+        endforeach()
+        # the keep rule's hang trap (a floor waiting on a desk full of kept books) shows as a hang: fail it fast
+        set_tests_properties(test-moe-stream-lookahead-keep-qwen4exp-ngl${E64_NGL} test-moe-stream-lookahead-guesser-qwen4exp-ngl${E64_NGL}
+                PROPERTIES TIMEOUT 300)
     endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
              test-moe-stream-c2)
@@ -470,6 +497,30 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
         ENVIRONMENT "LLAMA_QSA_KEEP=1"
     )
+
+    # the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, src/llama-rs-skip.h): a round writes only the undo copies a
+    # rollback can reach, byte-equal to off, and a rollback past the round is refused; the rollback harness
+    # runs again with the switch on (its rollbacks past the round assert refusal instead)
+    foreach (RS_MODEL qwen4exp-moe qwen35-dense)
+        llama_test(
+            test-rs-skip-slots
+            NAME test-rs-skip-slots-${RS_MODEL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${RS_MODEL}.gguf"
+        )
+        llama_test(
+            test-recurrent-state-rollback
+            NAME test-recurrent-state-rollback-${RS_MODEL}-rs-skip
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${RS_MODEL}.gguf"
+        )
+        set_tests_properties(test-rs-skip-slots-${RS_MODEL} test-recurrent-state-rollback-${RS_MODEL}-rs-skip PROPERTIES
+            FIXTURES_REQUIRED generate-models
+        )
+        set_tests_properties(test-recurrent-state-rollback-${RS_MODEL}-rs-skip PROPERTIES
+            ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=1"
+        )
+    endforeach()
 
     llama_test(
         test-save-load-state
