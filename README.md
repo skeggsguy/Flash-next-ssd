@@ -31,10 +31,7 @@ effort (`chat`).
 
 Each change below was tested on its own, A-B-A, on its own day; the +21% and +20% set the best
 measured run (the trained lookahead with the plumbing) against the lookahead's own run without it,
-so they compare across days. Fewer undo copies, on in the everyday command, gave coding another
-+4.3% in its own run but has not been timed on top of the plumbing, so it is not counted here. The
-earlier milestone, on 120 agent conversations replayed in order, was 17.5 tokens/s, +47% over the
-study's first setup (11.9), with a 5.5 s median time to first token (from 11.4 s).
+so they compare across days.
 
 ## What it adds
 
