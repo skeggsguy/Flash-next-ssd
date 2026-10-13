@@ -23,15 +23,15 @@ effort (`chat`).
 
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **21.2 tokens/s**: +21% over the same conversations before the trained lookahead (17.5) |
-| **Writing (decode), chat** | **21.1 tokens/s**: +20% (from 17.6) |
+| **Writing (decode), coding agent** | **21.2 tokens/s**: **+21% since the last update** (17.5 on the same conversations) |
+| **Writing (decode), chat** | **21.1 tokens/s**: **+20% since the last update** (from 17.6) |
 | **A new chat while a coding agent works** | **4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-Each change below was tested on its own, A-B-A, on its own day; the +21% and +20% set the best
-measured run (the trained lookahead with the plumbing) against the lookahead's own run without it,
-so they compare across days.
+"Since the last update" compares with this repo's previous release (5 October): 17.5 and 17.6 are
+that engine on the same conversations, the base of the trained lookahead's run (its new switches
+off). Each October change was then tested A-B-A on its own day, so the comparison spans days.
 
 ## What it adds
 
