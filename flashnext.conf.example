@@ -17,6 +17,11 @@ DRAFT_HEAD=~/models/flashnext/mtp-shared-Q4_K_M.gguf
 # Leave it empty (GUESSER=) to run without it on purpose. It needs about 121 MB beside the cache.
 GUESSER=~/models/flashnext/c1-guesser.gguf
 
+# The image encoder (mmproj), which lets the model read pictures: attach one in the web page or
+# send it in a request. Without the file the start notes it and runs text-only. Leave it empty
+# (VISION=) to run text-only on purpose. It needs about 0.9 GB beside the cache.
+VISION=~/models/flashnext/mmproj-BF16.gguf
+
 # Two SSDs only: the first file of the byte-identical copy on the second drive.
 SECOND_COPY=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 

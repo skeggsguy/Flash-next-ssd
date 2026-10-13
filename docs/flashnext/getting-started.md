@@ -42,6 +42,13 @@ curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
   https://huggingface.co/nitinpanj/qwen38-flash-next-v3/resolve/main/MTP/mtp-shared-Q4_K_M.gguf
 ```
 
+To let the model read pictures, also download Unsloth's image encoder (908 MB, optional):
+
+```sh
+curl -fL --retry 5 -C - -o $D/mmproj-BF16.gguf \
+  https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/mmproj-BF16.gguf
+```
+
 `-C -` resumes a broken download. Keep the four model files together: `-m` points at the first,
 and the others are found beside it. Download one file at a time; parallel downloads of files this
 size gain nothing and make a failure harder to spot.
@@ -55,6 +62,7 @@ The sha256 of each file the study used (the same as Hugging Face's LFS hash):
 | `...-00003-of-00004.gguf` | 49,376,141,504 | `56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3` |
 | `...-00004-of-00004.gguf` | 12,087,983,520 | `753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a` |
 | `mtp-shared-Q4_K_M.gguf` | 1,907,151,936 | `2b468e0a490c7a8e46c66e6e9feb8c02a9c5d8f2aed276a951ef10f8c227f12c` |
+| `mmproj-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
 
 Check them with `shasum -a 256 ~/models/flashnext/*.gguf`.
 
