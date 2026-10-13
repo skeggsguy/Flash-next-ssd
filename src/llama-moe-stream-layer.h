@@ -92,6 +92,10 @@ struct llama_moe_stream_lookahead {
     float                    conf_scale = 10.0f;
     float                    conf_max   = 1.0f;
     llama_moe_stream_guess_scratch conf_scratch;
+
+    // LLAMA_MOE_STREAM_GUESSER1: the one-floor scores are the trained guesser's z, ranked as they are (no router
+    // transform, no bias)
+    bool                     guessed1   = false;
 };
 
 struct llama_moe_stream_layer;
@@ -200,6 +204,8 @@ struct llama_moe_stream_layer {
     // one-layer-ahead prefetch (LLAMA_MOE_STREAM_LOOKAHEAD=K). Set by the model at load time so
     // build_moe_ffn can reach the NEXT layer's router without a signature change.
     ggml_tensor * la_gate_inp = nullptr;   // next layer's ffn_gate_inp
+    ggml_tensor * la_guess1   = nullptr;   // the trained one-floor guesser's floor L+1 matrix, in place of la_gate_inp (GUESSER1)
+    ggml_tensor * la_guess1_b = nullptr;   // and its bias
     ggml_tensor * la_gate_inp2 = nullptr;  // the layer after next's, with LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2
     ggml_tensor * la_guess    = nullptr;   // the trained guesser's floor L+2 matrix, in place of la_gate_inp2 (GUESSER)
     ggml_tensor * la_guess_b  = nullptr;   // and its bias

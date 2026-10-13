@@ -41,6 +41,8 @@ struct llama_moe_stream_stats {
     int64_t n_guess_words    = 0;
     int64_t n_guess_picked   = 0;
     int64_t n_guess_under    = 0;
+    // the trained one-floor guess (LLAMA_MOE_STREAM_GUESSER1): floor stops whose one-floor guess it scored (same thread)
+    int64_t n_guess1_stops   = 0;
 
     // Decode has no waves, so n_preload_ready above is unreachable there and reads as 0 - it
     // cannot say whether the lookahead prefetch is working. These two split a demand HIT by the

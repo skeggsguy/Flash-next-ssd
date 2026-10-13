@@ -27,6 +27,15 @@
 // with no lookahead at all (the apprentice's sidecar: one streamed floor, opened with the library's switches) loads
 // with GUESSER set and nothing attached; a library whose lookahead guesses one floor only (DEPTH2 unset) refuses.
 // Words never change either way: a guess only says which books are fetched, and when.
+//
+// The trained one-floor guess (#43, the study's TRIPS-AND-LOOKUP-PLAN.md step 3; llama-moe-stream-guesser1.cpp):
+// LLAMA_MOE_STREAM_GUESSER1=<gguf> is the same kind of file at floor offset 1 (floors 1..), and floor L's one-floor
+// guess (the lookahead, on in every rung) scores floor L+1's books with it, z = W[L+1] . cur + b[L+1], in place of
+// borrowing L+1's own router; its top_k books by z, ranked as they are (no router transform, no router bias), the
+// same width as the borrowed guess and no confidence cut. Unset, "" or "0": today's borrowed guess exactly. A floor
+// whose next floor has no guess in the file keeps the borrowed guess. It loads beside the two-floor guesser (both
+// may be on), and like it leaves a model with no lookahead (the apprentice's sidecar) untouched. One startup line
+// names the one-floor guess in use, trained or borrowed.
 
 #include "ggml-cpp.h"
 
@@ -38,6 +47,7 @@
 
 struct ggml_tensor;
 struct llama_moe_stream;
+struct llama_moe_stream_lookahead;
 
 // books each word offers the confidence pick (the study's training saved and the sim priced each word's 24 best)
 static const uint32_t LLAMA_MOE_STREAM_GUESS_PER_WORD = 24;
@@ -61,21 +71,42 @@ struct llama_moe_stream_guesser {
 // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER: the file's path, or null (unset or "")
 const char * llama_moe_stream_guesser_env();
 
+// LLAMA_MOE_STREAM_GUESSER1: the one-floor file's path, or null (unset, "" or "0")
+const char * llama_moe_stream_guesser1_env();
+
 // LLAMA_MOE_STREAM_LOOKAHEAD_CONF: the cut, or 0 for the fixed pick (unset, "" or "0"). Throws on anything that is
 // not a number in (0, 1], so a mistyped arm never runs on the fixed pick.
 float llama_moe_stream_lookahead_conf_env();
 
-// reads a guesser file for a library of n_layer floors, n_embd wide, n_expert books a floor; floor n's tensors go
-// in buft_of(n). Null with err set when the file cannot be read or does not fit.
+// reads a guesser file for a library of n_layer floors, n_embd wide, n_expert books a floor, whose guess reads the
+// input `gap` floors down (2: the two-floor guesser, 1: the one-floor); floor n's tensors go in buft_of(n). Null
+// with err set when the file cannot be read or does not fit.
 std::unique_ptr<llama_moe_stream_guesser> llama_moe_stream_guesser_load(const char * path, int64_t n_embd,
         int64_t n_expert, int32_t n_layer, const std::function<ggml_backend_buffer_type_t(int32_t)> & buft_of,
-        std::string & err);
+        std::string & err, uint32_t gap = 2);
+
+// where floor n's guesser lives: its router's device (routers[n] is floor n's ffn_gate_inp; the mtp word list's
+// rule, llama-mtp-vocab.cpp), the CPU when the router has none
+std::function<ggml_backend_buffer_type_t(int32_t)> llama_moe_stream_guesser_buft_of(
+        const std::vector<const ggml_tensor *> & routers);
 
 // At model load, after the lookahead is set up: with GUESSER set, loads the file and gives each floor's
 // two-floor guess its floor's guesser and the CONF cut (one startup line); routers[n] is floor n's ffn_gate_inp,
 // whose device floor n's guesser shares. Unset, nothing. Throws when the switches or the file cannot be used.
 void llama_moe_stream_guesser_attach(llama_moe_stream & ms, const std::vector<const ggml_tensor *> & routers,
         int64_t n_embd, int64_t n_expert, bool no_alloc);
+
+// The same for the one-floor guess (GUESSER1): each floor's lookahead gets its next floor's guesser, ranked raw,
+// and the startup line names the one-floor guess in use. Throws when the switch or the file cannot be used.
+void llama_moe_stream_guesser1_attach(llama_moe_stream & ms, const std::vector<const ggml_tensor *> & routers,
+        int64_t n_embd, int64_t n_expert, bool no_alloc);
+
+// The one-floor pick (llama-moe-stream-lookahead.cpp): rows[t*stride + e] is word t's next-floor score for book e;
+// with LLAMA_MOE_STREAM_LOOKAHEAD_ALL a small batch (2..16 words) offers every word's books rank by rank, the last
+// word first, else the last word's alone; top_k books, the trained guess's z ranked raw (la->guessed1), the
+// borrowed router's by sqrt(softplus) plus its bias.
+void llama_moe_stream_lookahead_pick1(struct llama_moe_stream_lookahead * la, const float * rows, int64_t n_tok,
+        int64_t stride, std::vector<int32_t> & books);
 
 // the confidence pick's scratch, one per floor's lookahead (graph thread only)
 struct llama_moe_stream_guess_scratch {

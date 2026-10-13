@@ -172,6 +172,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
     # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
     llama_build_and_test(test-moe-stream-guesser.cpp)
+    # #43 (the study's TRIPS-AND-LOOKUP-PLAN step 3): the trained one-floor guess (LLAMA_MOE_STREAM_GUESSER1): the
+    # switch, the file at floor offset 1, how it is given to the floors beside the two-floor guesser, and its pick
+    llama_build_and_test(test-moe-stream-guesser1.cpp)
     llama_build_and_test(test-moe-room-gemm.cpp)
     llama_build_and_test(test-moe-room-size.cpp)
     llama_build_and_test(test-moe-room-belt.cpp)
@@ -380,12 +383,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-stream-lookahead-depth2.cpp)
     llama_build(test-moe-stream-lookahead-keep.cpp)
     llama_build(test-moe-stream-lookahead-guesser.cpp)
+    llama_build(test-moe-stream-lookahead-guesser1.cpp)
     llama_build(test-moe-stream-statelog-model.cpp)
     llama_build(test-moe-stream-c2.cpp)
     llama_build(test-moe-stream-book-split-model.cpp)
     foreach (E64_NGL 99 0)
         foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-lookahead-keep test-moe-stream-lookahead-guesser
-                 test-moe-stream-statelog-model)
+                 test-moe-stream-lookahead-guesser1 test-moe-stream-statelog-model)
             llama_test(
                 ${E64_TEST}
                 NAME ${E64_TEST}-qwen4exp-ngl${E64_NGL}
@@ -398,7 +402,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         endforeach()
         # the keep rule's hang trap (a floor waiting on a desk full of kept books) shows as a hang: fail it fast
         set_tests_properties(test-moe-stream-lookahead-keep-qwen4exp-ngl${E64_NGL} test-moe-stream-lookahead-guesser-qwen4exp-ngl${E64_NGL}
-                PROPERTIES TIMEOUT 300)
+                test-moe-stream-lookahead-guesser1-qwen4exp-ngl${E64_NGL} PROPERTIES TIMEOUT 300)
     endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
              test-moe-stream-c2 test-moe-stream-book-split-model)
@@ -673,6 +677,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-qwen4exp-mtp-vocab NAME test-qwen4exp-mtp-vocab-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-qwen4exp-mtp-vocab test-qwen4exp-mtp-vocab-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # #43 (the study's TRIPS-AND-LOOKUP-PLAN step 3): the trained one-floor guess and the two-floor guesser on, beside
+    # the apprentice (a load-time switch reaches its context too): the library's and the drafts' logits unchanged
+    llama_build(test-moe-stream-guesser1-mtp.cpp)
+    llama_test(test-moe-stream-guesser1-mtp NAME test-moe-stream-guesser1-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-moe-stream-guesser1-mtp NAME test-moe-stream-guesser1-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-moe-stream-guesser1-mtp test-moe-stream-guesser1-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp
+            TIMEOUT 300)
 
     # C1-PROFILE-PLAN step A end to end: llama-server writing with the apprentice on the MTP fixture, given a tiny word
     # list (--vocab: the server turns tokens into text) in a folder of its own like the MTP fixture's; the phase log's

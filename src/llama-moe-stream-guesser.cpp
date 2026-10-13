@@ -1,5 +1,6 @@
 // The trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER and _CONF): what it is, and the rules, are in
-// llama-moe-stream-guesser.h. This file loads it, gives it to the floors' lookahead, and holds the confidence pick.
+// llama-moe-stream-guesser.h. This file loads it (and the one-floor guesser's file, llama-moe-stream-guesser1.cpp),
+// gives it to the floors' lookahead, and holds the confidence pick.
 
 #include "llama-moe-stream-guesser.h"
 
@@ -72,9 +73,10 @@ bool key_f32(const gguf_context * g, const char * key, float & v, std::string & 
     return true;
 }
 
-// the file's lookahead.* keys against the library's widths and floors
-bool check_keys(const gguf_context * g, int64_t n_embd, int64_t n_expert, int32_t n_layer,
+// the file's lookahead.* keys against the library's widths and floors, for a guess `gap` floors ahead
+bool check_keys(const gguf_context * g, int64_t n_embd, int64_t n_expert, int32_t n_layer, uint32_t gap,
         llama_moe_stream_guesser & out, std::string & err) {
+    const char * reach = gap == 1 ? "one-floor" : "two-floor";
     uint32_t offset = 0, first = 0, last = 0, f_embd = 0, f_expert = 0;
     if (!key_u32(g, "lookahead.floor_offset", offset, err) || !key_u32(g, "lookahead.first_floor", first, err) ||
             !key_u32(g, "lookahead.last_floor", last, err) || !key_u32(g, "lookahead.n_embd", f_embd, err) ||
@@ -83,8 +85,8 @@ bool check_keys(const gguf_context * g, int64_t n_embd, int64_t n_expert, int32_
             !key_f32(g, "lookahead.confidence.max", out.conf_max, err)) {
         return false;
     }
-    if (offset != 2) {
-        err = format("its guess reads the input %u floors down; the two-floor guess reads 2", offset);
+    if (offset != gap) {
+        err = format("its guess reads the input %u floors down; the %s guess reads %u", offset, reach, gap);
         return false;
     }
     if ((int64_t) f_embd != n_embd || (int64_t) f_expert != n_expert) {
@@ -92,8 +94,8 @@ bool check_keys(const gguf_context * g, int64_t n_embd, int64_t n_expert, int32_
                 (long long) n_embd, (long long) n_expert);
         return false;
     }
-    if (first < 2 || first > last || (int64_t) last >= n_layer) {
-        err = format("its floors %u..%u do not fit the library's two-floor guesses (floors 2..%d)", first, last,
+    if (first < gap || first > last || (int64_t) last >= n_layer) {
+        err = format("its floors %u..%u do not fit the library's %s guesses (floors %u..%d)", first, last, reach, gap,
                 n_layer - 1);
         return false;
     }
@@ -131,7 +133,7 @@ const ggml_tensor * find(ggml_context * meta, const std::string & name, bool wei
 
 std::unique_ptr<llama_moe_stream_guesser> llama_moe_stream_guesser_load(const char * path, int64_t n_embd,
         int64_t n_expert, int32_t n_layer, const std::function<ggml_backend_buffer_type_t(int32_t)> & buft_of,
-        std::string & err) {
+        std::string & err, uint32_t gap) {
     ggml_context * meta_raw = nullptr;
     gguf_init_params params = { /*.no_alloc =*/ true, /*.ctx =*/ &meta_raw };
     gguf_context_ptr g(gguf_init_from_file(path, params));
@@ -142,7 +144,7 @@ std::unique_ptr<llama_moe_stream_guesser> llama_moe_stream_guesser_load(const ch
     }
     auto out = std::make_unique<llama_moe_stream_guesser>();
     out->source = path;
-    if (!check_keys(g.get(), n_embd, n_expert, n_layer, *out, err)) {
+    if (!check_keys(g.get(), n_embd, n_expert, n_layer, gap, *out, err)) {
         return nullptr;
     }
 
@@ -213,6 +215,18 @@ std::unique_ptr<llama_moe_stream_guesser> llama_moe_stream_guesser_load(const ch
     return out;
 }
 
+std::function<ggml_backend_buffer_type_t(int32_t)> llama_moe_stream_guesser_buft_of(
+        const std::vector<const ggml_tensor *> & routers) {
+    return [routers](int32_t n) -> ggml_backend_buffer_type_t {
+        const ggml_tensor * r = n >= 0 && (size_t) n < routers.size() ? routers[n] : nullptr;
+        ggml_backend_dev_t dev = r && r->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(r->buffer)) : nullptr;
+        if (dev == nullptr || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return ggml_backend_cpu_buffer_type();
+        }
+        return ggml_backend_dev_buffer_type(dev);
+    };
+}
+
 void llama_moe_stream_guesser_attach(llama_moe_stream & ms, const std::vector<const ggml_tensor *> & routers,
         int64_t n_embd, int64_t n_expert, bool no_alloc) {
     const char *  path = llama_moe_stream_guesser_env();
@@ -249,18 +263,11 @@ void llama_moe_stream_guesser_attach(llama_moe_stream & ms, const std::vector<co
         throw std::runtime_error(format("the trained guesser %s serves no floor: it is the two-floor guess, so it needs "
                 "LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 and the lookahead on", path));
     }
-    // floor n's guesser shares its router's device (the mtp word list's rule, llama-mtp-vocab.cpp)
-    auto buft_of = [&](int32_t n) -> ggml_backend_buffer_type_t {
-        const ggml_tensor * r = (size_t) n < routers.size() ? routers[n] : nullptr;
-        ggml_backend_dev_t dev = r && r->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(r->buffer)) : nullptr;
-        if (dev == nullptr || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
-            return ggml_backend_cpu_buffer_type();
-        }
-        return ggml_backend_dev_buffer_type(dev);
-    };
+    // floor n's guesser shares its router's device
     const int64_t t0 = ggml_time_us();
     std::string err;
-    auto g = llama_moe_stream_guesser_load(path, n_embd, n_expert, (int32_t) routers.size(), buft_of, err);
+    auto g = llama_moe_stream_guesser_load(path, n_embd, n_expert, (int32_t) routers.size(),
+            llama_moe_stream_guesser_buft_of(routers), err, 2);
     if (!g) {
         throw std::runtime_error(format("the trained guesser %s (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER): %s", path, err.c_str()));
     }

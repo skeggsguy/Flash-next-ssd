@@ -85,9 +85,9 @@ void llama_moe_stream_lookahead_issue(llama_moe_stream_layer & sl, const std::ve
     }
 }
 
-// the next floor's guesses for the batch's last token
+// the next floor's guesses for the batch's last token; raw with the trained one-floor guess (GUESSER1)
 static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, const float * logits, std::vector<int32_t> & books) {
-    llama_moe_stream_lookahead_top(la, logits, books, la->sl_next->n_expert, la->bias, la->top_k);
+    llama_moe_stream_lookahead_top(la, logits, books, la->sl_next->n_expert, la->bias, la->top_k, la->guessed1);
 }
 
 // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: floor L also fetches floor L+2's K most likely books for the batch's
@@ -162,7 +162,8 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
         int64_t n_tok, int64_t stride, std::vector<int32_t> & books) {
     std::vector<std::vector<int32_t>> picks((size_t) n_tok);
     for (int64_t t = 0; t < n_tok; t++) {
-        llama_moe_stream_lookahead_top(la, rows + t*stride, picks[(size_t) t], la->sl_next->n_expert, la->bias, la->top_k);
+        llama_moe_stream_lookahead_top(la, rows + t*stride, picks[(size_t) t], la->sl_next->n_expert, la->bias, la->top_k,
+                la->guessed1);
     }
     std::vector<uint8_t> seen(la->sl_next->n_expert, 0);
     books.clear();
@@ -178,6 +179,18 @@ static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, 
                 books.push_back(e);
             }
         }
+    }
+}
+
+void llama_moe_stream_lookahead_pick1(llama_moe_stream_lookahead * la, const float * rows, int64_t n_tok,
+        int64_t stride, std::vector<int32_t> & books) {
+    if (n_tok > 1 && n_tok <= 16 && la->all) {
+        llama_moe_stream_prefetch_next_all(la, rows, n_tok, stride, books);
+    } else {
+        llama_moe_stream_prefetch_next(la, rows + (n_tok - 1)*stride, books);
+    }
+    if (la->guessed1) {
+        la->sl_next->mgr->stats.n_guess1_stops++; // graph thread only, as the two-floor guesser's counts
     }
 }
 
@@ -201,10 +214,9 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
     }
 
     // b is [n_expert, n_tokens] of predicted next-layer logits (with depth 2, [2*n_expert, n_tokens]: the
-    // next layer's, then the one after's); use the last token's row, which is the one whose routing the
-    // next layer will actually resolve first
+    // next layer's, then the one after's); the pick uses the last token's row, which is the one whose routing
+    // the next layer will actually resolve first (with LLAMA_MOE_STREAM_LOOKAHEAD_ALL, a check's every row)
     const int64_t n_tok = b->ne[1] > 0 ? b->ne[1] : 1;
-    const float * logits = (const float *) b->data + (n_tok - 1)*b->ne[0];
 
     if (!la->bias_read) {
         la->bias_read = true;
@@ -227,11 +239,7 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
         }
     }
     std::vector<int32_t> books1, books2;
-    if (n_tok > 1 && n_tok <= 16 && la->all) {
-        llama_moe_stream_prefetch_next_all(la, (const float *) b->data, n_tok, b->ne[0], books1);
-    } else {
-        llama_moe_stream_prefetch_next(la, logits, books1);
-    }
+    llama_moe_stream_lookahead_pick1(la, (const float *) b->data, n_tok, b->ne[0], books1);
     const int64_t n1 = la->sl_next->n_expert;
     const bool two = la->sl_next2 && la->top_k2 > 0 && b->ne[0] == n1 + la->sl_next2->n_expert;
     if (two) {

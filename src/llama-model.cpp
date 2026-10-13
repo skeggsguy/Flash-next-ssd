@@ -2010,12 +2010,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                             llama_moe_stream_lookahead_depth2_env() > 0 ? ", and two floors ahead" : "",
                             pimpl->moe_stream->la_keep ? ", kept until their floor stops" : "");
                 }
-                // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER: the trained two-floor guess (llama-moe-stream-guesser.h)
+                // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER and LLAMA_MOE_STREAM_GUESSER1: the trained two-floor and one-floor
+                // guesses (llama-moe-stream-guesser.h)
                 std::vector<const ggml_tensor *> routers(n_layer_all, nullptr);
                 for (int il = 0; il < n_layer_all; il++) {
                     routers[il] = layers[il].ffn_gate_inp;
                 }
                 llama_moe_stream_guesser_attach(*pimpl->moe_stream, routers, hparams.n_embd, hparams.n_expert, ml.no_alloc);
+                llama_moe_stream_guesser1_attach(*pimpl->moe_stream, routers, hparams.n_embd, hparams.n_expert, ml.no_alloc);
             }
         }
     }
