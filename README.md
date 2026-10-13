@@ -60,6 +60,8 @@ the coding set and +8.2% on chat**, the most on short and medium conversations (
 changes only which experts are fetched early, never which are used, so the output is unchanged. It
 is off unless you point the engine at the file (Quick start, steps 2 and 4).
 
+<p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the trained guesser looks two layers ahead and keeps its guesses, 84% are used, writing +4.2% coding and +8.2% chat, most on short and medium conversations"></p>
+
 ### The reading room: a carousel for long prompts
 
 A long prompt needs nearly every expert on every layer. The reading room is a small ring buffer
