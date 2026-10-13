@@ -146,7 +146,7 @@ cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-**2. Download the model (111.3 GB, 4 files), the draft head (1.9 GB) and the trained guesser (121 MB)**
+**2. Download the model (111.3 GB, 4 files), the draft head (1.9 GB), the trained guesser (121 MB) and the image encoder (908 MB)**
 
 ```sh
 D=~/models/flashnext && mkdir -p $D
@@ -159,6 +159,9 @@ curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
 curl -fL --retry 5 -C - -o $D/c1-guesser.gguf \
   https://huggingface.co/skeggsguy/crystal-ball/resolve/main/c1-guesser.gguf
 shasum -a 256 $D/c1-guesser.gguf   # c22af709d65b99bb2bc64aaa5b8b2d47c04c86367b0f9ba0fe452ab47ec053c7
+curl -fL --retry 5 -C - -o $D/mmproj-BF16.gguf \
+  https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/mmproj-BF16.gguf
+shasum -a 256 $D/mmproj-BF16.gguf   # 2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355
 ```
 
 **3. Let the GPU wire enough memory** (this resets on every reboot)
@@ -190,6 +193,7 @@ It loads in seconds; the first request is slower while the expert cache fills. O
 
 With a second SSD, copy the four model files to it and add
 `--moe-stream-alt-path /Volumes/<ssd>/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --moe-stream-alt-split 53`.
+To let it read pictures, add `--mmproj ~/models/flashnext/mmproj-BF16.gguf`.
 To share the server with a coding agent, add `--chat-window 300`, and replace `--cache-ram 0` with
 `--cache-ram 400 --cache-ram-opening` so a new chat finds its opening in RAM.
 
@@ -229,6 +233,7 @@ update never changes it. A setting you delete takes the example's value.
 | `MODEL` | `~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` | The model's first file; the other three sit beside it. |
 | `DRAFT_HEAD` | `~/models/flashnext/mtp-shared-Q4_K_M.gguf` | The MTP draft head. Empty (`DRAFT_HEAD=`) runs without it. |
 | `GUESSER` | `~/models/flashnext/c1-guesser.gguf` | The trained guesser ([the trained lookahead](#the-trained-lookahead-guessing-two-layers-ahead-new-in-october)). If the file is missing, the start says so and runs without it; empty (`GUESSER=`) turns it off. |
+| `VISION` | `~/models/flashnext/mmproj-BF16.gguf` | The image encoder, so the model can read pictures ([Images](docs/flashnext/settings.md#images)). If the file is missing, the start says so and runs text-only; empty (`VISION=`) turns it off. About 0.9 GB beside the cache. |
 | `SECOND_COPY` | `/Volumes/ssd/flashnext/...-00001-of-00004.gguf` | Two SSDs only: the first file of the copy on the second drive. |
 | `SECOND_SPLIT` | `53` | Two SSDs only: the percent of experts read from the internal copy ([Settings](docs/flashnext/settings.md#two-drives)). |
 | `CACHE_GIB` | `28` | The expert cache in GiB, the biggest speed setting ([Memory sizing](docs/flashnext/memory-sizing.md)). |

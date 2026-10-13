@@ -63,6 +63,7 @@ fi
 MODEL=$(home "$MODEL")
 DRAFT_HEAD=$(home "$DRAFT_HEAD")
 GUESSER=$(home "${GUESSER:-}")
+VISION=$(home "${VISION:-}")
 SECOND_COPY=$(home "$SECOND_COPY")
 BIN=$ROOT/build/bin/llama-server
 
@@ -128,6 +129,12 @@ if [ -n "$GUESSER" ] && [ ! -f "$GUESSER" ]; then
          "(empty) in $CONF to stop this note."
     GUESSER=
 fi
+if [ -n "$VISION" ] && [ ! -f "$VISION" ]; then
+    note "no image encoder at $VISION, so this start reads text only. Download it" \
+         "(README.md, \"Quick start\", step 2), or set VISION= (empty) in $CONF to stop" \
+         "this note."
+    VISION=
+fi
 if [ "$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)" = 0 ]; then
     note "the GPU's wired-memory limit is macOS's default (75% of RAM). The study raised it:" \
          "docs/flashnext/getting-started.md, step 4."
@@ -158,6 +165,9 @@ if [ -n "$GUESSER" ]; then
     ENVS+=(LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER="$GUESSER" LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2
            LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1
            LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1)
+fi
+if [ -n "$VISION" ]; then
+    ARGS+=(--mmproj "$VISION")
 fi
 CACHE_RAM=(--cache-ram 0)
 if [ "${CHAT_WINDOW:-0}" != 0 ]; then

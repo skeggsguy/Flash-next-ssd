@@ -11,6 +11,7 @@ when to change it, and how to set it. The recommended values are the study's eve
 - [The reading room (prompt reading)](#the-reading-room-prompt-reading)
 - [The n-gram shelf](#the-n-gram-shelf)
 - [The MTP draft head](#the-mtp-draft-head)
+- [Images](#images)
 - [Context, attention and slots](#context-attention-and-slots)
 - [The prompt cache](#the-prompt-cache)
 - [The chat window](#the-chat-window)
@@ -176,6 +177,16 @@ Environment-only, with the draft head:
 |---|---|---|
 | `LLAMA_RS_SKIP_SLOTS` | 0 (off) | Before each check the model saves copies of its recurrent state so it can undo rejected guesses. `1` saves only the copies a rollback can reach, and refuses a rollback past them. Byte-identical output. Study: **1** (+4.3% writing on code, chat level). Off by default because the refusal path is proven only with the draft head. |
 | `GGML_METAL_STAFF_MV` | on with Metal 4 (M5) | The check's Q8_0 matrix-vector work for 2-16 tokens on the GPU's matrix units. It did not clear the study's +3% bar (−0.8% and +1.1% on code), so the study runs **0**, the older route its numbers were measured on. |
+
+## Images
+
+With the image encoder loaded the model reads pictures: attach one in the web page at
+<http://127.0.0.1:8080>, or send it in a request as an `image_url` part (OpenAI-style) or an
+`image` block (Anthropic-style `/v1/messages`). Without it, a request with a picture is refused.
+
+| Option | Env var | Default | What it does |
+|---|---|---|---|
+| `--mmproj FILE` | `LLAMA_ARG_MMPROJ` | none | The image encoder, `mmproj-BF16.gguf` from Unsloth's repo. About 0.9 GB of memory beside the cache. Study: **on** every day, at a 28 GiB cache with the draft head (an image test: described, no swap). Its effect on writing speed is not measured. |
 
 ## Context, attention and slots
 
