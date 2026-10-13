@@ -40,9 +40,10 @@ off). Each October change was then tested A-B-A on its own day, so the compariso
 `--moe-stream` keeps the routed experts on disk and holds a fixed-size expert cache in RAM
 (`--moe-stream-cache 28` = 28 GiB). Reads skip macOS's file cache (`--moe-stream-direct`), so the
 cache and the rest of the system keep their memory, and many reads are in flight at once. While a
-token is being written, the next layer's experts are fetched ahead of time; about 72% of those
-guesses turn out right. The cache keeps the experts used most recently and most often. At 28 GiB
-about 3 in 4 expert lookups find their expert already in RAM.
+token is being written, the next layer's likely experts are fetched ahead of time; about 1 in 4 of
+those early fetches is used before the cache lets it go (the trained lookahead below does better).
+The cache keeps the experts used most recently and most often. At 28 GiB about 4 in 5 expert
+lookups find their expert already in RAM.
 
 ### The trained lookahead: guessing two layers ahead (new in October)
 
