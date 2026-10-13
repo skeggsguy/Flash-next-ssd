@@ -17,21 +17,19 @@ measured on real agent conversations, and any timing that swap touched was throw
 Measured on a Mac mini M5 Pro (64 GB) with Unsloth's UD-Q4_K_XL quant, a 28 GiB expert cache, two
 SSDs and the MTP draft head on. Sources and method are in [Results](docs/flashnext/results.md).
 
-The October numbers come from two sets of the author's own work, each replayed turn by turn: 24
-coding-agent conversations at high thinking effort (`code`), and 24 chat conversations at medium
-effort (`chat`).
-
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **21.2 tokens/s**: +21% over the same conversations before the trained lookahead (17.5) |
-| **Writing (decode), chat** | **21.1 tokens/s**: +20% (from 17.6) |
+| **Writing (decode), against the old setup** | **17.5 tokens/s** across 120 real agent conversations replayed in order: **+47%** over the study's first setup (11.9: one SSD, a 32 GiB expert cache, no draft head) |
+| **Time to first token, against the old setup** | **5.5 s** median on the same conversations: **−52%** (from 11.4 s) |
+| **Writing since October, coding agent** | **21.2 tokens/s**: a further **+21%** on 24 coding-agent conversations (from 17.5) |
+| **Writing since October, chat** | **21.1 tokens/s**: a further **+20%** on 24 chat conversations (from 17.6) |
 | **A new chat while a coding agent works** | **4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-Each change below was tested on its own, A-B-A, on its own day; the +21% and +20% set the best
-measured run (the trained lookahead with the plumbing) against the lookahead's own run without it,
-so they compare across days.
+The October sets are the author's own work, replayed turn by turn: coding-agent conversations at high
+thinking effort and chats at medium effort. The old setup has not been timed on them yet, so the +47%
+and the October gains come from different conversations and are not multiplied together here.
 
 ## What it adds
 
