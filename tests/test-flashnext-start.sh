@@ -56,12 +56,13 @@ free_port() {
     done
 }
 FREE_PORT=$(free_port)
-touch "$T/models/m1.gguf" "$T/models/head.gguf" "$T/models/copy1.gguf" "$T/home/tilde.gguf"
+touch "$T/models/m1.gguf" "$T/models/head.gguf" "$T/models/guess.gguf" "$T/models/copy1.gguf" "$T/home/tilde.gguf"
 
 conf() {   # conf [extra lines...]: a settings file with every path present, plus overrides
     {
         echo "MODEL=$T/models/m1.gguf"
         echo "DRAFT_HEAD=$T/models/head.gguf"
+        echo "GUESSER=$T/models/guess.gguf"
         echo "SECOND_COPY=$T/models/copy1.gguf"
         echo "PORT=$FREE_PORT"
         printf '%s\n' "$@"
@@ -94,7 +95,7 @@ conf
 run internal --dry-run
 code "internal dry run" 0
 has "internal command" "Would run:
-env LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 $BIN -m $T/models/m1.gguf -ngl 99 --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct -md $T/models/head.gguf --spec-draft-ngl 99 --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
+env LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 $BIN -m $T/models/m1.gguf -ngl 99 --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct -md $T/models/head.gguf --spec-draft-ngl 99 --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on --cache-reuse 0 --cache-ram 400 --cache-ram-opening --jinja --reasoning-format deepseek --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
 lacks "internal leaves the second drive out" "--moe-stream-alt"
 
 # --- The command, two SSDs ------------------------------------------------------------------
@@ -121,6 +122,21 @@ has "split setting" "--moe-stream-alt-split 60 "
 conf "CHAT_WINDOW=0"
 run internal --dry-run
 lacks "chat window 0 is off" "--chat-window"
+has "chat window 0: no opening copy" " --cache-ram 0 --jinja "
+lacks "chat window 0: no opening copy flag" "--cache-ram-opening"
+
+conf "GUESSER="
+run internal --dry-run
+code "no guesser" 0
+lacks "no guesser: no lookahead switches" "LLAMA_MOE_STREAM_LOOKAHEAD"
+lacks "no guesser: no note" "Note:"
+
+conf "GUESSER=$T/models/noguess.gguf"
+run internal
+code "missing guesser still starts" 0
+has "missing guesser: a note" "no trained guesser at $T/models/noguess.gguf"
+lacks "missing guesser: no lookahead switches" "LLAMA_MOE_STREAM_LOOKAHEAD"
+has "missing guesser: the server runs" "FAKE-SERVER"
 
 conf "DRAFT_HEAD="
 run internal --dry-run
@@ -128,6 +144,7 @@ code "no draft head" 0
 lacks "no draft head: no -md" " -md "
 lacks "no draft head: no --spec" "--spec-"
 lacks "no draft head: no measured depth" "LLAMA_SPEC_ADAPTIVE_RATE"
+lacks "no draft head: all undo copies" "LLAMA_RS_SKIP_SLOTS"
 
 conf 'MODEL="~/tilde.gguf"'
 run internal --dry-run
@@ -137,6 +154,7 @@ printf 'PORT=%s\n' "$FREE_PORT" > "$T/test.conf"   # every other line from the e
 run internal --dry-run
 has "a missing line takes the example's value" " -m $HOME/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf "
 has "the example's draft head" " -md $HOME/models/flashnext/mtp-shared-Q4_K_M.gguf "
+has "the example's guesser, missing here" "no trained guesser at $HOME/models/flashnext/c1-guesser.gguf"
 
 # --- Each stop says what to do, and a real start does not run the server -----------------
 conf "MODEL=$T/models/missing.gguf"

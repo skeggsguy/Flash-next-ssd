@@ -12,6 +12,11 @@ MODEL=~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 # Leave it empty (DRAFT_HEAD=) to run without it: for mostly prose, and about 1 GiB more room.
 DRAFT_HEAD=~/models/flashnext/mtp-shared-Q4_K_M.gguf
 
+# The trained guesser (crystal-ball), which fetches experts two layers ahead: +4% writing on
+# coding work, +8% on chat, same words. Without the file the start notes it and runs without.
+# Leave it empty (GUESSER=) to run without it on purpose. It needs about 121 MB beside the cache.
+GUESSER=~/models/flashnext/c1-guesser.gguf
+
 # Two SSDs only: the first file of the byte-identical copy on the second drive.
 SECOND_COPY=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 
