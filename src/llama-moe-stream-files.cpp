@@ -94,6 +94,19 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
     }
     LLAMA_LOG_WARN("%s: MoE expert streaming runner threads at %s (LLAMA_MOE_STREAM_QOS=%d)\n",
             __func__, runner_qos ? "the interactive service class" : "the default service class", runner_qos ? 1 : 0);
+    // the book split (llama-moe-stream-split.h); the line starts "MoE expert streaming", never "room" or "drives",
+    // which the study's stats parser takes by their first words
+    {
+        static const char * const how[LLAMA_MOE_SPLIT_MAX + 1] = {
+            "each slab whole, on the runner picked at the read",
+            "its slabs spread across both runners",
+            "each slab in two halves, one from each runner",
+        };
+        const int32_t level = files_alt.empty() ? 0 : split.level;
+        LLAMA_LOG_WARN("%s: MoE expert streaming book split level %d: a missing book is read with %s%s "
+                       "(LLAMA_MOE_STREAM_SPLIT=%d)\n", __func__, level, how[level],
+                       files_alt.empty() && split.level > 0 ? "; one runner, nothing to split across" : "", split.level);
+    }
 
     // fall back to buffered when O_DIRECT is unusable: either the open did not honor it (macOS,
     // Windows, unsupported filesystems), or it opened but a probe read fails (some network/overlay

@@ -235,4 +235,11 @@ struct llama_moe_stream_work {
     // the lent belt (llama-moe-room.h): the writing remap's trips and the lookahead's guesses
     uint64_t lent = 0; // a restore: copy this slab back from the lent belt's copy with this seq, no read
     uint64_t save = 0; // the slot's old book is being kept (that copy's seq): its slab is copied out first
+
+    // one missing book across both runners (LLAMA_MOE_STREAM_SPLIT, llama-moe-stream-split.h): this job reads bytes
+    // [piece_offs, piece_offs + piece_len) of its slab (piece_len 0: the whole slab) on runner `drive` (-1: the one
+    // pick_alt chooses at the read, 0 the model's own files, 1 the alt copy)
+    uint32_t piece_offs = 0;
+    uint32_t piece_len  = 0;
+    int8_t   drive      = -1;
 };

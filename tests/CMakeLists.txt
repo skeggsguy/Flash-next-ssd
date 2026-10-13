@@ -164,6 +164,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-moe-stream-trace.cpp)
     llama_build_and_test(test-moe-stream-statelog.cpp)
     llama_build_and_test(test-moe-stream-split.cpp)
+    # #11b: one missing book across both runners (LLAMA_MOE_STREAM_SPLIT): the switch, the cut of a slab, the demand
+    # queue's jobs and slot_pending, and the runners reading each half at its own offset from its own runner
+    llama_build_and_test(test-moe-stream-book-split.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
@@ -379,6 +382,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-moe-stream-lookahead-guesser.cpp)
     llama_build(test-moe-stream-statelog-model.cpp)
     llama_build(test-moe-stream-c2.cpp)
+    llama_build(test-moe-stream-book-split-model.cpp)
     foreach (E64_NGL 99 0)
         foreach (E64_TEST test-moe-stream-lookahead-depth2 test-moe-stream-lookahead-keep test-moe-stream-lookahead-guesser
                  test-moe-stream-statelog-model)
@@ -397,7 +401,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
                 PROPERTIES TIMEOUT 300)
     endforeach()
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
-             test-moe-stream-c2)
+             test-moe-stream-c2 test-moe-stream-book-split-model)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(

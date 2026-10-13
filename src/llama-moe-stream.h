@@ -5,6 +5,7 @@
 #include "ggml-cpp.h"
 #include "llama-moe-room-size.h"
 #include "llama-moe-stream-layer.h"
+#include "llama-moe-stream-split.h"
 #include "llama-moe-stream-stats.h"
 
 #include <condition_variable>
@@ -119,6 +120,7 @@ struct llama_moe_stream {
     // runner threads at the interactive service class (LLAMA_MOE_STREAM_QOS, on unless "0"; macOS only), so a
     // trip is not queued behind background work
     bool runner_qos    = true;
+    llama_moe_stream_split split; // one missing book across both runners (LLAMA_MOE_STREAM_SPLIT, off unless set)
 
     // which runner reads this slab now (under mtx: it reads busy_n)
     bool pick_alt(int32_t expert, uint32_t n_expert) const {

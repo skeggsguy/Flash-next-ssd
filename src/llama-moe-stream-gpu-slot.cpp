@@ -124,11 +124,7 @@ void llama_moe_stream_layer::service_requests(llama_moe_stream & mgr) {
         // mirror the GPU's decision so the reader threads and a later CPU-path call agree with it
         mgr.reserve_slot_locked(*this, e, s);
 
-        slot_pending[s] = (uint8_t) weights.size();
-        for (size_t wi = 0; wi < weights.size(); wi++) {
-            mgr.q_demand.push_back({ this, e, s, (int32_t) wi, slot_gen[s] });
-            mgr.cv_work.notify_one();
-        }
+        llama_moe_stream_queue_demand_locked(mgr, *this, e, s); // one job per slab, or per half (llama-moe-stream-split.h)
 
         mgr.stats.n_miss++;
         n_miss++;

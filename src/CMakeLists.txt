@@ -57,6 +57,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-keep.cpp
     llama-moe-stream-guesser.cpp
     llama-moe-stream-remap.cpp
+    llama-moe-stream-split.cpp
     llama-moe-stream-lookahead.cpp
     llama-moe-stream-quick.cpp
     llama-moe-stream-stats.cpp

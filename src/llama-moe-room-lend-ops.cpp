@@ -272,6 +272,7 @@ void llama_moe_room::lend_restore_locked(std::unique_lock<std::mutex> & lk, cons
     }
     const llama_moe_lend_copy * c = lend.at(w.lent);
     GGML_ASSERT(c != nullptr && c->complete() && c->pins > 0 && c->il == sl.il && c->book == w.expert);
+    GGML_ASSERT(w.piece_len == 0); // a restore copies whole slabs, one pin each (llama_moe_stream_queue_demand_locked)
     const size_t    nb  = sl.weights[w.widx].nb_expert;
     const uint8_t * src = belt_at(*this, c->offs + floors[sl.il].w_offs[w.widx]);
     uint8_t *       dst = desk_slab(sl, w.slot, w.widx);
