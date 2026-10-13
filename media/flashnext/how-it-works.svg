@@ -28,19 +28,19 @@
 
 <rect x="10" y="276" width="740" height="160" rx="8" fill="#f6f7f8"/>
 <text x="22" y="226" font-size="11.5" font-weight="700" fill="#1b2228">The model's home: two SSDs</text>
-<text x="22" y="242" font-size="11" fill="#5a6670">the same file on both, experts split 53 / 47,</text>
-<text x="22" y="256" font-size="11" fill="#5a6670">12.3 GB/s together</text>
+<text x="22" y="242" font-size="11" fill="#5a6670">the same file on both; each read goes</text>
+<text x="22" y="256" font-size="11" fill="#5a6670">to the less busy one · 12.3 GB/s in all</text>
 <g font-size="11.5" text-anchor="middle">
 <rect x="300" y="214" width="160" height="46" rx="6" fill="#fbf1e1" stroke="#b8730f"/>
-<text x="380" y="233" font-weight="600" fill="#1b2228">Internal SSD</text><text x="380" y="249" fill="#5a6670">6.5 GB/s · 53%</text>
+<text x="380" y="233" font-weight="600" fill="#1b2228">Internal SSD</text><text x="380" y="249" fill="#5a6670">6.5 GB/s</text>
 <rect x="480" y="214" width="160" height="46" rx="6" fill="#fbf1e1" stroke="#b8730f"/>
-<text x="560" y="233" font-weight="600" fill="#1b2228">External SSD (TB5)</text><text x="560" y="249" fill="#5a6670">5.7 GB/s · 47%</text>
+<text x="560" y="233" font-weight="600" fill="#1b2228">External SSD (TB5)</text><text x="560" y="249" fill="#5a6670">5.7 GB/s</text>
 </g>
 <line x1="470" y1="212" x2="470" y2="164" stroke="#0f6e72" stroke-width="2" marker-end="url(#f1t)"/>
 <text x="478" y="206" font-size="10.5" fill="#0f6e72">streams every expert, layer by layer</text>
 <text x="22" y="182" font-size="11.5" fill="#1b2228" stroke="#f2f8f8" stroke-width="5" paint-order="stroke"><tspan font-weight="700">Speed limit:</tspan> whichever is slower, the SSDs or the GPU → 390–520 tokens read per second</text>
 <line x1="470" y1="262" x2="470" y2="314" stroke="#b8730f" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#f1w)"/>
-<text x="478" y="290" font-size="10.5" fill="#b8730f">fetches the 1 in 4 that's missing: the GPU waits</text>
+<text x="478" y="290" font-size="10.5" fill="#b8730f">fetches the missing 1 in 4, most of it early</text>
 
 <text x="22" y="296" font-size="13" font-weight="700" fill="#1b2228">2 · WRITING THE ANSWER</text>
 <text x="222" y="296" font-size="11.5" fill="#5a6670">(decode: a few tokens at a time)</text>
@@ -59,28 +59,28 @@
 <line x1="565" y1="349" x2="587" y2="349" stroke="#5a6670" stroke-width="1.5" marker-end="url(#f1a)"/>
 <path d="M665 382 C 665 400, 90 400, 90 384" fill="none" stroke="#5a6670" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#f1a)"/>
 <text x="378" y="410" font-size="10.5" fill="#5a6670" text-anchor="middle">repeat until the answer is done</text>
-<text x="22" y="428" font-size="11.5" fill="#1b2228"><tspan font-weight="700">Speed limit:</tspan> waiting for missing experts to arrive from the SSDs → about 17 tokens written per second</text>
+<text x="22" y="428" font-size="11.5" fill="#1b2228"><tspan font-weight="700">Speed limit:</tspan> mostly the GPU's own maths now, as most experts arrive in time → about 21 tokens written per second</text>
 
 <text x="20" y="462" font-size="14" font-weight="700" fill="#1b2228">Where the time goes for one written token</text>
-<text x="20" y="480" font-size="11" fill="#5a6670">Milliseconds per token. The orange and grey parts are the GPU standing idle between layers.</text>
+<text x="20" y="480" font-size="11" fill="#5a6670">Milliseconds per token, everyday settings (October). The orange and grey parts are the GPU standing idle.</text>
 <g font-size="11.5">
-<text x="20" y="512" fill="#1b2228" font-weight="600">Tool calls</text>
-<rect x="110" y="498" width="30.0" height="22" fill="#7a8a96"/>
-<rect x="140" y="498" width="155.6" height="22" fill="#1b2228"/>
-<rect x="295.6" y="498" width="85.2" height="22" fill="#d98a1c"/>
-<rect x="380.8" y="498" width="48.6" height="22" fill="#c4ccd2"/>
-<text x="437" y="514" fill="#1b2228">35 ms · guesses usually right</text>
-<text x="20" y="550" fill="#1b2228" font-weight="600">Prose</text>
-<rect x="110" y="536" width="50.0" height="22" fill="#7a8a96"/>
-<rect x="160" y="536" width="291.2" height="22" fill="#1b2228"/>
-<rect x="451.2" y="536" width="158.8" height="22" fill="#d98a1c"/>
-<rect x="610" y="536" width="97.8" height="22" fill="#c4ccd2"/>
-<text x="712" y="552" fill="#1b2228">66 ms</text>
+<text x="20" y="512" fill="#1b2228" font-weight="600">Chat</text>
+<rect x="110.0" y="498" width="42.8" height="22" fill="#7a8a96"/>
+<rect x="152.8" y="498" width="240.2" height="22" fill="#1b2228"/>
+<rect x="393.0" y="498" width="51.0" height="22" fill="#d98a1c"/>
+<rect x="444.0" y="498" width="65.5" height="22" fill="#c4ccd2"/>
+<text x="516" y="514" fill="#1b2228">44 ms · 23K tokens of context</text>
+<text x="20" y="550" fill="#1b2228" font-weight="600">Coding agent</text>
+<rect x="110.0" y="536" width="64.6" height="22" fill="#7a8a96"/>
+<rect x="174.6" y="536" width="221.1" height="22" fill="#1b2228"/>
+<rect x="395.7" y="536" width="52.8" height="22" fill="#d98a1c"/>
+<rect x="448.5" y="536" width="59.1" height="22" fill="#c4ccd2"/>
+<text x="515" y="552" fill="#1b2228">44 ms · 121K tokens of context</text>
 <rect x="110" y="578" width="12" height="12" fill="#7a8a96"/><text x="128" y="588" fill="#1b2228">helper guessing</text>
 <rect x="238" y="578" width="12" height="12" fill="#1b2228"/><text x="256" y="588" fill="#1b2228">GPU working</text>
 <rect x="350" y="578" width="12" height="12" fill="#d98a1c"/><text x="368" y="588" fill="#1b2228">waiting for the SSDs</text>
-<rect x="508" y="578" width="12" height="12" fill="#c4ccd2"/><text x="526" y="588" fill="#1b2228">handover between layers</text>
+<rect x="508" y="578" width="12" height="12" fill="#c4ccd2"/><text x="526" y="588" fill="#1b2228">other idle (handovers, launches)</text>
 </g>
-<text x="20" y="614" font-size="10.5" fill="#5a6670">Prose is slower because more guesses are wrong, and every guess, right or wrong, needs its own experts fetched.</text>
-<text x="20" y="630" font-size="10.5" fill="#5a6670">Source: study C1 profile, measured before the final fix to the layer handover (+7% writing).</text>
+<text x="20" y="614" font-size="10.5" fill="#5a6670">The SSD wait is now about an eighth: the trained guesser fetches experts two layers early, and both drives share the reads by load.</text>
+<text x="20" y="630" font-size="10.5" fill="#5a6670">Source: study probe CR-probe (2026-10-13), one conversation each. Full runs give the speeds: about 21 tokens/s on both.</text>
 </svg>
