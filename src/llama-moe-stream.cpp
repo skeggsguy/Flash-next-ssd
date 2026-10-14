@@ -108,6 +108,7 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
     if (const char * s = std::getenv("LLAMA_MOE_STREAM_QOS")) {
         runner_qos = atoi(s) != 0;
     }
+    split.level = llama_moe_stream_split_env(); // llama-moe-stream-split.h
 
     c2_init(); // the C2 switches (llama-moe-stream-quick.cpp)
 }

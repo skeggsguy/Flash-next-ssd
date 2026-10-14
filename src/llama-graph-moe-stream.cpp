@@ -214,9 +214,16 @@ ggml_tensor * llm_graph_context::build_moe_stream_ids(llama_moe_stream_layer * m
             // per layer.
             ggml_tensor * la_logits = nullptr;
             if (msl->la && msl->la->sl_next && msl->la_gate_inp) {
-                la_logits = ggml_mul_mat(ctx0, msl->la_gate_inp, cur);
+                // with LLAMA_MOE_STREAM_GUESSER1, the trained one-floor guesser's line for floor L+1 on this floor's
+                // input, W . cur + b (llama-moe-stream-guesser.h), in place of L+1's own router
+                la_logits = ggml_mul_mat(ctx0, msl->la_guess1 ? msl->la_guess1 : msl->la_gate_inp, cur);
                 ggml_prec_set_acc(la_logits, GGML_PREC_F32);
-                cb(la_logits, "ffn_moe_logits_next", il);
+                if (msl->la_guess1) {
+                    la_logits = ggml_add(ctx0, la_logits, msl->la_guess1_b);
+                    cb(la_logits, "ffn_moe_guess1", il);
+                } else {
+                    cb(la_logits, "ffn_moe_logits_next", il);
+                }
                 if (msl->la_gate_inp2) { // LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2: the layer after next, joined below
                     // with LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, the trained guesser's line for floor L+2 on this
                     // floor's input, W . cur + b (llama-moe-stream-guesser.h), in place of L+2's own router

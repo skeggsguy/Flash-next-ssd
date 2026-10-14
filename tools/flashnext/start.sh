@@ -63,6 +63,7 @@ fi
 MODEL=$(home "$MODEL")
 DRAFT_HEAD=$(home "$DRAFT_HEAD")
 GUESSER=$(home "${GUESSER:-}")
+GUESSER1=$(home "${GUESSER1:-}")
 VISION=$(home "${VISION:-}")
 SECOND_COPY=$(home "$SECOND_COPY")
 BIN=$ROOT/build/bin/llama-server
@@ -129,6 +130,12 @@ if [ -n "$GUESSER" ] && [ ! -f "$GUESSER" ]; then
          "(empty) in $CONF to stop this note."
     GUESSER=
 fi
+if [ -n "$GUESSER1" ] && [ ! -f "$GUESSER1" ]; then
+    note "no one-layer guesser at $GUESSER1, so this start uses the engine's own one-layer" \
+         "guess (about 7% slower writing). Download it (README.md, \"Quick start\", step 2), or" \
+         "set GUESSER1= (empty) in $CONF to stop this note."
+    GUESSER1=
+fi
 if [ -n "$VISION" ] && [ ! -f "$VISION" ]; then
     note "no image encoder at $VISION, so this start reads text only. Download it" \
          "(README.md, \"Quick start\", step 2), or set VISION= (empty) in $CONF to stop" \
@@ -165,6 +172,9 @@ if [ -n "$GUESSER" ]; then
     ENVS+=(LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER="$GUESSER" LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2
            LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1
            LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1)
+fi
+if [ -n "$GUESSER1" ]; then
+    ENVS+=(LLAMA_MOE_STREAM_GUESSER1="$GUESSER1")
 fi
 if [ -n "$VISION" ]; then
     ARGS+=(--mmproj "$VISION")

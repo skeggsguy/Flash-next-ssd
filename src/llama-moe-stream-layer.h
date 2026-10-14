@@ -92,6 +92,10 @@ struct llama_moe_stream_lookahead {
     float                    conf_scale = 10.0f;
     float                    conf_max   = 1.0f;
     llama_moe_stream_guess_scratch conf_scratch;
+
+    // LLAMA_MOE_STREAM_GUESSER1: the one-floor scores are the trained guesser's z, ranked as they are (no router
+    // transform, no bias)
+    bool                     guessed1   = false;
 };
 
 struct llama_moe_stream_layer;
@@ -200,6 +204,8 @@ struct llama_moe_stream_layer {
     // one-layer-ahead prefetch (LLAMA_MOE_STREAM_LOOKAHEAD=K). Set by the model at load time so
     // build_moe_ffn can reach the NEXT layer's router without a signature change.
     ggml_tensor * la_gate_inp = nullptr;   // next layer's ffn_gate_inp
+    ggml_tensor * la_guess1   = nullptr;   // the trained one-floor guesser's floor L+1 matrix, in place of la_gate_inp (GUESSER1)
+    ggml_tensor * la_guess1_b = nullptr;   // and its bias
     ggml_tensor * la_gate_inp2 = nullptr;  // the layer after next's, with LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2
     ggml_tensor * la_guess    = nullptr;   // the trained guesser's floor L+2 matrix, in place of la_gate_inp2 (GUESSER)
     ggml_tensor * la_guess_b  = nullptr;   // and its bias
@@ -235,4 +241,11 @@ struct llama_moe_stream_work {
     // the lent belt (llama-moe-room.h): the writing remap's trips and the lookahead's guesses
     uint64_t lent = 0; // a restore: copy this slab back from the lent belt's copy with this seq, no read
     uint64_t save = 0; // the slot's old book is being kept (that copy's seq): its slab is copied out first
+
+    // one missing book across both runners (LLAMA_MOE_STREAM_SPLIT, llama-moe-stream-split.h): this job reads bytes
+    // [piece_offs, piece_offs + piece_len) of its slab (piece_len 0: the whole slab) on runner `drive` (-1: the one
+    // pick_alt chooses at the read, 0 the model's own files, 1 the alt copy)
+    uint32_t piece_offs = 0;
+    uint32_t piece_len  = 0;
+    int8_t   drive      = -1;
 };

@@ -579,6 +579,12 @@ struct server_slot {
     // the lane of the last task this seat ran (server-lane.h), kept past the task for the store's save point
     // (--cache-ram-opening saves chat seats only); NONE (window off, or a fresh seat) counts as chat
     server_lane lane_last = SERVER_LANE_NONE;
+    // the lane of the task before it: the split rule pins only within a lane (server_ckpt_pin_target_lanes, PLAN #31)
+    server_lane lane_prev = SERVER_LANE_NONE;
+
+    // the first user message's start of the task that set the seat's pin (0: none known): the opening copy refuses
+    // a pin below it, inside the system prompt (server_ckpt_keep_pin). Kept past the task, as the pin is
+    int64_t opening_floor = 0;
 
     // sampling
     json json_schema;
@@ -2154,6 +2160,7 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+        slot.lane_prev = slot.lane_last;
         slot.lane_last = slot.task->lane;
 
         slot.state = slot.task->is_child()
@@ -2645,8 +2652,9 @@ private:
     // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the
     // seat is first stepped back to its pinned copy with the checkpoint restore (load the fixed summary, drop the
     // context memory past it in the library and the apprentice, trim the tokens, keep only that copy), or nothing is
-    // saved without a pin; the saved entry carries no copies, the seat keeps its pin. The caller decides the lane, and
-    // must overwrite or clear the seat after a step back.
+    // saved without a pin, or with one inside the system prompt (below the seat's opening_floor); the saved entry
+    // carries no copies, the seat keeps its pin. The caller decides the lane, and must overwrite or clear the seat
+    // after a step back.
     bool slot_store_save(server_slot & slot) {
         if (!params_base.cache_ram_opening) {
             return slot.prompt_save(*prompt_cache);
@@ -2657,9 +2665,17 @@ private:
             return false;
         }
 
-        auto * pin = server_ckpt_keep_pin(slot.prompt.checkpoints, n_seat);
+        // a pin inside the system prompt (below the floor) is refused with the list untouched: no step back, and the
+        // store keeps whatever good opening it holds (PLAN #31)
+        auto * pin = server_ckpt_keep_pin(slot.prompt.checkpoints, n_seat, slot.opening_floor);
         if (pin == nullptr) {
-            SLT_WRN(slot, "opening copy: not saved, no pinned copy (%d tokens, %zu copies)\n", n_seat, slot.prompt.checkpoints.size());
+            const int64_t pinned_at = server_ckpt_pinned_at(slot.prompt.checkpoints);
+            if (pinned_at > 0 && pinned_at <= n_seat && pinned_at < slot.opening_floor) {
+                SLT_WRN(slot, "opening copy: not saved, the pin (%" PRId64 ") sits inside the system prompt (first user message at %" PRId64 "; %d tokens, the store keeps %zu entries)\n",
+                        pinned_at, slot.opening_floor, n_seat, prompt_cache->states.size());
+            } else {
+                SLT_WRN(slot, "opening copy: not saved, no pinned copy (%d tokens, %zu copies)\n", n_seat, slot.prompt.checkpoints.size());
+            }
             return false;
         }
 
@@ -2724,6 +2740,10 @@ private:
             SLT_WRN(slot, "bookmark pin: split at %" PRId64 ", pinned at %" PRId64 " (was %" PRId64 ")\n", slot.pin_split, cur.n_tokens, pin_was);
         } else if (pin) {
             SLT_WRN(slot, "bookmark pin: no pin yet, pinned at %" PRId64 ", the first user message (opening copy)\n", cur.n_tokens);
+        }
+        if (pin) {
+            // the pin's floor, for the opening copy's save: where this task's opening ends
+            slot.opening_floor = std::max<int64_t>(0, server_ckpt_first_user_start(slot.task->params.message_spans));
         }
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
@@ -3727,10 +3747,20 @@ private:
                                 }
 
                                 // the bookmark pin: a new chat's split, before any copy is restored, decides where
-                                // the read-in below pins a copy, the start of the message holding it (server-ckpt-pin.h)
+                                // the read-in below pins a copy, the start of the message holding it (server-ckpt-pin.h);
+                                // only within a lane: a chat after code takes code's pin off instead, so its first
+                                // user message takes the pin (server_ckpt_pin_target_lanes, PLAN #31)
                                 slot.pin_split  = n_past;
-                                slot.pin_target = server_ckpt_pin_target(ckpt_pin, params_base.n_ctx_checkpoints,
+                                const server_ckpt_lane_pin lane_pin = server_ckpt_pin_target_lanes(ckpt_pin,
+                                        params_base.n_ctx_checkpoints, slot.lane_prev == SERVER_LANE_CODE,
+                                        slot.task->lane == SERVER_LANE_CODE, slot.prompt.checkpoints,
                                         slot.task->params.message_spans, n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
+                                slot.pin_target = lane_pin.target;
+                                if (lane_pin.skipped >= 0 || lane_pin.unpinned >= 0) {
+                                    SLT_WRN(slot, "bookmark pin: %s after %s, split at %d not pinned (the split rule's pick: %" PRId64 "), the seat's pin taken off: %" PRId64 " (-1: none)\n",
+                                            server_lane_name(slot.task->lane), server_lane_name(slot.lane_prev), n_past,
+                                            lane_pin.skipped, lane_pin.unpinned);
+                                }
 
                                 const auto n_cache_reuse = slot.task->params.n_cache_reuse;
 
@@ -3903,6 +3933,7 @@ private:
                                 int64_t pin_was = -1;
                                 if (server_ckpt_pin_existing(slot.prompt.checkpoints, slot.pin_target, &pin_was)) {
                                     SLT_WRN(slot, "bookmark pin: split at %" PRId64 ", pinned at %" PRId64 " (was %" PRId64 ")\n", slot.pin_split, slot.pin_target, pin_was);
+                                    slot.opening_floor = std::max<int64_t>(0, server_ckpt_first_user_start(slot.task->params.message_spans));
                                     slot.pin_target = -1;
                                 } else if (n_past > slot.pin_target) {
                                     slot.pin_target = -1;

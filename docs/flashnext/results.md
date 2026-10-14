@@ -21,7 +21,7 @@ each number can be traced in the write-up.
   prompt** is prefill speed.
 - **Swap voids a timing.** A monitor sampled swap, memory pressure and thermal state every second.
   Any swap stopped the run, and the timings it touched were thrown out, never counted as slow.
-  Swap stayed at 0 in 33 of the 35 runs, over 7,266 counted replies.
+  Swap stayed at 0 in 57 of the 59 runs, over 13,485 counted replies.
 - **Quality:** a fixed 20-task exam with known answers (10 from the assistant's own work, 10 coding
   tasks with unit tests). Changes meant to be exact had to reproduce three fixed answers byte for
   byte; changes that move words were checked with perplexity and the exam.
@@ -65,25 +65,35 @@ Runs happened on different days and settings, so compare within a line, not down
 From October the study measured on two new sets from the author's own use, each replayed turn by
 turn with the prompt cache on: 24 coding-agent conversations at high thinking effort (`code`), and
 24 chat conversations at medium effort (`chat`). Writing is word-weighted over every reply. Each run
-is A-B-A against the setup before it, the base pair had to agree within 3%, and a change had to
-gain at least 3% (or, for an efficiency fix, stay level within that noise).
+is A-B-A against the setup before it, the base pair had to agree within 3% (4% on the 12-conversation
+lists the study uses for one change from 13 October), and a change had to gain at least 3% (or, for
+an efficiency fix, stay level within that noise).
 
 | Change | Coding | Chat | Run |
 |---|---|---|---|
 | The trained two-layer guesser with the keep rule | **+4.2%** (17.51 → 18.25 tokens/s) | **+8.2%** (17.62 → 19.06) | K-final |
 | Fewer undo copies (`LLAMA_RS_SKIP_SLOTS=1`) | **+4.3%** (18.07 → 18.84) | level, −2.0% (20.86 → 20.44) | C-tax, C-taxfix-chat |
 | The drive choice by load and read-thread priority (plumbing) | **+12.5%** (18.92 → 21.28) | **+10.4%** (19.14 → 21.13) | C-plumb |
+| The trained one-layer guess, on top of all the above (12 conversations each) | **+7.5%** (20.19 → 21.71) | **+7.3%** (21.16 → 22.70) | T43-code-lean, T43-chat-lean |
 | Chat's opening kept in RAM | | a new chat after coding work: first token in **4.1 s**, from 14.2 s | chat-return |
+| The pin knows chat from coding work | | with the agent first, a new chat read in 463 tokens instead of 5-7K: **3.5 s** to the first token, from 14-20 s | pin-lanes live check |
 
-The best measured arms: **21.2 tokens/s on code** and **21.1 on chat** (over every paper), against
-17.5 and 17.6 for the same sets before the trained guesser, run in another week: about +21% and
-+20%. None of these changes alters an output token (the guesser changes only what is fetched early;
+The best measured arms: **21.7 tokens/s on code** and **22.7 on chat** with the one-layer guess, on
+12 conversations each (T43). Over all 24, before it: **21.2** and **21.1**, against 17.5 and 17.6 for
+the same sets before the trained guessers, run in another week: about +21% and +20%. None of these
+changes alters an output token (the guessers change only what is fetched early; the one-layer guess,
 the undo copies and the plumbing passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
-from 20%.
+from 20%. The one-layer guess wastes less drive time: 65-71% of its early fetches are used,
+against 30-32% for the borrowed guess, and the fetches per token that are never used fall from about
+42 to 7-8.
 
 Tried and not kept in October: the check's matrix work on the M5's matrix units
 (`GGML_METAL_STAFF_MV`, −0.8% and +1.1% on code, below the +3% bar), and raising the draft head's
-ceiling from 5 to 8 guesses (+1.1%, below the bar). Both runs: C-tax.
+ceiling from 5 to 8 guesses (+1.1%, below the bar). Both runs: C-tax. Later in October: reading one
+missing expert from both drives at once (`LLAMA_MOE_STREAM_SPLIT`; the GPU's wait for experts did not
+move, T11b-probe), and a lookup draft that copies the words that followed the same words earlier in
+the conversation (best setting −0.06% on code in a replay of recorded rounds, under the +3% bar;
+lookup replay).
 
 ## Expert cache size (draft head off)
 

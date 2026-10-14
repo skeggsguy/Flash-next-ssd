@@ -76,6 +76,7 @@ Environment-only switches:
 | `LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2` | 0 (off) | Also fetch two layers ahead. Without the guesser, the K most likely experts by the next layer's router; with it, the guesser's confident picks. Study: **4**. |
 | `LLAMA_MOE_STREAM_LOOKAHEAD_ALL` | off | Look ahead for every token of a small batch (the draft head's check), not only the last. Study: **1**. |
 | `LLAMA_MOE_STREAM_LOOKAHEAD_KEEP` | off | Keep a guessed expert in the cache until its layer has run, so a right guess is not evicted unread. The cache still takes a kept slot rather than wait. Study: **1**: the keep rule is what turns the guesser's accuracy into speed. |
+| `LLAMA_MOE_STREAM_GUESSER1` | none (the engine's own guess) | The trained one-layer guesser's file ([crystal-ball](https://huggingface.co/skeggsguy/crystal-ball), `c1-guesser-gap1.gguf`, 123 MB). The lookahead's next-layer guess then comes from this file instead of the next layer's own router fed this layer's input: 73-77% of the next layer's experts in its top 10, against 61-65%, on held-out conversations. Needs the lookahead on (its default); refuses a file of the wrong shape and the GPU slot servicer (`LLAMA_MOE_STREAM_GPU_SLOT`). Never changes the words. Study: **on**, beside the two-layer guesser and the keep rule (+7.5% writing on code, +7.3% on chat, on top of them). |
 | `LLAMA_MOE_STREAM_STATS_MS` | 0 (off) | Print streaming statistics (cache hits, reads, the reading room) every N ms. Handy while tuning: `1000`. |
 
 ## Two drives
@@ -102,6 +103,11 @@ Environment-only (both on unless set to `0`; they choose where bytes are read fr
 |---|---|---|
 | `LLAMA_MOE_STREAM_DYN_DRIVE` | on | Send each read to the drive with fewer reads in flight, not the drive its expert id names. Measured with the second drive: +12.5% writing on code, +10.4% on chat, together with `_QOS`. |
 | `LLAMA_MOE_STREAM_QOS` | on | Run the read threads at macOS's interactive service class. |
+
+`LLAMA_MOE_STREAM_SPLIT` (off unless set) reads one missing expert from both drives at once: `1`
+sends its three parts to the two drives in turn, `2` reads each part in two halves, one from each
+drive. Neither cut the time the GPU waits for experts in the study's probe (7.8 and 6.8 ms a token
+against 6.9 ms off), so the study leaves it off.
 
 ## The reading room (prompt reading)
 

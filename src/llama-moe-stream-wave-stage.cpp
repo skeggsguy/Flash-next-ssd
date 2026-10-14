@@ -88,17 +88,9 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
                     sl.n_miss_cold++;
                 }
                 reserve_slot_locked(sl, e, v);
-                // one work item PER SLAB: the 2-3 slabs of an expert are independent reads, and
-                // issuing them together is what lifts device queue depth above 1.
-                sl.slot_pending[v] = (uint8_t) sl.weights.size();
-
-                for (size_t wi = 0; wi < sl.weights.size(); wi++) {
-
-                    q_demand.push_back({ &sl, e, v, (int32_t) wi, sl.slot_gen[v] });
-                    cv_work.notify_one();  // one wakeup per slab
-
-                }
-                // (workers woken per slab inside the loop above)
+                // one work item PER SLAB (or per half slab, LLAMA_MOE_STREAM_SPLIT=2): the 2-3 slabs of an expert
+                // are independent reads, and issuing them together is what lifts device queue depth above 1.
+                llama_moe_stream_queue_demand_locked(*this, sl, e, v);
                 stats.n_miss++;
                 sl.n_miss++;
                 waited = true;
@@ -126,17 +118,8 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
             }
             reserve_slot_locked(sl, e, v);
             sl.keep[v] = 1;
-            // one work item PER SLAB: the 2-3 slabs of an expert are independent reads, and
-            // issuing them together is what lifts device queue depth above 1.
-            sl.slot_pending[v] = (uint8_t) sl.weights.size();
-
-            for (size_t wi = 0; wi < sl.weights.size(); wi++) {
-
-                q_demand.push_back({ &sl, e, v, (int32_t) wi, sl.slot_gen[v] });
-                cv_work.notify_one();  // one wakeup per slab
-
-            }
-            // (workers woken per slab inside the loop above)
+            // one work item PER SLAB (or per half slab, LLAMA_MOE_STREAM_SPLIT=2), as for the wave's own books
+            llama_moe_stream_queue_demand_locked(*this, sl, e, v);
             stats.n_preload_issued++;
         }
     }

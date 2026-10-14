@@ -169,22 +169,28 @@ void llama_moe_stream::worker_loop() {
         }
 
         // two runners: low expert ids from the model's own shards, high ids from the alt copy - or,
-        // with the drive choice by load on, whichever has fewer reads in flight. The offset is the
-        // same in both, because the alt shards are byte-identical copies.
-        const bool alt = pick_alt(w.expert, sl.n_expert);
+        // with the drive choice by load on, whichever has fewer reads in flight - or the runner the demand queue
+        // chose (LLAMA_MOE_STREAM_SPLIT, llama-moe-stream-split.h). The offset is the same in both, because the
+        // alt shards are byte-identical copies.
+        const bool alt = w.drive >= 0 ? w.drive == 1 : pick_alt(w.expert, sl.n_expert);
 
         // Read into the cache slot itself when the backend hands out a host pointer - on unified
         // memory the slot IS host memory, so staging then uploading is a pure extra copy of the
         // whole slab. The direct-io path keeps staging: it needs the head/tail slack for its
         // block-aligned reads, which would scribble outside the slot.
         const auto & wt = sl.weights[w.widx];
+        // this job's bytes of the slab: all of it, or one half (LLAMA_MOE_STREAM_SPLIT=2; a demand job only, never
+        // the belt's or a restore's)
+        GGML_ASSERT(w.piece_len == 0 || (!ring && w.piece_offs + (size_t) w.piece_len <= wt.nb_expert));
+        const size_t p_offs = w.piece_offs;
+        const size_t p_len  = w.piece_len ? (size_t) w.piece_len : wt.nb_expert;
         uint8_t * dst = nullptr;
         if (!use_direct_io && !no_zerocopy) {
             if (ring) {
                 dst = room->host ? room->host + w.ring_offs : nullptr;
             } else {
                 auto * host = (uint8_t *) ggml_backend_tensor_get_host_ptr(wt.cache);
-                dst = host ? host + (size_t) w.slot*wt.nb_expert : nullptr;
+                dst = host ? host + (size_t) w.slot*wt.nb_expert + p_offs : nullptr;
             }
         }
         // the slot's old book is being kept on the lent belt: a read straight into the slot waits until
@@ -209,7 +215,7 @@ void llama_moe_stream::worker_loop() {
         }
         const int64_t t0 = ggml_time_us();
         const uint8_t * data = llama_moe_stream_pread(*(alt ? files_alt : files)[wt.file_idx], dst ? dst : staging,
-                wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
+                p_len, wt.offs + (size_t) w.expert*wt.nb_expert + p_offs, use_direct_io);
         const int64_t t1 = ggml_time_us();
         const bool ok = data != nullptr;
         if (ok && dst == nullptr) {
@@ -221,7 +227,7 @@ void llama_moe_stream::worker_loop() {
                     room->lend_gate_locked(lk, w); // the slot kept its old bytes until here
                     lk.unlock();
                 }
-                ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
+                ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert + p_offs, p_len);
             }
         }
         const int64_t t2 = ggml_time_us();
@@ -234,7 +240,7 @@ void llama_moe_stream::worker_loop() {
         stats.n_slabs_read   += 1;
         if (ok) {
             // which runner fetched it. With one runner every byte is n_bytes_file.
-            (alt ? stats.n_bytes_alt : stats.n_bytes_file) += (int64_t) wt.nb_expert;
+            (alt ? stats.n_bytes_alt : stats.n_bytes_file) += (int64_t) p_len;
         }
 
         {
@@ -253,8 +259,8 @@ void llama_moe_stream::worker_loop() {
             load_failed = true;
             sl.slot_pending[w.slot] = 0;
         } else if (w.gen == sl.slot_gen[w.slot] && sl.slot_pending[w.slot] > 0) {
-            // the LAST slab to land publishes the slot; until then it stays LOADING, so no consumer
-            // can observe a half-filled expert
+            // the LAST slab (or half slab) to land publishes the slot; until then it stays LOADING, so no
+            // consumer can observe a half-filled expert
             if (--sl.slot_pending[w.slot] == 0) {
                 moe_slot_state_publish(sl.slot_state[w.slot], LLAMA_MOE_STREAM_SLOT_RESIDENT); // release: the remap's quick path
             }

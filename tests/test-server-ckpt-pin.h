@@ -1,7 +1,7 @@
 #pragma once
 
-// helpers shared by test-server-ckpt-pin.cpp, test-server-ckpt-pin-chats.cpp and test-server-ckpt-pin-opening.cpp
-// (one test, three files to stay short)
+// helpers shared by test-server-ckpt-pin.cpp, test-server-ckpt-pin-chats.cpp, test-server-ckpt-pin-opening.cpp and
+// test-server-ckpt-pin-lanes.cpp (one test, four files to stay short)
 
 #include "server-ckpt-pin.h"
 
@@ -59,3 +59,6 @@ void test_handback_chats();
 
 // in test-server-ckpt-pin-opening.cpp (--cache-ram-opening, CHAT-RETURN-PLAN.md step 1)
 void test_opening();
+
+// in test-server-ckpt-pin-lanes.cpp (the pin learns lanes, the opening copy's floor, PLAN #31)
+void test_lanes();

@@ -61,6 +61,29 @@ int64_t server_ckpt_span_start(const common_chat_msg_spans & spans, int64_t pos)
 int64_t server_ckpt_pin_target(bool pin_on, int32_t n_ctx_checkpoints, const common_chat_msg_spans & spans,
         int64_t n_past, int64_t n_old, int64_t n_new);
 
+// The pin learns lanes (study PLAN #31, decisions 2026-10-14). The split rule says "a new chat" only when the seat's
+// last prompt was the same kind of work: chat's and code's prompts part at token 3 (the template's effort line), so a
+// chat after code split there and pinned at 3, inside the system prompt. That pin blocked the first user message's
+// pin (server_ckpt_pin_first_user), and the opening copy saved 3 tokens when coding took the seat (dogfood 2026-10-14:
+// three chats read in 5-7K tokens each). So the split rule runs only when the seat's previous task was in this task's
+// lane (NONE counts as chat, so with the chat window off nothing changes). A chat after code pins nothing at its split
+// and takes off any pin code left on the seat, so the first user message takes it; code after code keeps its split
+// pin (code's own ~10.6K pin serves code); code after chat leaves chat's pin alone.
+struct server_ckpt_lane_pin {
+    int64_t target;   // where this read-in pins a copy (server_ckpt_pin_target), or -1
+    int64_t skipped;  // the split rule's target, set aside because the lane changed (for the log), or -1
+    int64_t unpinned; // the pin a chat after code took off the seat (now an ordinary rolling copy), or -1
+};
+server_ckpt_lane_pin server_ckpt_pin_target_lanes(bool pin_on, int32_t n_ctx_checkpoints, bool prev_code,
+        bool task_code, server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_past, int64_t n_old,
+        int64_t n_new);
+
+// the first user message's start, where a chat's opening ends (sidekick's ~4.2-5K tokens), or -1 if it has none
+int64_t server_ckpt_first_user_start(const common_chat_msg_spans & spans);
+
+// the n_tokens of the copy holding the pin, or -1
+int64_t server_ckpt_pinned_at(const server_ckpt_list & ckpts);
+
 // takes the pin off whichever copy holds it (it becomes an ordinary rolling copy); returns its n_tokens, or -1
 int64_t server_ckpt_unpin(server_ckpt_list & ckpts);
 
@@ -109,8 +132,11 @@ struct server_ckpt_hand_on {
 server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat, bool task_chat, int64_t n_seat);
 
 // The step back's list: erases every copy but the pinned one and returns it. nullptr, leaving the list untouched, when
-// there is no pin or it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat): then nothing is saved.
-common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat);
+// there is no pin, it lies outside the seat's tokens (0 < n_tokens <= n_tokens_seat), or it sits below opening_floor:
+// then nothing is saved. opening_floor (PLAN #31) is the first user message's start of the task that pinned (the
+// seat records it): a pin below it sits inside the system prompt (the 3-token pin of 2026-10-14), a copy no new chat
+// gains from, so the store keeps whatever it holds and the seat is not stepped back. 0: no floor.
+common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat, int64_t opening_floor = 0);
 
 // One copy of the opening (Tom, decisions 2026-10-12; cleric's review of step 1): the saved entry carries no bookmark
 // copies. A seat stepped back to its pin holds exactly the opening, so a new chat that takes the entry reads on from
@@ -123,6 +149,7 @@ bool server_ckpt_save_without_copies(server_ckpt_list & ckpts, const std::functi
 
 // A first chat keeps its opening too: with the switch on (and the pin, with room for it), a chat task's copy made at
 // its first user message's start takes the pin when no copy holds one yet. The read-in already makes that copy (it
-// breaks there), so no batch changes. The split rule still moves the pin later.
+// breaks there), so no batch changes. The split rule still moves the pin later. A chat after code gets here too:
+// server_ckpt_pin_target_lanes takes the pin code left on the seat off first.
 bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_checkpoints, bool task_chat,
         const server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_tokens_start);
