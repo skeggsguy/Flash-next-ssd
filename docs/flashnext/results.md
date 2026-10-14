@@ -83,8 +83,9 @@ The best measured arms: **21.7 tokens/s on code** and **22.7 on chat** with the 
 the same sets before the trained guessers, run in another week: about +21% and +20%. None of these
 changes alters an output token (the guessers change only what is fetched early; the one-layer guess,
 the undo copies and the plumbing passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
-from 20%. The one-layer guess wastes less drive time: of its early fetches about 7 in 10 are used,
-against 3 in 10 for the borrowed guess, about 38 fewer unused fetches per token.
+from 20%. The one-layer guess wastes less drive time: 65-71% of its early fetches are used,
+against 30-32% for the borrowed guess, and the fetches per token that are never used fall from about
+42 to 7-8.
 
 Tried and not kept in October: the check's matrix work on the M5's matrix units
 (`GGML_METAL_STAFF_MV`, −0.8% and +1.1% on code, below the +3% bar), and raising the draft head's

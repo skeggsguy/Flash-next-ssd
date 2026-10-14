@@ -50,32 +50,46 @@ lookups find their expert already in RAM.
 
 ### The trained lookahead: guessing one and two layers ahead (new in October)
 
-Guessing one layer ahead leaves the SSD only one layer's compute time to fetch a missed expert. The
-trained guesser, [crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) (a 121 MB side file),
-looks two layers ahead: on each layer it scores all 512 experts of the layer after next, and the
-ones it is confident about (above 0.2) are fetched early. It was trained on the model's own routing
-while it wrote real replies. On held-out conversations its top 10 for a layer two ahead hold about
-7 of the 10 experts actually used.
+While a token is written, the engine guesses the next layer's experts and fetches them early. Its
+own guess borrows the next layer's router and feeds it this layer's input, a rough copy: its top 10
+hold 61-65% of the experts the next layer then uses, and the SSD has only one layer's compute time
+to fetch them. Only about 1 in 4 of those early fetches is used, and half are evicted from the
+cache before their layer comes.
 
-A guess only pays if the expert is still in the cache when its layer comes, so a second rule keeps
-each guessed expert in the cache until its layer has run (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1`).
-Without it, the cache could evict a correct guess before it was used. With both: **+4.2% writing on
-the coding set and +8.2% on chat**, the most on short and medium conversations (+6% to +11%). It
-changes only which experts are fetched early, never which are used, so the output is unchanged. It
-is off unless you point the engine at the file (Quick start, steps 2 and 4).
+Two small side files on [crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) do better.
+Each was trained on the model's own routing while it wrote real replies:
 
-<p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the trained guesser looks two layers ahead and keeps its guesses, 84% are used, writing +4.2% coding and +8.2% chat, most on short and medium conversations"></p>
+| | Two-layer guesser | One-layer guesser |
+|---|---|---|
+| File | `c1-guesser.gguf`, 121 MB | `c1-guesser-gap1.gguf`, 123 MB |
+| What it does | on layer n, scores all 512 experts of layer n+2 and fetches those above 0.2, so they get two layers' time | on layer n, ranks all 512 experts of layer n+1, in place of the engine's own guess |
+| Top 10 on held-out conversations | 67-72% of the experts used two layers on | 73-77% of the next layer's (the engine's own: 61-65%) |
+| Early fetches used | 84% | 65-71% (the engine's own guess, with the keep rule: 30-32%) |
+| Writing, coding | **+4.2%** (17.51 → 18.25 tokens/s) | **+7.5%** more (20.19 → 21.71) |
+| Writing, chat | **+8.2%** (17.62 → 19.06) | **+7.3%** more (21.16 → 22.70) |
+| Where it pays | +6% to +11% up to long conversations, about +1% on the longest | +3% to +10% at every length, the longest included |
+| Measured against | the same engine with neither guesser nor keep rule (24 + 24 conversations) | the two-layer guesser and keep rule already on (12 + 12, another day) |
 
-**New in this update, the one-layer guess trained too.** The engine's own guess for the next layer
-borrows that layer's router and feeds it this layer's input instead of its own. That rough copy
-names 61-65% of the next layer's experts in its top 10 on held-out conversations. A second
-crystal-ball file, `c1-guesser-gap1.gguf` (123 MB), starts from the same router and is trained to
-read this layer's input directly: 73-77%, ahead on 43 to 47 of the 47 layers. Point
-`LLAMA_MOE_STREAM_GUESSER1` at it, beside the two-layer guesser. About 7 in 10 of its early fetches
-are used, against 3 in 10 for the borrowed guess, so each token fetches about 38 fewer experts it
-never uses, and the drives are free sooner for the ones it needs. On top of the two-layer guesser:
-**+7.5% writing on the coding set and +7.3% on chat**, and output unchanged (byte-identical answers
-with it on and off).
+**The keep rule** (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1`) keeps every guessed expert in the cache until
+its layer has run. Without it the cache can evict a right guess before it is used, as it did with
+half of the engine's own. It is what turns the two-layer guesser's accuracy into speed.
+
+**Why the one-layer guesser adds so much on top:** the engine's own guess wasted drive time. With the
+two-layer guesser on, it still fetched about 61 experts per token, of which about 42 were never used.
+The trained one fetches about 23, of which 7-8 go unused. The drives went from 56-62% busy to
+41-49%, so the experts the GPU is actually waiting for arrive sooner. That shorter wait accounts for
+about a third of the time saved; most of the rest is probably the cost of sending and settling all
+those extra fetches, which was not measured on its own.
+
+**Together:** the two were measured one at a time on different days, and other October changes
+landed in between, so their combined gain was never measured in one run. Multiplying the two gives
+roughly +12% on coding and +16% on chat over the engine's own guess. Neither changes which experts
+are used, only which are fetched early, so the output is unchanged: answers are byte-identical with
+each one on and off. Both are off unless you point the engine at the files (Quick start, steps 2 and
+4): `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER` with `_CONF=0.2 _DEPTH2=4 _ALL=1 _KEEP=1`, and
+`LLAMA_MOE_STREAM_GUESSER1`.
+
+<p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: the engine's own one-layer guess gives the SSD one layer's time, the GPU waits, and only 1 in 4 guesses is used. After: the two-layer guesser fetches layer n+2's experts, the one-layer guesser tops up a layer later, and every guess is kept until its layer runs; 84% and 65-71% of guesses used. Writing +4.2% coding and +8.2% chat from the two-layer guesser, then +7.5% and +7.3% more from the one-layer guesser, which also pays on the longest conversations"></p>
 
 ### The reading room: a carousel for long prompts
 
