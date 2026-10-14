@@ -23,18 +23,24 @@ effort (`chat`).
 
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **21.7 tokens/s**: **+7.5% since the last update** (20.2 on the same conversations) |
-| **Writing (decode), chat** | **22.7 tokens/s**: **+7.3% since the last update** (from 21.2) |
-| **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, now also when the agent had the server first |
+| **Writing (decode), coding agent** | **23.6 tokens/s**: **+9.6% since the last update** (21.5 on the same conversations) |
+| **Writing (decode), chat** | **25.0 tokens/s**: **+9.7% since the last update** (from 22.7) |
+| **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-"Since the last update" compares with this repo's previous release (13 October), run A-B-A on the
-same afternoon: that release's setup, then the same with the new one-layer guesser, then that
-release's setup again. This run used 12 conversations of each set, the study's shorter list for
-one change, so its base (20.2 and 21.2) is not the 24-conversation figure the last update gave. That
-release had itself taken the full sets from 17.5 to 21.2 tokens/s (coding) and from 17.6 to 21.1
-(chat) since 5 October.
+"Since the last update" compares with this repo's previous release (14 October), run A-B-A on one
+day: that release's setup, then the same with the new rule for which expert the cache lets go
+([below](#which-expert-the-cache-lets-go-new-in-october)), then that release's setup again. The run
+used 12 conversations of each set, the study's shorter list for one change; the base is the mean of
+the two runs of the old setup (21.55 and 21.48 coding, 22.90 and 22.59 chat). The previous release
+had itself added the one-layer guesser (+7.5% coding, +7.3% chat), and the releases before it took
+the full sets from 17.5 to 21.2 tokens/s (coding) and from 17.6 to 21.1 (chat) since 5 October.
+
+**Also new in this update, the proven settings are the defaults.** The engine now runs the study's
+everyday values without being told, and one flag, `--flashnext`, sets llama.cpp's general options
+to the everyday values. [Out of the box, and what you add](#out-of-the-box-and-what-you-add) says
+which is which, and the quick start's command is down to a few lines.
 
 ## What it adds
 
@@ -45,8 +51,25 @@ release had itself taken the full sets from 17.5 to 21.2 tokens/s (coding) and f
 cache and the rest of the system keep their memory, and many reads are in flight at once. While a
 token is being written, the next layer's likely experts are fetched ahead of time; about 1 in 4 of
 those early fetches is used before the cache lets it go (the trained lookahead below does better).
-The cache keeps the experts used most recently and most often. At 28 GiB about 4 in 5 expert
-lookups find their expert already in RAM.
+When the cache is full, it lets go the expert that has gone longest without being used (below). At
+28 GiB about 4 in 5 expert lookups find their expert already in RAM.
+
+### Which expert the cache lets go (new in October)
+
+When the expert cache is full and a new expert has to come in, another has to go. The old rule let
+go the expert with the lowest recent use count. The new default lets go the one that has gone
+longest without being used (least recently used, LRU). The rule itself came with Marian
+Mihailescu's streaming; the study measured it on both sets at a 28 GiB cache:
+
+- **Writing +9.6% on the coding set and +9.7% on chat** (21.5 → 23.6 and 22.7 → 25.0 tokens/s).
+- Experts fetched from the SSD per written token fell by 17% (chat) and 28% (code), and the share of
+  lookups found in RAM while writing rose from about 92% to 94%.
+- It gains most on long conversations, where the topic moves furthest (+14-15% on the longest).
+- At a 24 GiB cache it writes as fast as the old rule at 28 GiB, with about 4 GiB of RAM back: a
+  choice for a Mac that keeps other apps open.
+
+It changes which experts are in RAM, never which are used, so the output is unchanged (byte-identical
+word checks). It is on by default; `LLAMA_MOE_STREAM_LRU=0` restores the old rule.
 
 ### The trained lookahead: guessing one and two layers ahead (new in October)
 
@@ -62,8 +85,9 @@ model's own routing while it wrote real replies.
 - **The one-layer guesser** (`c1-guesser-gap1.gguf`, 123 MB) replaces the engine's own guess for the
   next layer and tops up what the two-layer guess missed. Its top 10 hold 73-77% of the experts the
   next layer uses, against 61-65% for the engine's own, and 65-71% of its fetches are used.
-- **The keep rule** (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1`) keeps every guessed expert in the cache
-  until its layer has run, so a right guess is never evicted unread.
+- **The keep rule** keeps every guessed expert in the cache until its layer has run, so a right
+  guess is never evicted unread. It is on whenever the two-layer guesser is
+  (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=0` turns it off).
 
 Together: **about +12% writing on the coding set and +16% on chat**, against the engine's own guess
 without the keep rule. That is an estimate. The two-layer guesser was measured first (+4.2% coding,
@@ -103,16 +127,18 @@ SSDs 15% of the time instead of 20%. Both are on by default (`LLAMA_MOE_STREAM_D
 ### The MTP draft head, at a depth it measures for itself
 
 A small draft head guesses up to 5 tokens ahead, and the model checks them all in one pass
-(`--spec-type draft-mtp-adaptive` with `LLAMA_SPEC_ADAPTIVE_RATE=1`). It picks its own guessing
-depth from how often recent guesses were kept. On the agent conversations (tool calls, code) it
-made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs its own experts
-fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from, for another +2.6%.
+(`-md` with `--spec-type draft-mtp-adaptive`, which `--flashnext` sets). It picks its own guessing
+depth from how often recent guesses were kept; that measured depth is the engine's default
+(`LLAMA_SPEC_ADAPTIVE_RATE=0` falls back to a fixed table). On the agent conversations (tool calls,
+code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
+its own experts fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from, for
+another +2.6%, but the study's list is not published ([what you add](#what-you-add)).
 
 **New in October, fewer undo copies:** before each check, the model saves copies of its running
 (recurrent) state so it can roll back the guesses it rejects. It used to save every slot each round;
-with `LLAMA_RS_SKIP_SLOTS=1` it saves only the slots a rollback can actually reach. Coding: **+4.3%
-writing**; chat: level (−2.0%, within the runs' noise). Output is byte-identical. It is off by
-default, because its guard against a too-deep rollback has only been proven with the draft head on.
+now it saves only the slots a rollback can actually reach. Coding: **+4.3% writing**; chat: level
+(−2.0%, within the runs' noise). Output is byte-identical. It is on by default
+(`LLAMA_RS_SKIP_SLOTS=0` saves every slot again).
 
 ### Union attention
 
@@ -150,6 +176,74 @@ first new chat after each start still reads its opening once, since nothing has 
   long one resumes in 4 s instead of 14 s.
 - Cheaper per-layer stops: less locking and lookup at each layer, the next layer's GPU work encoded
   ahead, and a tiny keep-awake ping so the GPU does not power down while it waits (+7% writing).
+
+## Out of the box, and what you add
+
+Once a change has proven itself in the study, it becomes the engine's default, unless it needs a
+download. So there are three layers: what the engine does with no settings, what one flag,
+`--flashnext`, adds, and what only you can add: the downloads and the choices that depend on your Mac.
+
+### With no settings
+
+The fork's own switches run the study's proven values when they are left unset. Each is an
+environment variable; to go back to the old way, set it to the value in the last column.
+
+| Switch | Unset (the default) | The old way |
+|---|---|---|
+| `LLAMA_MOE_STREAM_LRU` | A full cache lets go the expert unused longest ([above](#which-expert-the-cache-lets-go-new-in-october)). | `0`: the lowest recent use count |
+| `LLAMA_RS_SKIP_SLOTS` | The draft head's check saves only the undo copies a rollback can reach. | `0`: every copy, every round |
+| `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: a fixed table |
+| `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | The expert cache is claimed in 4 GiB steps with short pauses, so macOS is not rushed at load. | `0`: all at once |
+| `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | The model stays wired in RAM while the server is idle (10,000,000 s). | `0`: upstream's 180 s, after which the next request wires ~41 GiB back in one go |
+| `GGML_METAL_STAFF_MV` | The check's matrix work runs on the route the study measured. | `1`: the M5's matrix units (below the study's bar) |
+| The two-layer guesser's tuning: `LLAMA_MOE_STREAM_LOOKAHEAD_ALL`, `_DEPTH2`, `_KEEP`, `_CONF` | The everyday values (on, 4, on, 0.2) once `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER` names the guesser's file; off without it. | Set any of them by hand |
+
+They join the changes that were already on by default: the reading room, union attention, the
+n-gram shelf, the pinned checkpoint, the cheaper per-layer stops and, with a second drive, the drive
+choice by load. At start the server prints one line beginning `flashnext:` that names the defaults
+in force, marking any you set yourself "(yours)".
+
+What the engine leaves alone is llama.cpp's own options. Their upstream defaults (no streaming,
+small batches, four conversations at once, an 8 GiB prompt store in RAM) do not suit this model.
+
+### With `--flashnext`
+
+`--flashnext` sets llama.cpp's options to the everyday values, each only where you did not set
+that option yourself (on the command line, as its `LLAMA_ARG_*` variable or in a config file).
+Without it, upstream's defaults are untouched.
+
+| Option | What it is for |
+|---|---|
+| `-ngl 99` | Everything that is not streamed goes on the GPU. |
+| `--moe-stream --moe-stream-direct --moe-stream-io-threads 8` | Stream the experts from the SSD, past macOS's file cache, 8 reads at once. |
+| `-c 200000` | A 200K-token context (on 48 GB, set `-c 65536` yourself). |
+| `-b 4096 -ub 4096` | Big prompt batches, which the reading room needs. |
+| `-cms 8192 -ctxcp 3` | Prompt-cache checkpoints every 8,192 tokens, at most 3 kept. |
+| `-np 1` | One conversation at a time: each extra one costs memory the expert cache needs. |
+| `-fa on` | Flash attention, which this model's sparse attention needs to read a prompt. |
+| `--cache-reuse 0 --cache-ram 0` | No extra prompt store in RAM: on 64 GB that memory is the expert cache's. |
+| `--jinja --reasoning-format deepseek` | The model's chat template, with its thinking returned apart from the answer. |
+| With a draft head (`-md`) only: `--spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | The draft head, up to 5 tokens ahead, on the GPU, for prompts of any length. |
+
+The `flashnext:` line at start also says what the preset set and which of your own settings it kept.
+
+### What you add
+
+These are yours: the downloads, and the choices that depend on your Mac and how you use it. The
+study's own everyday server has all of them.
+
+| What | How | Notes |
+|---|---|---|
+| The model (download, 111.3 GB) | `-m` and its first file | [Quick start](#quick-start), step 2. |
+| The expert cache's size | `--moe-stream-cache 28` | **Always set it**: unset, it holds 20 experts per layer, far too few. 28 GiB on 64 GB with the draft head; 24 if you keep other apps open (with the new rule, as fast as the old rule at 28); start at 16 on 48 GB ([Memory sizing](docs/flashnext/memory-sizing.md)). |
+| The draft head (download, 1.9 GB) | `-md` and its file | `--flashnext` then sets the draft options. |
+| The two trained guessers (downloads, 121 and 123 MB) | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=` and `LLAMA_MOE_STREAM_GUESSER1=`, each with its file | Environment variables, not flags. Naming the two-layer guesser also turns on its tuning and the keep rule. |
+| The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
+| A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
+| The chat window | `--chat-window 300` | When a coding agent shares the server ([The chat window](docs/flashnext/chat-window.md)). |
+| Chat's opening kept in RAM | `--cache-ram 400 --cache-ram-opening` | With the chat window. It replaces `--flashnext`'s `--cache-ram 0`: the RAM prompt store stays your call. |
+| The GPU's wired-memory limit | `sudo sysctl iogpu.wired_limit_mb=59392` | [Quick start](#quick-start), step 3. |
+| The draft head's token list | `LLAMA_MTP_VOCAB=` and a list file | **Not available for download.** The study's list of 96K tokens (+2.6% writing) was built from the author's own conversations and is not published, and the numbers on this page were measured with it. Build one from text like yours ([Settings](docs/flashnext/settings.md#the-mtp-draft-head)), or leave it off. |
 
 ## Quick start
 
@@ -195,34 +289,33 @@ sudo sysctl iogpu.wired_limit_mb=59392
 **4. Run the server**
 
 ```sh
-LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 \
-GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 \
-LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 \
-LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 \
+LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf \
 LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
-./build/bin/llama-server \
-  -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -ngl 99 \
-  --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct \
-  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf --spec-draft-ngl 99 \
-  --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 \
-  -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on \
-  --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek \
-  --host 127.0.0.1 --port 8080
+./build/bin/llama-server --flashnext \
+  -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf \
+  --moe-stream-cache 28
 ```
+
+That is the files (the two guessers are named by environment variables, the model and the draft
+head by flags), the expert cache's size, and `--flashnext` for the rest
+([Out of the box, and what you add](#out-of-the-box-and-what-you-add)).
 
 It loads in seconds; the first request is slower while the expert cache fills. Open
 <http://127.0.0.1:8080>, or point any OpenAI-compatible client at `http://127.0.0.1:8080/v1`
-(the Anthropic-style `/v1/messages` endpoint works too).
+(the Anthropic-style `/v1/messages` endpoint works too). `--host` and `--port` change the address.
 
 With a second SSD, copy the four model files to it and add
 `--moe-stream-alt-path /Volumes/<ssd>/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --moe-stream-alt-split 53`.
 To let it read pictures, add `--mmproj ~/models/flashnext/mmproj-BF16.gguf`.
-To share the server with a coding agent, add `--chat-window 300`, and replace `--cache-ram 0` with
-`--cache-ram 400 --cache-ram-opening` so a new chat finds its opening in RAM.
+To share the server with a coding agent, add `--chat-window 300 --cache-ram 400 --cache-ram-opening`:
+the last two keep one RAM copy of chat's opening, so a new chat need not read it in again.
 
-This is the study's everyday command. Close memory-hungry apps while it runs: at a 28 GiB cache
-the Mac has little room to spare. If you see swap (`sysctl vm.swapusage`), use a smaller cache or
-context; [Memory sizing](docs/flashnext/memory-sizing.md) explains how to choose.
+With all three, this is the study's everyday server, apart from where its files sit, its
+token list (not published, above), a shorter chat window (90 s) and the statistics it records for
+the study. Close memory-hungry apps while it runs: at a 28 GiB cache the Mac has little room to
+spare. If you see swap (`sysctl vm.swapusage`), use a smaller cache or context;
+[Memory sizing](docs/flashnext/memory-sizing.md) explains how to choose.
 
 ## Start it with one click
 
@@ -233,8 +326,8 @@ repo's folder:
 - **`Start Flash-Next (two SSDs).command`**: the internal SSD and a copy on a second SSD
   ([Getting started](docs/flashnext/getting-started.md#3-the-second-drive-optional) explains the copy).
 
-A Terminal window opens and runs the server with the everyday command from step 4, plus the chat
-window (the table below). Keep the window open while you use it; to stop the server, press
+A Terminal window opens and runs the server with step 4's command, plus the image encoder, the chat
+window and chat's opening copy (the table below). Keep the window open while you use it; to stop the server, press
 Control-C or close the window.
 
 Before it starts, it checks that the server is built, the model files are where the settings say,
@@ -265,9 +358,10 @@ update never changes it. A setting you delete takes the example's value.
 | `CHAT_WINDOW` | `300` | Seconds chat keeps the server after its last reply, when you share it with a coding agent ([The chat window](docs/flashnext/chat-window.md)); `0` = off. On, it also keeps chat's opening in RAM (400 MiB). Without such an agent it changes nothing. |
 | `PORT` | `8080` | The server's address is `http://127.0.0.1:PORT`. |
 
-Everything else is fixed at the everyday values (the table in
-[Getting started](docs/flashnext/getting-started.md#5-run) says what each is for). To change one of
-those, run `llama-server` yourself with the options in [Settings](docs/flashnext/settings.md).
+Everything else comes from the engine's defaults and `--flashnext`
+([Out of the box, and what you add](#out-of-the-box-and-what-you-add)). To change one of those, run
+`llama-server` yourself with the options in [Settings](docs/flashnext/settings.md): an option you
+give always wins over `--flashnext`.
 
 ## Start at login (suggested)
 
@@ -340,7 +434,8 @@ This fork adds two-drive striping, the reading room, the measured-depth draft he
 list, union attention, the n-gram shelf, the pinned checkpoint, the cheaper per-layer stops, the
 chat window, the trained two-layer lookahead and its keep rule, the trained one-layer guess, the
 drive choice by load, fewer undo copies, chat's opening copy and the pin that keeps it whichever
-request came first, and the study that measured them.
+request came first, the `--flashnext` preset, and the study that measured them all, Marian's
+LRU rule for the expert cache included.
 
 ## Licence
 

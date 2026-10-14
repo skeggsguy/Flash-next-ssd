@@ -42,6 +42,16 @@ curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
   https://huggingface.co/nitinpanj/qwen38-flash-next-v3/resolve/main/MTP/mtp-shared-Q4_K_M.gguf
 ```
 
+The two trained guessers ([crystal-ball](https://huggingface.co/skeggsguy/crystal-ball), 121 MB and
+123 MB) fetch experts ahead of time; step 5 names them:
+
+```sh
+curl -fL --retry 5 -C - -o $D/c1-guesser.gguf \
+  https://huggingface.co/skeggsguy/crystal-ball/resolve/main/c1-guesser.gguf
+curl -fL --retry 5 -C - -o $D/c1-guesser-gap1.gguf \
+  https://huggingface.co/skeggsguy/crystal-ball/resolve/main/c1-guesser-gap1.gguf
+```
+
 To let the model read pictures, also download Unsloth's image encoder (908 MB, optional):
 
 ```sh
@@ -62,6 +72,8 @@ The sha256 of each file the study used (the same as Hugging Face's LFS hash):
 | `...-00003-of-00004.gguf` | 49,376,141,504 | `56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3` |
 | `...-00004-of-00004.gguf` | 12,087,983,520 | `753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a` |
 | `mtp-shared-Q4_K_M.gguf` | 1,907,151,936 | `2b468e0a490c7a8e46c66e6e9feb8c02a9c5d8f2aed276a951ef10f8c227f12c` |
+| `c1-guesser.gguf` | 120,686,368 | `c22af709d65b99bb2bc64aaa5b8b2d47c04c86367b0f9ba0fe452ab47ec053c7` |
+| `c1-guesser-gap1.gguf` | 123,309,952 | `2df6a3d9c63f787286a387965aa1c89da3ee86c6b75829e3c9a1e2ca24690d94` |
 | `mmproj-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
 
 Check them with `shasum -a 256 ~/models/flashnext/*.gguf`.
@@ -128,38 +140,35 @@ and load it with `sudo launchctl bootstrap system /Library/LaunchDaemons/local.i
 ## 5. Run
 
 ```sh
-LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 \
-GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 \
-./build/bin/llama-server \
-  -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -ngl 99 \
-  --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct \
-  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf --spec-draft-ngl 99 \
-  --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 \
-  -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on \
-  --cache-reuse 0 --cache-ram 0 --jinja --reasoning-format deepseek \
-  --host 127.0.0.1 --port 8080
+LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf \
+LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
+./build/bin/llama-server --flashnext \
+  -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf \
+  --moe-stream-cache 28
 ```
 
 What each part is for, in one line each (details in [Settings](settings.md)):
 
 | Part | Why |
 |---|---|
-| `LLAMA_SPEC_ADAPTIVE_RATE=1` | the draft head measures its own guessing depth |
-| `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096` | claim the expert cache in 4 GiB steps, so macOS is not rushed at load |
-| `GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000` | keep the model wired while idle, instead of re-wiring ~41 GiB on the next request |
-| `--moe-stream --moe-stream-cache 28` | stream experts from the SSD, with a 28 GiB expert cache |
-| `--moe-stream-io-threads 8 --moe-stream-direct` | 8 parallel readers, past macOS's file cache |
-| `-md ... --spec-type draft-mtp-adaptive ...` | the MTP draft head, up to 5 tokens ahead |
-| `-c 200000 -np 1` | a 200K-token context for one conversation at a time |
-| `-b 4096 -ub 4096` | big prompt batches, which the reading room needs |
-| `-cms 8192 -ctxcp 3` | prompt-cache checkpoints every 8,192 tokens, at most 3 kept |
-| `-fa on` | flash attention, required by this model's sparse attention when reading a prompt |
-| `--cache-reuse 0 --cache-ram 0` | no extra prompt cache in RAM: on 64 GB that memory is the expert cache's |
-| `--jinja --reasoning-format deepseek` | the model's chat template, with its thinking returned separately |
+| `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=...` | the trained two-layer guesser ([crystal-ball](https://huggingface.co/skeggsguy/crystal-ball)); naming it also turns on its tuning and the keep rule |
+| `LLAMA_MOE_STREAM_GUESSER1=...` | the trained one-layer guesser, in place of the engine's own guess for the next layer |
+| `--flashnext` | llama.cpp's options at the everyday values, each only where you did not set it: `-ngl 99`, streaming past the file cache with 8 readers, a 200K context, big batches, 3 checkpoints, one conversation at a time, flash attention, no extra prompt store in RAM, the model's template, and with `-md` the draft head's options ([README](../../README.md#with---flashnext)) |
+| `-m ...` | the model's first file; the other three sit beside it |
+| `-md ...` | the MTP draft head, up to 5 tokens ahead at a depth it measures itself |
+| `--moe-stream-cache 28` | a 28 GiB expert cache: the one size you must give, since the engine cannot know your Mac |
+
+The engine's own switches need nothing: unset, they run the study's values (the cache claimed in
+4 GiB steps, the model kept wired while idle, the LRU rule, fewer undo copies, the measured draft
+depth). [Settings](settings.md) lists each with its default and the value that restores the old way.
+To use the second drive, the image encoder or the chat window, add the flags from the
+[README's quick start](../../README.md#quick-start).
 
 Then open <http://127.0.0.1:8080>, or point an OpenAI-compatible client at
-`http://127.0.0.1:8080/v1`. `/v1/messages` serves Anthropic-style clients. Keep `--host 127.0.0.1`
-unless you mean to share the server on your network.
+`http://127.0.0.1:8080/v1`. `/v1/messages` serves Anthropic-style clients. The server listens on
+127.0.0.1, this Mac only (llama-server's default); set `--host` only if you mean to share it on your
+network.
 
 To start this same command with a double-click, or by itself at every login, see
 [Start it with one click](../../README.md#start-it-with-one-click) and
@@ -169,6 +178,10 @@ To start this same command with a double-click, or by itself at every login, see
 
 The server loads in a few seconds. Look for these lines in its log:
 
+- `flashnext: engine defaults: LLAMA_MOE_STREAM_LRU=1, ...; the guesser's tuning: ...; preset --flashnext: on, set ...`:
+  the engine's switches in force (any you set marked "(yours)"), the two-layer guesser's tuning
+  ("off, no guesser named" without its file), and what `--flashnext` set and which of your own
+  settings it kept.
 - `expert cache size = ... MiB (N slots per layer)`: the expert cache, as experts held per layer.
 - `reading room: 1.44 GiB = 1.25 floors of look-ahead, each floor in 4 parts (...); desk ... GiB (... slots per floor)`:
   the reading room is on. ("Floor" and "desk" are the project's words for a layer and the expert cache.)
