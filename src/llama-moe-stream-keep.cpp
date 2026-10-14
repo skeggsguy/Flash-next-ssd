@@ -18,21 +18,23 @@
 //   - reserve_slot_locked forgets a slot's tags, so a reused slot is never kept or counted for a book it no
 //     longer holds.
 //
-// Off (the default), the desk's choices are the old ones byte for byte: the tags and counters below are kept
+// Off (the default without the trained guesser; with it named, on unless "0": llama-flashnext.h), the desk's
+// choices are the old ones byte for byte: the tags and counters below are kept
 // either way (one-floor and two-floor "used" and "put back unread"), only the victim rule ignores them.
 // The GPU slot servicer (LLAMA_MOE_STREAM_GPU_SLOT) chooses victims on the GPU, which knows nothing of kept
 // slots, so the rule is off there.
 
 #include "llama-moe-stream.h"
 
+#include "llama-flashnext.h"
 #include "llama-impl.h"
+#include "llama-moe-stream-guesser.h"
 
 #include <cstdlib>
 #include <cstring>
 
 bool llama_moe_stream_lookahead_keep_env() {
-    const char * s = std::getenv("LLAMA_MOE_STREAM_LOOKAHEAD_KEEP");
-    return s != nullptr && *s != '\0' && strcmp(s, "0") != 0;
+    return llama_flashnext_lookahead_keep(std::getenv("LLAMA_MOE_STREAM_LOOKAHEAD_KEEP"), llama_moe_stream_guesser_env() != nullptr);
 }
 
 // the victim for a book floor sl itself needs now: unkept first, then a kept one rather than wait. -1 only

@@ -1,4 +1,6 @@
 #include "llama-moe-stream.h"
+#include "llama-flashnext.h"
+#include "llama-moe-stream-guesser.h"
 #include "llama-moe-stream-impl.h"
 #include "llama-moe-room.h"
 
@@ -96,8 +98,7 @@ static void llama_moe_stream_prefetch_next(llama_moe_stream_lookahead * la, cons
 // kept small; it queues after L+1's guesses. Each slot it fills remembers the book, and the floor's remap
 // counts the ones it reads ("lookahead 2 floors" in the stats), so the guess's accuracy is measured.
 uint32_t llama_moe_stream_lookahead_depth2_env() {
-    const char * s = getenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2");
-    return s != nullptr ? (uint32_t) std::max(0, atoi(s)) : 0;
+    return llama_flashnext_lookahead_depth2(getenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2"), llama_moe_stream_guesser_env() != nullptr);
 }
 
 // the rows are [n1 + n2] per token (L+1's logits, then L+2's); with LLAMA_MOE_STREAM_LOOKAHEAD_ALL a small
@@ -154,8 +155,7 @@ uint32_t llama_moe_stream_lookahead_all_ranks_env() {
 }
 
 bool llama_moe_stream_lookahead_all_env() {
-    const char * s = getenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL");
-    return s != nullptr && *s != '\0' && strcmp(s, "0") != 0;
+    return llama_flashnext_lookahead_all(getenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL"), llama_moe_stream_guesser_env() != nullptr);
 }
 
 static void llama_moe_stream_prefetch_next_all(llama_moe_stream_lookahead * la, const float * rows,

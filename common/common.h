@@ -654,6 +654,11 @@ struct common_params {
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
     bool    cache_ram_opening   = false; // the store keeps chat's opening only (tools/server/server-ckpt-pin.h)
 
+    // --flashnext: the everyday values of the general flags, each only where the user did not pass it (flashnext.h)
+    bool flashnext = false;
+    std::vector<std::string> flashnext_set;   // what the preset set ("-c 200000")
+    std::vector<std::string> flashnext_yours; // the preset's flags the user passed, left as given ("-c")
+
     // chat window (tools/server/server-lane.h): chat requests take the seat from background ones; 0 = off
     int32_t     chat_window            = 0;        // seconds background requests wait after the last chat reply
     std::string chat_window_header     = "X-Lane"; // the header that marks a background request

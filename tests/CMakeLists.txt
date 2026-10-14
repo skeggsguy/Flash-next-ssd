@@ -170,6 +170,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # #44: the put-back rule's load line (LLAMA_MOE_STREAM_LRU): lru or hotness, once a desk, and the rule it names is
     # the one the desk puts back by
     llama_build_and_test(test-moe-stream-put-back.cpp)
+    # the fork's proven defaults (2026-10-15, src/llama-flashnext.h, common/flashnext.h): each switch unset and at
+    # "0", the guesser's tuning with and without the guesser, the start-up line, and --flashnext's "only where the
+    # user set nothing" through the server's argument parse
+    llama_build_and_test(test-flashnext-defaults.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
@@ -215,23 +219,31 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         set_tests_properties(test-metal-encode-ahead-on-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
         set_tests_properties(test-metal-encode-ahead-on-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
         set_tests_properties(test-metal-encode-ahead-off     PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
-        # WRITING-PLAN.md step 3b: the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX unset (16) and 8
+        # the fork's proven defaults, ggml-metal's two (GGML_METAL_STAFF_MV, GGML_METAL_RESIDENCY_KEEP_ALIVE_S): unset,
+        # "0" and the rest, and that common's start-up line names the defaults the device runs
+        llama_build(test-flashnext-metal.cpp)
+        target_link_libraries(test-flashnext-metal PRIVATE ggml-metal)
+        llama_test(test-flashnext-metal)
+        # WRITING-PLAN.md step 3b: the small-batch mat-vec to 16 columns, GGML_METAL_MV_EXT_MAX unset (16) and 8,
+        # with the staff mat-vec on ("1"; off unset since 2026-10-15) as when this was written
         llama_build(test-metal-mv-ext.cpp)
         target_link_libraries(test-metal-mv-ext PRIVATE ggml-metal)
         foreach (MX 16 8)
             llama_test(test-metal-mv-ext NAME test-metal-mv-ext-${MX})
-            set_tests_properties(test-metal-mv-ext-${MX} PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=${MX}")
+            set_tests_properties(test-metal-mv-ext-${MX} PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=${MX};GGML_METAL_STAFF_MV=1")
         endforeach()
         # STAFF-MATRIX-PLAN step 2 (#23): with the staff mat-vec at "0", Q8_0's 11-16 columns on 4,096+ rows are mul_mm's
         llama_test(test-metal-mv-ext NAME test-metal-mv-ext-16-staff0)
         set_tests_properties(test-metal-mv-ext-16-staff0 PROPERTIES ENVIRONMENT "GGML_METAL_MV_EXT_MAX=16;GGML_METAL_STAFF_MV=0")
         # STAFF-MATRIX-PLAN step 2 (#23): the staff's Q8_0 mat-vec on the matrix units for 2-16 columns,
-        # GGML_METAL_STAFF_MV unset (on) and 0
+        # GGML_METAL_STAFF_MV "1" (on), "0" and unset (today's route since 2026-10-15)
         llama_build(test-metal-staff-mv.cpp)
         target_link_libraries(test-metal-staff-mv PRIVATE ggml-metal)
         llama_test(test-metal-staff-mv NAME test-metal-staff-mv-on)
+        set_tests_properties(test-metal-staff-mv-on PROPERTIES ENVIRONMENT "GGML_METAL_STAFF_MV=1")
         llama_test(test-metal-staff-mv NAME test-metal-staff-mv-0)
         set_tests_properties(test-metal-staff-mv-0 PROPERTIES ENVIRONMENT "GGML_METAL_STAFF_MV=0")
+        llama_test(test-metal-staff-mv NAME test-metal-staff-mv-unset)
         # #10b step 1.2: GGML_METAL_KPROF's node map names each node's first source (staff vs the rest), on and off
         llama_build(test-metal-kprof.cpp)
         foreach (KP 1 0)
@@ -450,6 +462,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
+    # the rollback harness on every slot (LLAMA_RS_SKIP_SLOTS=0, the old way; unset is on since 2026-10-15, which
+    # the -rs-skip registrations below run)
+    set_property(TEST test-recurrent-state-rollback APPEND PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
 
     llama_test(
         test-recurrent-state-rollback
@@ -460,6 +475,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-nemotron-h PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
+    set_property(TEST test-recurrent-state-rollback-nemotron-h APPEND PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
     llama_test(
         test-recurrent-state-rollback
         NAME test-recurrent-state-rollback-dsv4
@@ -469,6 +485,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-dsv4 PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
+    set_property(TEST test-recurrent-state-rollback-dsv4 APPEND PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
     llama_test(
         test-recurrent-state-rollback
         NAME test-recurrent-state-rollback-kimi-k3
@@ -478,6 +495,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
+    set_property(TEST test-recurrent-state-rollback-kimi-k3 APPEND PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
 
     # Test state save/load functionality across all architectures, using the generated dummy models
     llama_test(
@@ -509,6 +527,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-qwen4exp-qsa-keep PROPERTIES
         ENVIRONMENT "LLAMA_QSA_KEEP=1"
     )
+    set_property(TEST test-recurrent-state-rollback-qwen4exp test-recurrent-state-rollback-qwen4exp-qsa-keep APPEND
+        PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
 
     # the ceiling tax (LLAMA_RS_SKIP_SLOTS=1, src/llama-rs-skip.h): a round writes only the undo copies a
     # rollback can reach, byte-equal to off, and a rollback past the round is refused; the rollback harness
@@ -600,6 +620,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         PROPERTIES FIXTURES_REQUIRED generate-models)
     set_tests_properties(test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu PROPERTIES
         FIXTURES_REQUIRED generate-models-e64)
+    # every test-qsa-keep arm on all the undo slots (LLAMA_RS_SKIP_SLOTS=0, as written): its "abort" scenario stops a
+    # decode mid-batch, and with the ceiling tax on (unset since 2026-10-15) the clean-up's rollback of the stopped
+    # batch is past the last round's reach and refused, so every decode after it fails
+    set_property(TEST test-qsa-keep test-qsa-keep-cpu
+        test-qsa-keep-qwen4exp-qsa-gather test-qsa-keep-qwen4exp-qsa-gather-cpu
+        test-qsa-keep-llama-qsa-pool-views test-qsa-keep-llama-qsa-pool-views-cpu
+        test-qsa-keep-llama-qwen4exp-block-topk test-qsa-keep-llama-qwen4exp-block-topk-cpu
+        test-qsa-keep-llama-qsa-gather test-qsa-keep-llama-qsa-gather-cpu
+        test-qsa-keep-slice test-qsa-keep-slice-cpu test-qsa-keep-slice-e64 test-qsa-keep-slice-e64-cpu test-qsa-keep-slice-rot
+        test-qsa-keep-union test-qsa-keep-union-cpu test-qsa-keep-union-slice test-qsa-keep-union-slice-cpu
+        test-qsa-keep-union-slice-e64 test-qsa-keep-union-slice-e64-cpu
+        APPEND PROPERTY ENVIRONMENT "LLAMA_RS_SKIP_SLOTS=0")
 
     # LANES-PLAN amendment 3 S1 (LLAMA_KV_LAZY_ZERO): notepads and the keep store skip the opening memset on Metal shared
     # buffers and clear(true) zeroes only the written cells; everything still reads zero and matches lazy off byte for byte.

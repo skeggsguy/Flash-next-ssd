@@ -127,6 +127,9 @@ desk full_desk(bool keep_rule) {
 
 int main(int argc, char ** argv) {
     testing t;
+    // the keep rule's victim choices on the put-back rule it was written beside (hotness): LRU, the default since
+    // 2026-10-15, picks by idle time, which these hand-made desks do not set
+    setenv("LLAMA_MOE_STREAM_LRU", "0", 1);
 
     const char * verbose = getenv("LLAMA_TEST_VERBOSE");
     if (verbose) {

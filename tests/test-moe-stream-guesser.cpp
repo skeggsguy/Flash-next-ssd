@@ -347,9 +347,17 @@ int main(int argc, char ** argv) {
         {
             floors f(4);
             llama_moe_stream_guesser_attach(*f.mgr, routers, 8, 4, false);
-            t.assert_true("CONF unset: the guesser, ranked by z, top_k2 books", f.sl(0)->la->guessed &&
+            t.assert_true("CONF unset beside the guesser: the everyday cut, 0.2 (since 2026-10-15)",
+                    f.sl(0)->la->guessed && f.sl(0)->la->conf_cut == 0.2f);
+        }
+        setenv("LLAMA_MOE_STREAM_LOOKAHEAD_CONF", "0", 1);
+        {
+            floors f(4);
+            llama_moe_stream_guesser_attach(*f.mgr, routers, 8, 4, false);
+            t.assert_true("CONF \"0\": the guesser, ranked by z, top_k2 books", f.sl(0)->la->guessed &&
                     f.sl(0)->la->conf_cut == 0.0f && f.sl(0)->la->top_k2 == 4);
         }
+        unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD_CONF");
         {
             floors f(2); // the lookahead is on, one floor ahead only (DEPTH2 unset): no floor has a two-floor guess
             t.assert_true("a guesser serving no floor refuses",

@@ -1,7 +1,8 @@
 // The put-back rule's load line (LLAMA_MOE_STREAM_LRU, pick_victim_locked), without a model: open_files names the
 // rule a desk runs, once per desk, and the rule it names is the one the desk then uses.
 //
-//   - on (any nonzero value): "moe stream: put-back rule: lru, ..."; unset, empty, "0" or not a number: "... hotness"
+//   - on (unset, the default since 2026-10-15, or any nonzero value): "moe stream: put-back rule: lru, ..."; empty, "0"
+//     or not a number: "... hotness"
 //   - one line per desk, so a server's two desks (the library's and the apprentice's) print two
 //   - the words after "moe stream:" never start with "room" or "drives" (the study's runner/roomstats.py takes its
 //     window lines by those first words), and neither line holds the other's rule word (the study's chains grep -F)
@@ -118,19 +119,20 @@ int main(int argc, char ** argv) {
     const std::string path = tmp_file();
 
     t.test("lru_when_on", [&](testing & t) {
-        for (const char * v : { "1", "2" }) {
+        for (const char * v : { (const char *) nullptr, "1", "2" }) {
+            const std::string name = v ? std::string("\"") + v + "\"" : std::string("unset");
             const opened o = open_with(v, path);
-            t.assert_equal(std::string("\"") + v + "\": one line", (size_t) 1, o.lines.size());
+            t.assert_equal(name + ": one line", (size_t) 1, o.lines.size());
             if (!o.lines.empty()) {
-                t.assert_equal(std::string("\"") + v + "\": the lru line", std::string(LRU_LINE), o.lines[0]);
+                t.assert_equal(name + ": the lru line", std::string(LRU_LINE), o.lines[0]);
             }
-            t.assert_equal(std::string("\"") + v + "\": the desk puts back the book idle longest (slot 1)", 1, o.victim);
+            t.assert_equal(name + ": the desk puts back the book idle longest (slot 1)", 1, o.victim);
         }
     });
 
     t.test("hotness_otherwise", [&](testing & t) {
-        for (const char * v : { (const char *) nullptr, "", "0", "x" }) {
-            const std::string name = v ? std::string("\"") + v + "\"" : std::string("unset");
+        for (const char * v : { "", "0", "x" }) {
+            const std::string name = std::string("\"") + v + "\"";
             const opened o = open_with(v, path);
             t.assert_equal(name + ": one line", (size_t) 1, o.lines.size());
             if (!o.lines.empty()) {

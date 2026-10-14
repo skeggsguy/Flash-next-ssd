@@ -13,16 +13,17 @@ int ggml_metal_staff_mv_parse(const char * s, bool * bad) {
     if (bad) {
         *bad = false;
     }
-    if (s == nullptr || *s == '\0' || strcmp(s, "1") == 0) {
+    // off unless "1" (the fork's default from 2026-10-15: C-staff's code +3.4%, chat -0.9% missed the +3% bar)
+    if (s != nullptr && strcmp(s, "1") == 0) {
         return 1;
     }
-    if (strcmp(s, "0") == 0) {
+    if (s == nullptr || *s == '\0' || strcmp(s, "0") == 0) {
         return 0;
     }
     if (bad) {
         *bad = true;
     }
-    return 1;
+    return 0;
 }
 
 int ggml_metal_staff_mv_limit(int staff_mv, bool has_tensor) {

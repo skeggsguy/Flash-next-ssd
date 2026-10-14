@@ -142,8 +142,9 @@ struct llama_moe_stream {
     // OS for all of it in one step and the OS has to make room just as fast - by compressing other
     // processes' memory, or, if it cannot keep up, by swapping. LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB
     // caps each cache buffer at that size, and LLAMA_MOE_STREAM_ALLOC_PAUSE_MS (default 500 when
-    // chunking) waits between them, so the desk is claimed in steps. 0 = one buffer per buft, as
-    // before. Only where the slabs live changes, never their contents.
+    // chunking) waits between them, so the desk is claimed in steps. Unset: 4096 MiB (the fork's
+    // default, llama-flashnext.h); 0 = one buffer per buft, as before. Only where the slabs live
+    // changes, never their contents.
     size_t  alloc_chunk_bytes = 0;
     int32_t alloc_pause_ms    = 0;
 
@@ -188,9 +189,8 @@ struct llama_moe_stream {
     // GPU slot resolution (LLAMA_MOE_STREAM_GPU_SLOT): 0 off, 1 verify (the CPU remap still decides
     // and its answer is what reaches the GEMM, the kernel only checks itself against it), 2 publish
     // the table but insert no graph node - isolates the cost of the state buffer from the kernel.
-    // LLAMA_MOE_STREAM_LRU: drop route hotness and evict purely by last use. Prerequisite for
-    // moving residency to the GPU - hotness has no cheap kernel form, an argmin over 113 slots
-    // does. Simulated at +11% misses.
+    // LLAMA_MOE_STREAM_LRU: drop route hotness and evict purely by last use. On unless "0" (the
+    // fork's default from 2026-10-15, llama-flashnext.h: +9.7% chat, +9.6% code at desk 28, #44).
     bool pure_lru     = false;
 
     int  gpu_slot     = 0;
@@ -355,15 +355,16 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
 // i.e. b holds the next layer's predicted logits). userdata is a llama_moe_stream_lookahead.
 void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b, int ith, int nth, void * userdata);
 
-// LLAMA_MOE_STREAM_LOOKAHEAD_ALL set and not "0": a small batch (2..16 tokens, the apprentice's check)
-// prefetches the next floor's predicted books for every token, not only the last. Read at model load.
+// LLAMA_MOE_STREAM_LOOKAHEAD_ALL: a small batch (2..16 tokens, the apprentice's check) prefetches the next floor's
+// predicted books for every token, not only the last. Unset: on with the trained guesser named, else off; set: on
+// unless "" or "0" (llama-flashnext.h). Read at model load.
 bool llama_moe_stream_lookahead_all_env();
 // LLAMA_MOE_STREAM_LOOKAHEAD_ALL_RANKS=N: with the above, the batch's last token still prefetches its top_k
 // and every earlier token only its N most likely books (unset or 0: top_k for every token)
 uint32_t llama_moe_stream_lookahead_all_ranks_env();
-// LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: also fetch floor L+2's K most likely books (0 or unset: off)
+// LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=K: also fetch floor L+2's K most likely books (0: off; unset as _ALL, K = 4)
 uint32_t llama_moe_stream_lookahead_depth2_env();
-// LLAMA_MOE_STREAM_LOOKAHEAD_KEEP set and not "0": the keep rule (llama-moe-stream-keep.cpp). Read at load.
+// LLAMA_MOE_STREAM_LOOKAHEAD_KEEP: the keep rule (llama-moe-stream-keep.cpp); unset as _ALL. Read at load.
 bool llama_moe_stream_lookahead_keep_env();
 
 // start loading the listed guessed books into floor sl's desk, most likely first (under mtx); stops when the
