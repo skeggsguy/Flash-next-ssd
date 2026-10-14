@@ -51,6 +51,36 @@ int64_t server_ckpt_pin_target(bool pin_on, int32_t n_ctx_checkpoints, const com
     return start;
 }
 
+server_ckpt_lane_pin server_ckpt_pin_target_lanes(bool pin_on, int32_t n_ctx_checkpoints, bool prev_code,
+        bool task_code, server_ckpt_list & ckpts, const common_chat_msg_spans & spans, int64_t n_past, int64_t n_old,
+        int64_t n_new) {
+    const int64_t split = server_ckpt_pin_target(pin_on, n_ctx_checkpoints, spans, n_past, n_old, n_new);
+    if (prev_code == task_code) {
+        return { split, -1, -1 };
+    }
+    // a lane change: the split compares chat with code, so it says nothing about where a chat's opening ends
+    const int64_t unpinned = pin_on && prev_code ? server_ckpt_unpin(ckpts) : -1;
+    return { -1, split, unpinned };
+}
+
+int64_t server_ckpt_first_user_start(const common_chat_msg_spans & spans) {
+    for (const auto & span : spans.spans) {
+        if (span.role == COMMON_CHAT_ROLE_USER) {
+            return (int64_t) span.pos;
+        }
+    }
+    return -1;
+}
+
+int64_t server_ckpt_pinned_at(const server_ckpt_list & ckpts) {
+    for (const auto & cur : ckpts) {
+        if (cur.pinned) {
+            return cur.n_tokens;
+        }
+    }
+    return -1;
+}
+
 int64_t server_ckpt_unpin(server_ckpt_list & ckpts) {
     int64_t was = -1;
     for (auto & cur : ckpts) {
@@ -167,13 +197,16 @@ server_ckpt_hand_on server_ckpt_opening_hand_on(bool opening_on, bool seat_chat,
     return { seat_chat, task_chat };
 }
 
-common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat) {
+common_prompt_checkpoint * server_ckpt_keep_pin(server_ckpt_list & ckpts, int64_t n_tokens_seat, int64_t opening_floor) {
     auto pin = ckpts.begin();
     while (pin != ckpts.end() && !pin->pinned) {
         ++pin;
     }
     if (pin == ckpts.end() || pin->n_tokens <= 0 || pin->n_tokens > n_tokens_seat) {
         return nullptr;
+    }
+    if (pin->n_tokens < opening_floor) {
+        return nullptr; // inside the system prompt: refused before anything is erased
     }
     ckpts.erase(ckpts.begin(), pin);
     ckpts.erase(std::next(ckpts.begin()), ckpts.end());
@@ -190,12 +223,7 @@ bool server_ckpt_pin_first_user(bool opening_on, bool pin_on, int32_t n_ctx_chec
             return false;
         }
     }
-    for (const auto & span : spans.spans) {
-        if (span.role == COMMON_CHAT_ROLE_USER) {
-            return (int64_t) span.pos == n_tokens_start;
-        }
-    }
-    return false;
+    return server_ckpt_first_user_start(spans) == n_tokens_start;
 }
 
 bool server_ckpt_save_without_copies(server_ckpt_list & ckpts, const std::function<bool()> & save) {

@@ -13,6 +13,8 @@
 //   and the pin is never thrown out to make room
 // - a copy saves the apprentice's record only when its memory can't be trimmed (FULL, RS; COPY-FIX-PLAN.md step 1)
 // - in test-server-ckpt-pin-opening.cpp: the opening copy's rules (--cache-ram-opening, CHAT-RETURN-PLAN.md step 1)
+// - in test-server-ckpt-pin-lanes.cpp: the pin learns lanes and the opening copy refuses a pin inside the system
+//   prompt (PLAN #31)
 
 #include "test-server-ckpt-pin.h"
 
@@ -332,6 +334,7 @@ int main() {
     test_upstream_picks();
     test_pin_invariants();
     test_opening();
+    test_lanes();
 
     if (n_fail > 0) {
         std::fprintf(stderr, "test-server-ckpt-pin: %d check(s) failed\n", n_fail);
