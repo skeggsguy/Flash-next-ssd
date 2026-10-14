@@ -103,8 +103,10 @@ lookup replay).
 
 From this release the switches behind these changes are the engine's defaults (the trained
 guessers' tuning as soon as their files are named), and `--flashnext` sets llama.cpp's options to
-the everyday values. The chat window and chat's opening copy stay your choice
-([Settings](settings.md#defaults-and---flashnext)).
+the everyday values, the chat window (90 s) and chat's opening copy included
+([Settings](settings.md#defaults-and---flashnext)). The study's own server runs exactly that, plus
+the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
+cache, the draft head, both guessers, the second SSD and the study's unpublished token list.
 
 ## Expert cache size (draft head off)
 

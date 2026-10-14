@@ -60,7 +60,7 @@ To estimate it for another context length:
 
 The reading room (about 1.4 GiB) is carved out of the expert cache, not added to it. Without the
 draft head, take off about 1 GiB plus most of the recurrent-state copies. `-np` above 1 adds a
-whole working-memory set per slot. `--cache-ram` (upstream's default 8 GiB) comes on top unless set to 0, which `--flashnext` does.
+whole working-memory set per slot. `--cache-ram` (upstream's default 8 GiB) comes on top; `--flashnext` sets it to 400 MiB, for chat's opening only.
 
 These estimates come out a little above what was measured wired at the everyday setting (below),
 so treat them as a safe upper bound.
@@ -96,7 +96,7 @@ Nothing here was measured on a 48 GB Mac. Working from the table above:
 - With a 64K context and 3 checkpoints, everything but the cache is about 12.3 GiB (estimate), which
   leaves about **16-18 GiB** for the expert cache.
 - **Start at `--flashnext --moe-stream-cache 16 -c 65536`**, with the draft head on (`--flashnext`
-  brings `-ctxcp 3` and `--cache-ram 0`).
+  brings `-ctxcp 3` and `--cache-ram 400`).
   macOS's default wired limit is 75% of RAM, so 36 GiB (36,864 MiB) on a 48 GB Mac, which already
   covers ~30 GiB; if loading fails with a GPU allocation error, raise it in small steps (for example
   `sudo sysctl iogpu.wired_limit_mb=40960`) rather than to the maximum.

@@ -84,20 +84,22 @@ variable or in a config file. Without it, upstream's defaults are untouched.
 | `-cms 8192 -ctxcp 3` | 8192, 32 |
 | `-np 1` | auto (4 slots) |
 | `-fa on` | auto |
-| `--cache-reuse 0 --cache-ram 0` | 0, 8192 MiB |
+| `--cache-reuse 0` | 0 |
+| `--cache-ram 400 --cache-ram-opening` | 8192 MiB, off |
+| `--chat-window 90` | 0 (off) |
 | `--jinja --reasoning-format deepseek` | on, `deepseek` |
 | with a draft model (`-md`) only: `--spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | none, 3, 0.0, auto, 0 |
 
-It never sets the expert cache (`--moe-stream-cache`), the files, the address or the chat window.
-`--cache-ram` stays your call: for chat's opening copy, give `--cache-ram 400 --cache-ram-opening`
-and `--flashnext` keeps them.
+It never sets the expert cache (`--moe-stream-cache`), the files or the address. These are the
+study's everyday values: its own server runs exactly these. Give any of them
+yourself and `--flashnext` keeps yours.
 
 At start the server prints one line that begins `flashnext:` and names the engine's switches in
 force (yours marked "(yours)"), the guesser's tuning, and what `--flashnext` set and kept, for
 example:
 
 ```
-flashnext: engine defaults: LLAMA_MOE_STREAM_LRU=1, LLAMA_RS_SKIP_SLOTS=1, ...; the guesser's tuning: LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1, ...; preset --flashnext: on, set -ngl 99 --moe-stream ..., yours kept: -c --cache-ram
+flashnext: engine defaults: LLAMA_MOE_STREAM_LRU=1, LLAMA_RS_SKIP_SLOTS=1, ...; the guesser's tuning: LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1, ...; preset --flashnext: on, set -ngl 99 --moe-stream ..., yours kept: -c
 ```
 
 ## Expert streaming and the expert cache
@@ -271,8 +273,8 @@ step back to where a new request differs, such as an edited message.
 |---|---|---|---|
 | `-ctxcp N` (`--ctx-checkpoints`) | `LLAMA_ARG_CTX_CHECKPOINTS` | 32; **`--flashnext`**: 3 | Checkpoints kept per slot. Each costs ~113 MiB + ~2 MiB per 1K tokens of context, so 32 is far too many here. Study: **3** (one pinned, two rolling). |
 | `-cms N` (`--checkpoint-min-step`) | `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT` | 8192; **`--flashnext`**: 8192 | The fewest tokens between checkpoints. 8192 instead of 512 cut time to first token by 17%, because a long prompt is read in fewer, bigger pieces. |
-| `--cache-ram N` | `LLAMA_ARG_CACHE_RAM` | 8192 (MiB); **`--flashnext`**: 0 | An extra prompt cache in RAM for other conversations. **0** on 64 GB: that memory is better spent on the expert cache. With the chat window, **400** and `--cache-ram-opening` (`--flashnext` keeps a value you give). |
-| `--cache-ram-opening` | | off | Keep only one RAM copy: chat's opening (its system prompt and tools, ~232 MiB here), never a coding agent's conversation. With a coding agent sharing the server, a new chat then starts writing in 4.1 s instead of 14.2 s. Use with the chat window and `--cache-ram 400`. |
+| `--cache-ram N` | `LLAMA_ARG_CACHE_RAM` | 8192 (MiB); **`--flashnext`**: 400 | An extra prompt cache in RAM for other conversations. On 64 GB that memory is better spent on the expert cache, so the study keeps **400** with `--cache-ram-opening`: room for chat's opening only. |
+| `--cache-ram-opening` | `LLAMA_ARG_CACHE_RAM_OPENING` | off; **`--flashnext`**: on | Keep only one RAM copy: chat's opening (its system prompt and tools, ~232 MiB here), never a coding agent's conversation. With a coding agent sharing the server, a new chat then starts writing in 4.1 s instead of 14.2 s. It knows a coding agent's requests through the chat window's header. |
 | `--cache-reuse 0` | `LLAMA_ARG_CACHE_REUSE` | 0; **`--flashnext`**: 0 | Reuse by shifting the KV cache; keep it off. |
 
 Environment-only: `LLAMA_CKPT_PIN` (default on). One checkpoint stays pinned at the start of the
@@ -331,8 +333,7 @@ LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
   -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf \
   --moe-stream-cache 28 \
   --moe-stream-alt-path /Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
-  --moe-stream-alt-split 53 \
-  --chat-window 300 --cache-ram 400 --cache-ram-opening
+  --moe-stream-alt-split 53
 ```
 
 **Environment variables** (for example in a launchd job or a shell script; the paths must be
@@ -347,7 +348,6 @@ export LLAMA_ARG_SPEC_DRAFT_MODEL=/Users/you/models/flashnext/mtp-shared-Q4_K_M.
 export LLAMA_ARG_MOE_STREAM_CACHE=28
 export LLAMA_ARG_MOE_STREAM_ALT_PATH=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 export LLAMA_ARG_MOE_STREAM_ALT_SPLIT=53
-export LLAMA_ARG_CHAT_WINDOW=300 LLAMA_ARG_CACHE_RAM=400 LLAMA_ARG_CACHE_RAM_OPENING=1
 ./build/bin/llama-server
 ```
 

@@ -202,13 +202,15 @@ void test_preset(testing & t) {
         t.assert_equal("-np 1", 1, p.n_parallel);
         t.assert_true("-fa on", p.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_ENABLED);
         t.assert_equal("--cache-reuse 0", 0, p.n_cache_reuse);
-        t.assert_equal("--cache-ram 0", 0, p.cache_ram_mib);
+        t.assert_equal("--cache-ram 400", 400, p.cache_ram_mib);
+        t.assert_true("--cache-ram-opening", p.cache_ram_opening);
+        t.assert_equal("--chat-window 90", 90, p.chat_window);
         t.assert_true("--jinja", p.use_jinja);
         t.assert_true("--reasoning-format deepseek", p.reasoning_format == COMMON_REASONING_FORMAT_DEEPSEEK);
         t.assert_true("no draft settings without a draft model",
             p.speculative.types == std::vector<common_speculative_type>{ COMMON_SPECULATIVE_TYPE_NONE });
         t.assert_true("n_max upstream's", p.speculative.draft.n_max == common_params().speculative.draft.n_max);
-        t.assert_equal("everything else set", (size_t) 15, p.flashnext_set.size());
+        t.assert_equal("everything else set", (size_t) 17, p.flashnext_set.size());
         t.assert_true("-c 200000 recorded", has(p.flashnext_set, "-c 200000"));
         t.assert_true("--moe-stream recorded", has(p.flashnext_set, "--moe-stream"));
         t.assert_true("nothing yours", p.flashnext_yours.empty());
@@ -224,7 +226,7 @@ void test_preset(testing & t) {
         t.assert_true("--no-jinja kept", !p.use_jinja);
         t.assert_equal("--cache-ram 400 kept", 400, p.cache_ram_mib);
         t.assert_true("the opening copy kept", p.cache_ram_opening);
-        for (const char * a : { "-c", "-b", "-fa", "--jinja", "--cache-ram" }) {
+        for (const char * a : { "-c", "-b", "-fa", "--jinja", "--cache-ram", "--cache-ram-opening" }) {
             t.assert_true(std::string("yours: ") + a, has(p.flashnext_yours, a));
         }
         t.assert_true("not recorded as set", !has(p.flashnext_set, "-c 200000"));
@@ -238,7 +240,7 @@ void test_preset(testing & t) {
         t.assert_equal("--spec-draft-p-min 0.3", 0.3f, p.speculative.draft.p_min);
         t.assert_equal("--spec-draft-ngl 99", 99, p.speculative.draft.n_gpu_layers);
         t.assert_equal("--spec-max-prompt 0", 0, (int) p.speculative.n_prompt_max);
-        t.assert_equal("all twenty set", (size_t) 20, p.flashnext_set.size());
+        t.assert_equal("all twenty-two set", (size_t) 22, p.flashnext_set.size());
     }
     {
         // --spec-type adds to the list: the user's type alone, not the preset's beside it
@@ -282,7 +284,7 @@ void test_preset(testing & t) {
         const common_params p = parse(t, { "--flashnext" }, LLAMA_EXAMPLE_EXPORT_GRAPH_OPS);
         t.assert_equal("-c set", 200000, p.n_ctx);
         t.assert_equal("--cache-ram skipped: upstream's", 8192, p.cache_ram_mib);
-        t.assert_true("--cache-ram not recorded", !has(p.flashnext_set, "--cache-ram 0"));
+        t.assert_true("--cache-ram not recorded", !has(p.flashnext_set, "--cache-ram 400"));
     }
 }
 

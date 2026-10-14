@@ -99,7 +99,7 @@ code "internal dry run" 0
 # The engine's own defaults and --flashnext carry the everyday values (README.md, "Out of the
 # box, and what you add"): the command names only the files, the expert cache and the machine's choices.
 has "internal command" "Would run:
-env LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf $BIN --flashnext -m $T/models/m1.gguf --moe-stream-cache 28 -md $T/models/head.gguf --mmproj $T/models/eyes.gguf -c 200000 --cache-ram 400 --cache-ram-opening --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
+env LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf $BIN --flashnext -m $T/models/m1.gguf --moe-stream-cache 28 -md $T/models/head.gguf --mmproj $T/models/eyes.gguf -c 200000 --chat-window 90 --host 127.0.0.1 --port $FREE_PORT "
 for now_default in LLAMA_SPEC_ADAPTIVE_RATE LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB GGML_METAL_RESIDENCY_KEEP_ALIVE_S \
         GGML_METAL_STAFF_MV LLAMA_RS_SKIP_SLOTS LLAMA_MOE_STREAM_LOOKAHEAD_CONF LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 \
         LLAMA_MOE_STREAM_LOOKAHEAD_ALL LLAMA_MOE_STREAM_LOOKAHEAD_KEEP LLAMA_MOE_STREAM_LRU \
@@ -132,9 +132,9 @@ has "split setting" "--moe-stream-alt-split 60 "
 
 conf "CHAT_WINDOW=0"
 run internal --dry-run
-lacks "chat window 0 is off" "--chat-window"
-lacks "chat window 0: --flashnext's --cache-ram 0, no opening copy" "--cache-ram"
-has "chat window 0: the context, then the address" " -c 200000 --host 127.0.0.1 "
+has "chat window 0 is off" " --chat-window 0 "
+lacks "the opening copy is --flashnext's" "--cache-ram"
+has "chat window 0: the context, the window, then the address" " -c 200000 --chat-window 0 --host 127.0.0.1 "
 
 conf "GUESSER="
 run internal --dry-run
@@ -293,7 +293,7 @@ run two-ssds
 code "real start" 0
 has "real start runs the server" "FAKE-SERVER ADAPTIVE=unset CHUNK=unset GUESSER=$T/models/guess.gguf GUESSER1=$T/models/guess1.gguf --flashnext -m $T/models/m1.gguf --moe-stream-cache 28 "
 has "real start, same flags" "--moe-stream-alt-split 53 -md $T/models/head.gguf"
-has "real start, chat window" "--chat-window 300 --host 127.0.0.1 --port $FREE_PORT"
+has "real start, chat window" "--chat-window 90 --host 127.0.0.1 --port $FREE_PORT"
 
 unset FLASHNEXT_CONF
 run internal --dry-run

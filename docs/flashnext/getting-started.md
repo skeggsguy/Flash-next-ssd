@@ -162,7 +162,8 @@ What each part is for, in one line each (details in [Settings](settings.md)):
 The engine's own switches need nothing: unset, they run the study's values (the cache claimed in
 4 GiB steps, the model kept wired while idle, the LRU rule, fewer undo copies, the measured draft
 depth). [Settings](settings.md) lists each with its default and the value that restores the old way.
-To use the second drive, the image encoder or the chat window, add the flags from the
+`--flashnext` also turns on the chat window (90 s) and chat's opening copy. To use the second drive
+or the image encoder, add the flags from the
 [README's quick start](../../README.md#quick-start).
 
 Then open <http://127.0.0.1:8080>, or point an OpenAI-compatible client at
@@ -188,7 +189,7 @@ The server loads in a few seconds. Look for these lines in its log:
 - `MoE expert streaming uses two runners: ...`: only with a second drive.
 - `bookmark pin: on, 1 of the 3 copies stays at the start ...`: the pinned checkpoint.
 - `qsa union: ...`: union attention.
-- `chat window: on, ...`: only with `--chat-window`.
+- `chat window: on, ...`: `--flashnext` turns it on (90 s); `--chat-window 0` turns it off.
 
 The first request is slow: the expert cache starts empty, so a 4-token prompt takes about 2 s and
 a 17K-token one about 50 s. After that, expect roughly 15-20 tokens/s writing (faster on code and

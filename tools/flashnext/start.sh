@@ -175,10 +175,8 @@ if [ -n "$VISION" ]; then
     ARGS+=(--mmproj "$VISION")
 fi
 ARGS+=(-c "$CONTEXT")
-if [ "${CHAT_WINDOW:-0}" != 0 ]; then
-    # one RAM copy of chat's opening; without the chat window, --flashnext's --cache-ram 0
-    ARGS+=(--cache-ram 400 --cache-ram-opening --chat-window "$CHAT_WINDOW")
-fi
+# --flashnext keeps chat's opening in RAM and opens a 90 s chat window; 0 turns the window off
+ARGS+=(--chat-window "${CHAT_WINDOW:-90}")
 ARGS+=(--host 127.0.0.1 --port "$PORT")
 # ${ENVS[@]+...}: macOS's bash 3.2 calls an empty array unbound under set -u
 CMD=(env ${ENVS[@]+"${ENVS[@]}"} "$BIN" "${ARGS[@]}")

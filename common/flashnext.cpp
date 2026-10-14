@@ -22,8 +22,10 @@ int common_flashnext_adaptive_rate(const char * value) {
     return strcmp(value, "2") == 0 ? 2 : 1;
 }
 
-// the everyday values (the study's serve.py launch, 2026-10-15); the machine choices (the desk, the second SSD,
-// host/port, the chat window, the opening copy) and the downloads (-md, --mmproj, the guessers) are not here
+// the everyday values: the study's daily library (serve.py) runs exactly these (Tom, 2026-10-15: "daily and default
+// should always match ... except for the download files"); the machine choices (the desk, the second SSD, host/port)
+// and the downloads (-md, --mmproj, the guessers) are not here. The chat window does nothing until a request names
+// itself background (--chat-window-header); the opening copy keeps one chat opening (~0.25 GiB) in RAM.
 const std::vector<common_flashnext_setting> & common_flashnext_preset() {
     static const std::vector<common_flashnext_setting> preset = {
         { "-ngl",                   "99",                 false },
@@ -38,7 +40,9 @@ const std::vector<common_flashnext_setting> & common_flashnext_preset() {
         { "-np",                    "1",                  false },
         { "-fa",                    "on",                 false },
         { "--cache-reuse",          "0",                  false },
-        { "--cache-ram",            "0",                  false },
+        { "--cache-ram",            "400",                false },
+        { "--cache-ram-opening",    "",                   false },
+        { "--chat-window",          "90",                 false },
         { "--jinja",                "",                   false },
         { "--reasoning-format",     "deepseek",           false },
         { "--spec-type",            "draft-mtp-adaptive", true  },
