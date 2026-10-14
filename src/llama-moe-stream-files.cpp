@@ -174,4 +174,11 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
     }
     hot_decay_interval = decay_tokens * n_streamed;
 
+    // the put-back rule (pick_victim_locked), named once per desk: here and not where pure_lru is read, because the
+    // constructor also runs for a no-alloc load that never opens the files, so this line counts desks as the book
+    // split's does (the library's and the apprentice's). It starts "moe stream: put-back rule:", never "room" or
+    // "drives", which the study's stats parser takes by their first words; the study's checks grep it for the rule.
+    LLAMA_LOG_WARN("%s: moe stream: put-back rule: %s\n", __func__, pure_lru
+            ? "lru, the book idle longest goes back (LLAMA_MOE_STREAM_LRU on)"
+            : "hotness, the book used least lately goes back (LLAMA_MOE_STREAM_LRU off)");
 }

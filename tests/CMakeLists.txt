@@ -167,6 +167,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # #11b: one missing book across both runners (LLAMA_MOE_STREAM_SPLIT): the switch, the cut of a slab, the demand
     # queue's jobs and slot_pending, and the runners reading each half at its own offset from its own runner
     llama_build_and_test(test-moe-stream-book-split.cpp)
+    # #44: the put-back rule's load line (LLAMA_MOE_STREAM_LRU): lru or hotness, once a desk, and the rule it names is
+    # the one the desk puts back by
+    llama_build_and_test(test-moe-stream-put-back.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
