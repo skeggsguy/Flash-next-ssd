@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 760 780" width="760" height="780" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Before: the engine's own one-layer guess, so the SSD has one layer's time and the GPU waits. After: a trained guesser fetches two layers ahead, a second trained guesser tops up one layer ahead, and every guess is kept until its layer runs. Writing +4.2% coding and +8.2% chat from the two-layer guesser, then +7.5% and +7.3% more from the one-layer guesser.">
-<rect width="760" height="780" fill="#ffffff"/>
-<text x="20" y="30" font-size="16" font-weight="700" fill="#1b2228">Before: the engine's own guess, one layer ahead</text>
+<svg viewBox="0 0 760 712" width="760" height="712" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Before: one layer ahead, the SSD has one layer's time and the GPU waits. After: the trained two-layer guesser fetches experts two layers ahead, the one-layer guesser tops up a layer later, and each guess stays in the cache until used. Writing about +12% coding and +16% chat, estimated from two runs.">
+<rect width="760" height="712" fill="#ffffff"/>
+<text x="20" y="30" font-size="16" font-weight="700" fill="#1b2228">Before: guess one layer ahead</text>
 <text x="20" y="48" font-size="11.5" fill="#5a6670">The router guesses the next layer's experts, so the SSD has only one layer's time to fetch them; the GPU waits</text>
 <text x="20" y="80" font-size="12" font-weight="600" fill="#1b2228">SSD</text><text x="20" y="114" font-size="12" font-weight="600" fill="#1b2228">GPU</text>
 <rect x="70" y="66" width="160" height="22" fill="#d98a1c" stroke="#ffffff" stroke-width="2"/>
@@ -21,23 +21,20 @@
 <rect x="540" y="62" width="202" height="64" rx="6" fill="#f6f7f8"/>
 <text x="641" y="84" font-size="12" font-weight="600" fill="#1b2228" text-anchor="middle">Only 1 in 4 guesses used</text>
 <text x="641" y="101" font-size="11" fill="#1b2228" text-anchor="middle">half were evicted from the</text><text x="641" y="115" font-size="11" fill="#1b2228" text-anchor="middle">cache before their layer came</text>
-<text x="20" y="190" font-size="16" font-weight="700" fill="#1b2228">After: two trained guesses, each kept until its layer runs</text>
-<text x="20" y="208" font-size="11.5" fill="#5a6670">On layer n the two-layer guesser fetches layer n+2's experts; a layer later the one-layer guesser tops up what it missed</text>
+<text x="20" y="190" font-size="16" font-weight="700" fill="#1b2228">After: guess two layers ahead, top up one ahead, keep both</text>
+<text x="20" y="208" font-size="11.5" fill="#5a6670">The two-layer guess gives the SSD two layers' time; a layer later the one-layer guess tops up what it missed</text>
 <text x="20" y="247" font-size="12" font-weight="600" fill="#1b2228">SSD</text><text x="20" y="305" font-size="12" font-weight="600" fill="#1b2228">GPU</text>
 <rect x="70" y="222" width="160" height="16" fill="#d98a1c" stroke="#ffffff" stroke-width="2"/>
-<text x="150.0" y="233.8" font-size="10.5" fill="#ffffff" text-anchor="middle">experts for n+2</text>
+<text x="150.0" y="233.8" font-size="10.5" fill="#ffffff" text-anchor="middle">made on n: for n+2</text>
 <rect x="190" y="242" width="160" height="16" fill="#d98a1c" stroke="#ffffff" stroke-width="2"/>
-<text x="270.0" y="253.8" font-size="10.5" fill="#ffffff" text-anchor="middle">experts for n+3</text>
-<rect x="190" y="262" width="60" height="16" fill="#f2c27a" stroke="#ffffff" stroke-width="2"/>
-<text x="220.0" y="273.8" font-size="10.5" fill="#1b2228" text-anchor="middle">n+2 top-up</text>
-<rect x="310" y="262" width="60" height="16" fill="#f2c27a" stroke="#ffffff" stroke-width="2"/>
-<text x="340.0" y="273.8" font-size="10.5" fill="#1b2228" text-anchor="middle">n+3 top-up</text>
+<text x="270.0" y="253.8" font-size="10.5" fill="#ffffff" text-anchor="middle">made on n+1: for n+3</text>
+<rect x="190" y="262" width="100" height="16" fill="#f2c27a" stroke="#ffffff" stroke-width="2"/>
+<text x="240.0" y="273.8" font-size="10.5" fill="#1b2228" text-anchor="middle">top-up for n+2</text>
 <line x1="232" y1="230" x2="308" y2="230" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/>
 <text x="270" y="226" font-size="10" fill="#0f6e72" text-anchor="middle">kept</text>
 <line x1="352" y1="250" x2="428" y2="250" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/>
 <text x="390" y="246" font-size="10" fill="#0f6e72" text-anchor="middle">kept</text>
-<line x1="252" y1="270" x2="308" y2="270" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/>
-<line x1="372" y1="270" x2="428" y2="270" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/>
+<line x1="292" y1="270" x2="308" y2="270" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/>
 <rect x="70" y="290" width="120" height="22" fill="#1b2228" stroke="#ffffff" stroke-width="2"/>
 <text x="130.0" y="307.8" font-size="10.5" fill="#ffffff" text-anchor="middle">layer n</text>
 <rect x="190" y="290" width="120" height="22" fill="#1b2228" stroke="#ffffff" stroke-width="2"/>
@@ -45,70 +42,49 @@
 <rect x="310" y="290" width="120" height="22" fill="#1b2228" stroke="#ffffff" stroke-width="2"/>
 <text x="370.0" y="307.8" font-size="10.5" fill="#ffffff" text-anchor="middle">layer n+2</text>
 <line x1="430" y1="216" x2="430" y2="320" stroke="#0f6e72" stroke-dasharray="3 3"/><text x="436" y="316" font-size="11" fill="#0f6e72">done</text>
-<rect x="490" y="222" width="252" height="92" rx="6" fill="#e2f0f0"/>
-<text x="616" y="242" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">Measured: early fetches used</text>
-<text x="616" y="259" font-size="11" fill="#1b2228" text-anchor="middle">two-layer 84%, one-layer 65-71%</text>
-<text x="616" y="276" font-size="11" fill="#1b2228" text-anchor="middle">writing +4.2% coding, +8.2% chat,</text>
-<text x="616" y="291" font-size="11" fill="#1b2228" text-anchor="middle">then +7.5% and +7.3% more</text>
-<text x="616" y="306" font-size="10.5" fill="#5a6670" text-anchor="middle">output unchanged</text>
-<rect x="70" y="336" width="12" height="12" fill="#d98a1c"/><text x="88" y="346" font-size="11.5" fill="#1b2228">SSD fetching guessed experts</text>
-<rect x="280" y="336" width="12" height="12" fill="#f2c27a"/><text x="298" y="346" font-size="11.5" fill="#1b2228">SSD topping up (one-layer guess)</text>
-<line x1="498" y1="342" x2="520" y2="342" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/><text x="526" y="346" font-size="11.5" fill="#1b2228">kept until its layer runs</text>
+<rect x="490" y="222" width="252" height="90" rx="6" fill="#e2f0f0"/>
+<text x="616" y="243" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">Measured: most guesses used</text>
+<text x="616" y="261" font-size="11" fill="#1b2228" text-anchor="middle">two-layer 84%, one-layer 65-71%</text>
+<text x="616" y="279" font-size="11" fill="#1b2228" text-anchor="middle">writing about +12% coding, +16% chat</text>
+<text x="616" y="297" font-size="10.5" fill="#5a6670" text-anchor="middle">output unchanged</text>
+<rect x="70" y="336" width="12" height="12" fill="#d98a1c"/><text x="88" y="346" font-size="11.5" fill="#1b2228">SSD fetching two layers ahead</text>
+<rect x="290" y="336" width="12" height="12" fill="#f2c27a"/><text x="308" y="346" font-size="11.5" fill="#1b2228">SSD topping up one layer ahead</text>
+<line x1="520" y1="342" x2="542" y2="342" stroke="#0f6e72" stroke-width="2.5" stroke-dasharray="5 3"/><text x="548" y="346" font-size="11.5" fill="#1b2228">kept until its layer runs</text>
 <rect x="70" y="356" width="12" height="12" fill="#1b2228"/><text x="88" y="366" font-size="11.5" fill="#1b2228">GPU working</text>
-<rect x="280" y="356" width="12" height="12" fill="#eef1f3" stroke="#c4ccd2"/><text x="298" y="366" font-size="11.5" fill="#1b2228">GPU waiting</text>
-<text x="20" y="408" font-size="14" font-weight="700" fill="#1b2228">Writing gain by conversation length</text>
-<text x="20" y="426" font-size="11" fill="#5a6670">Each guesser against the setup just before it. The two-layer gain fades on the longest conversations; the one-layer gain does not.</text>
-<rect x="230" y="442" width="12" height="12" fill="#0f6e72"/><text x="248" y="452" font-size="11.5" fill="#1b2228">two-layer guesser + keep rule (K-final)</text>
-<rect x="490" y="442" width="12" height="12" fill="#6a4fa3"/><text x="508" y="452" font-size="11.5" fill="#1b2228">one-layer guesser on top (T43)</text>
+<rect x="290" y="356" width="12" height="12" fill="#eef1f3" stroke="#c4ccd2"/><text x="308" y="366" font-size="11.5" fill="#1b2228">GPU waiting</text>
+<text x="20" y="410" font-size="14" font-weight="700" fill="#1b2228">Writing gain by conversation length, both guessers</text>
+<text x="20" y="428" font-size="11" fill="#5a6670">Against the engine's own guess with no keep rule. Estimated: the two guessers' measured gains multiplied (see below).</text>
 <g font-size="12" fill="#1b2228">
-<text x="20" y="483" font-weight="600">Chat, all</text>
-<rect x="230" y="470" width="246.0" height="9" fill="#0f6e72"/>
-<text x="482.0" y="478.5" font-size="10.5" font-weight="600">+8.2%</text>
-<rect x="230" y="480" width="219.0" height="9" fill="#6a4fa3"/>
-<text x="455.0" y="488.5" font-size="10.5" font-weight="600">+7.3%</text>
-<text x="36" y="509">short</text>
-<rect x="230" y="496" width="315.0" height="9" fill="#0f6e72"/>
-<text x="551.0" y="504.5" font-size="10.5">+10.5%</text>
-<rect x="230" y="506" width="201.0" height="9" fill="#6a4fa3"/>
-<text x="437.0" y="514.5" font-size="10.5">+6.7%</text>
-<text x="36" y="535">medium</text>
-<rect x="230" y="522" width="285.0" height="9" fill="#0f6e72"/>
-<text x="521.0" y="530.5" font-size="10.5">+9.5%</text>
-<rect x="230" y="532" width="186.0" height="9" fill="#6a4fa3"/>
-<text x="422.0" y="540.5" font-size="10.5">+6.2%</text>
-<text x="36" y="561">long</text>
-<rect x="230" y="548" width="24.0" height="9" fill="#0f6e72"/>
-<text x="260.0" y="556.5" font-size="10.5">+0.8%</text>
-<rect x="230" y="558" width="258.0" height="9" fill="#6a4fa3"/>
-<text x="494.0" y="566.5" font-size="10.5">+8.6%</text>
-<text x="20" y="595" font-weight="600">Coding agent, all</text>
-<rect x="230" y="582" width="126.0" height="9" fill="#0f6e72"/>
-<text x="362.0" y="590.5" font-size="10.5" font-weight="600">+4.2%</text>
-<rect x="230" y="592" width="225.0" height="9" fill="#6a4fa3"/>
-<text x="461.0" y="600.5" font-size="10.5" font-weight="600">+7.5%</text>
-<text x="36" y="621">short</text>
-<rect x="230" y="608" width="195.0" height="9" fill="#0f6e72"/>
-<text x="431.0" y="616.5" font-size="10.5">+6.5%</text>
-<rect x="230" y="618" width="93.0" height="9" fill="#6a4fa3"/>
-<text x="329.0" y="626.5" font-size="10.5">+3.1%</text>
-<text x="36" y="647">medium</text>
-<rect x="230" y="634" width="321.0" height="9" fill="#0f6e72"/>
-<text x="557.0" y="642.5" font-size="10.5">+10.7%</text>
-<rect x="230" y="644" width="294.0" height="9" fill="#6a4fa3"/>
-<text x="530.0" y="652.5" font-size="10.5">+9.8%</text>
-<text x="36" y="673">long</text>
-<rect x="230" y="660" width="225.0" height="9" fill="#0f6e72"/>
-<text x="461.0" y="668.5" font-size="10.5">+7.5%</text>
-<rect x="230" y="670" width="144.0" height="9" fill="#6a4fa3"/>
-<text x="380.0" y="678.5" font-size="10.5">+4.8%</text>
-<text x="36" y="699">100K+ tokens of context</text>
-<rect x="230" y="686" width="21.0" height="9" fill="#0f6e72"/>
-<text x="257.0" y="694.5" font-size="10.5">+0.7%</text>
-<rect x="230" y="696" width="258.0" height="9" fill="#6a4fa3"/>
-<text x="494.0" y="704.5" font-size="10.5">+8.6%</text>
+<text x="20" y="459" font-weight="600">Chat, all</text>
+<rect x="230" y="448" width="241.5" height="14" fill="#0f6e72"/>
+<text x="477.5" y="459" font-weight="600">+16.1%</text>
+<text x="36" y="479">short</text>
+<rect x="230" y="468" width="268.5" height="14" fill="#8fc3c4"/>
+<text x="504.5" y="479">+17.9%</text>
+<text x="36" y="499">medium</text>
+<rect x="230" y="488" width="244.5" height="14" fill="#8fc3c4"/>
+<text x="480.5" y="499">+16.3%</text>
+<text x="36" y="519">long</text>
+<rect x="230" y="508" width="142.5" height="14" fill="#8fc3c4"/>
+<text x="378.5" y="519">+9.5%</text>
+<text x="20" y="549" font-weight="600">Coding agent, all</text>
+<rect x="230" y="538" width="180.0" height="14" fill="#0f6e72"/>
+<text x="416.0" y="549" font-weight="600">+12.0%</text>
+<text x="36" y="569">short</text>
+<rect x="230" y="558" width="147.0" height="14" fill="#8fc3c4"/>
+<text x="383.0" y="569">+9.8%</text>
+<text x="36" y="589">medium</text>
+<rect x="230" y="578" width="322.5" height="14" fill="#8fc3c4"/>
+<text x="558.5" y="589">+21.5%</text>
+<text x="36" y="609">long</text>
+<rect x="230" y="598" width="190.5" height="14" fill="#8fc3c4"/>
+<text x="426.5" y="609">+12.7%</text>
+<text x="36" y="629">100K+ tokens of context</text>
+<rect x="230" y="618" width="141.0" height="14" fill="#8fc3c4"/>
+<text x="377.0" y="629">+9.4%</text>
 </g>
-<line x1="230" y1="464" x2="230" y2="708" stroke="#5a6670"/>
-<text x="20" y="730" font-size="10.5" fill="#5a6670">Schematic timing above. Measured: K-final, the two-layer guesser and keep rule against neither, 24 coding conversations (high effort) and</text>
-<text x="20" y="745" font-size="10.5" fill="#5a6670">24 chats (medium); T43, the one-layer guesser on top of them, 12 + 12, another day. Both A/B/A, 28 GiB cache, two SSDs, draft head on.</text>
-<text x="20" y="760" font-size="10.5" fill="#5a6670">Guesses used: 25% of the engine's own one-layer guesses before; after, 84% of two-layer and 65-71% of one-layer guesses.</text>
+<line x1="230" y1="442" x2="230" y2="638" stroke="#5a6670"/>
+<text x="20" y="662" font-size="10.5" fill="#5a6670">Schematic timing above. Gains: the two-layer guesser with the keep rule (study test K-final: 24 coding conversations at high effort, 24 chats</text>
+<text x="20" y="677" font-size="10.5" fill="#5a6670">at medium) times the one-layer guesser on top of it (T43: 12 + 12, another day), each A/B/A, never run together. 28 GiB cache, two SSDs,</text>
+<text x="20" y="692" font-size="10.5" fill="#5a6670">draft head on. Guesses used: 25% of the engine's own one-layer guesses before; after, 84% of two-layer and 65-71% of one-layer guesses.</text>
 </svg>
