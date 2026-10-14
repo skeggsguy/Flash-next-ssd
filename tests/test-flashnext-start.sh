@@ -56,13 +56,14 @@ free_port() {
     done
 }
 FREE_PORT=$(free_port)
-touch "$T/models/m1.gguf" "$T/models/head.gguf" "$T/models/guess.gguf" "$T/models/eyes.gguf" "$T/models/copy1.gguf" "$T/home/tilde.gguf"
+touch "$T/models/m1.gguf" "$T/models/head.gguf" "$T/models/guess.gguf" "$T/models/guess1.gguf" "$T/models/eyes.gguf" "$T/models/copy1.gguf" "$T/home/tilde.gguf"
 
 conf() {   # conf [extra lines...]: a settings file with every path present, plus overrides
     {
         echo "MODEL=$T/models/m1.gguf"
         echo "DRAFT_HEAD=$T/models/head.gguf"
         echo "GUESSER=$T/models/guess.gguf"
+        echo "GUESSER1=$T/models/guess1.gguf"
         echo "VISION=$T/models/eyes.gguf"
         echo "SECOND_COPY=$T/models/copy1.gguf"
         echo "PORT=$FREE_PORT"
@@ -96,7 +97,7 @@ conf
 run internal --dry-run
 code "internal dry run" 0
 has "internal command" "Would run:
-env LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 $BIN -m $T/models/m1.gguf -ngl 99 --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct -md $T/models/head.gguf --spec-draft-ngl 99 --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 --mmproj $T/models/eyes.gguf -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on --cache-reuse 0 --cache-ram 400 --cache-ram-opening --jinja --reasoning-format deepseek --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
+env LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf $BIN -m $T/models/m1.gguf -ngl 99 --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct -md $T/models/head.gguf --spec-draft-ngl 99 --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 --mmproj $T/models/eyes.gguf -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on --cache-reuse 0 --cache-ram 400 --cache-ram-opening --jinja --reasoning-format deepseek --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
 lacks "internal leaves the second drive out" "--moe-stream-alt"
 
 # --- The command, two SSDs ------------------------------------------------------------------
@@ -138,6 +139,24 @@ code "missing guesser still starts" 0
 has "missing guesser: a note" "no trained guesser at $T/models/noguess.gguf"
 lacks "missing guesser: no lookahead switches" "LLAMA_MOE_STREAM_LOOKAHEAD"
 has "missing guesser: the server runs" "FAKE-SERVER"
+run internal --dry-run
+has "missing guesser: the one-layer guesser still on" "LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf"
+
+conf "GUESSER1="
+run internal --dry-run
+code "no one-layer guesser" 0
+lacks "no one-layer guesser: no switch" "LLAMA_MOE_STREAM_GUESSER1"
+has "no one-layer guesser: the two-layer guesser still on" "LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf"
+lacks "no one-layer guesser: no note" "Note:"
+
+conf "GUESSER1=$T/models/noguess1.gguf"
+run internal
+code "missing one-layer guesser still starts" 0
+has "missing one-layer guesser: a note" "no one-layer guesser at $T/models/noguess1.gguf"
+has "missing one-layer guesser: the server runs" "FAKE-SERVER"
+run internal --dry-run   # the fake server prints its arguments, not its environment
+lacks "missing one-layer guesser: no switch" "LLAMA_MOE_STREAM_GUESSER1"
+has "missing one-layer guesser: the two-layer guesser still on" "LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf"
 
 conf "VISION="
 run internal --dry-run
@@ -169,6 +188,7 @@ run internal --dry-run
 has "a missing line takes the example's value" " -m $HOME/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf "
 has "the example's draft head" " -md $HOME/models/flashnext/mtp-shared-Q4_K_M.gguf "
 has "the example's guesser, missing here" "no trained guesser at $HOME/models/flashnext/c1-guesser.gguf"
+has "the example's one-layer guesser, missing here" "no one-layer guesser at $HOME/models/flashnext/c1-guesser-gap1.gguf"
 has "the example's image encoder, missing here" "no image encoder at $HOME/models/flashnext/mmproj-BF16.gguf"
 
 # --- Each stop says what to do, and a real start does not run the server -----------------

@@ -17,6 +17,12 @@ DRAFT_HEAD=~/models/flashnext/mtp-shared-Q4_K_M.gguf
 # Leave it empty (GUESSER=) to run without it on purpose. It needs about 121 MB beside the cache.
 GUESSER=~/models/flashnext/c1-guesser.gguf
 
+# The trained one-layer guesser (crystal-ball), which fetches the next layer's experts in place
+# of the engine's own guess: +7% writing on coding work and on chat, same words. Without the file
+# the start notes it and uses the engine's guess. Leave it empty (GUESSER1=) to do that on
+# purpose. It needs about 123 MB beside the cache.
+GUESSER1=~/models/flashnext/c1-guesser-gap1.gguf
+
 # The image encoder (mmproj), which lets the model read pictures: attach one in the web page or
 # send it in a request. Without the file the start notes it and runs text-only. Leave it empty
 # (VISION=) to run text-only on purpose. It needs about 0.9 GB beside the cache.

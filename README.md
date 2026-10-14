@@ -23,15 +23,18 @@ effort (`chat`).
 
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **21.2 tokens/s**: **+21% since the last update** (17.5 on the same conversations) |
-| **Writing (decode), chat** | **21.1 tokens/s**: **+20% since the last update** (from 17.6) |
-| **A new chat while a coding agent works** | **4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again |
+| **Writing (decode), coding agent** | **21.7 tokens/s**: **+7.5% since the last update** (20.2 on the same conversations) |
+| **Writing (decode), chat** | **22.7 tokens/s**: **+7.3% since the last update** (from 21.2) |
+| **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, now also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-"Since the last update" compares with this repo's previous release (5 October): 17.5 and 17.6 are
-that engine on the same conversations, the base of the trained lookahead's run (its new switches
-off). Each October change was then tested A-B-A on its own day, so the comparison spans days.
+"Since the last update" compares with this repo's previous release (13 October), run A-B-A on the
+same afternoon: that release's setup, then the same with the new one-layer guesser, then that
+release's setup again. This run used 12 conversations of each set, the study's shorter list for
+one change, so its base (20.2 and 21.2) is not the 24-conversation figure the last update gave. That
+release had itself taken the full sets from 17.5 to 21.2 tokens/s (coding) and from 17.6 to 21.1
+(chat) since 5 October.
 
 ## What it adds
 
@@ -45,7 +48,7 @@ those early fetches is used before the cache lets it go (the trained lookahead b
 The cache keeps the experts used most recently and most often. At 28 GiB about 4 in 5 expert
 lookups find their expert already in RAM.
 
-### The trained lookahead: guessing two layers ahead (new in October)
+### The trained lookahead: guessing one and two layers ahead (new in October)
 
 Guessing one layer ahead leaves the SSD only one layer's compute time to fetch a missed expert. The
 trained guesser, [crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) (a 121 MB side file),
@@ -62,6 +65,17 @@ changes only which experts are fetched early, never which are used, so the outpu
 is off unless you point the engine at the file (Quick start, steps 2 and 4).
 
 <p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the trained guesser looks two layers ahead and keeps its guesses, 84% are used, writing +4.2% coding and +8.2% chat, most on short and medium conversations"></p>
+
+**New in this update, the one-layer guess trained too.** The engine's own guess for the next layer
+borrows that layer's router and feeds it this layer's input instead of its own. That rough copy
+names 61-65% of the next layer's experts in its top 10 on held-out conversations. A second
+crystal-ball file, `c1-guesser-gap1.gguf` (123 MB), starts from the same router and is trained to
+read this layer's input directly: 73-77%, ahead on 43 to 47 of the 47 layers. Point
+`LLAMA_MOE_STREAM_GUESSER1` at it, beside the two-layer guesser. About 7 in 10 of its early fetches
+are used, against 3 in 10 for the borrowed guess, so each token fetches about 38 fewer experts it
+never uses, and the drives are free sooner for the ones it needs. On top of the two-layer guesser:
+**+7.5% writing on the coding set and +7.3% on chat**, and output unchanged (byte-identical answers
+with it on and off).
 
 ### The reading room: a carousel for long prompts
 
@@ -123,6 +137,13 @@ cache, so a new chat used to read its opening (system prompt and tools, ~4,200 t
 `--cache-ram 400 --cache-ram-opening` keeps one RAM copy of chat's opening only (~232 MiB), never the
 agent's. A new chat after coding work then starts writing in **4.1 s instead of 14.2 s**.
 
+**Fixed in this update:** when the coding agent had the server first, the opening's pin landed at
+token 3, where chat's prompt and the agent's part ways. The RAM copy then held almost nothing (3 of
+5,864 tokens), and every new chat read in 5-7K tokens again (14-20 s). The pin now knows whether a
+chat follows the agent's work, and then pins at the chat's first message. In a live check after a
+73K-token coding prompt, the next new chat read in 463 tokens and started writing in **3.5 s**. The
+first new chat after each start still reads its opening once, since nothing has saved it yet.
+
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
 
 ### And smaller wins, all on by default
@@ -147,7 +168,7 @@ cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-**2. Download the model (111.3 GB, 4 files), the draft head (1.9 GB), the trained guesser (121 MB) and the image encoder (908 MB)**
+**2. Download the model (111.3 GB, 4 files), the draft head (1.9 GB), the two trained guessers (121 MB and 123 MB) and the image encoder (908 MB)**
 
 ```sh
 D=~/models/flashnext && mkdir -p $D
@@ -160,6 +181,9 @@ curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
 curl -fL --retry 5 -C - -o $D/c1-guesser.gguf \
   https://huggingface.co/skeggsguy/crystal-ball/resolve/main/c1-guesser.gguf
 shasum -a 256 $D/c1-guesser.gguf   # c22af709d65b99bb2bc64aaa5b8b2d47c04c86367b0f9ba0fe452ab47ec053c7
+curl -fL --retry 5 -C - -o $D/c1-guesser-gap1.gguf \
+  https://huggingface.co/skeggsguy/crystal-ball/resolve/main/c1-guesser-gap1.gguf
+shasum -a 256 $D/c1-guesser-gap1.gguf   # 2df6a3d9c63f787286a387965aa1c89da3ee86c6b75829e3c9a1e2ca24690d94
 curl -fL --retry 5 -C - -o $D/mmproj-BF16.gguf \
   https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/mmproj-BF16.gguf
 shasum -a 256 $D/mmproj-BF16.gguf   # 2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355
@@ -178,6 +202,7 @@ LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 \
 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 \
 LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 \
 LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 \
+LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
 ./build/bin/llama-server \
   -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf -ngl 99 \
   --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct \
@@ -233,7 +258,8 @@ update never changes it. A setting you delete takes the example's value.
 |---|---|---|
 | `MODEL` | `~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf` | The model's first file; the other three sit beside it. |
 | `DRAFT_HEAD` | `~/models/flashnext/mtp-shared-Q4_K_M.gguf` | The MTP draft head. Empty (`DRAFT_HEAD=`) runs without it. |
-| `GUESSER` | `~/models/flashnext/c1-guesser.gguf` | The trained guesser ([the trained lookahead](#the-trained-lookahead-guessing-two-layers-ahead-new-in-october)). If the file is missing, the start says so and runs without it; empty (`GUESSER=`) turns it off. |
+| `GUESSER` | `~/models/flashnext/c1-guesser.gguf` | The trained two-layer guesser ([the trained lookahead](#the-trained-lookahead-guessing-one-and-two-layers-ahead-new-in-october)). If the file is missing, the start says so and runs without it; empty (`GUESSER=`) turns it off. |
+| `GUESSER1` | `~/models/flashnext/c1-guesser-gap1.gguf` | The trained one-layer guesser, in place of the engine's own one-layer guess. If the file is missing, the start says so and uses the engine's guess; empty (`GUESSER1=`) does that on purpose. |
 | `VISION` | `~/models/flashnext/mmproj-BF16.gguf` | The image encoder, so the model can read pictures ([Images](docs/flashnext/settings.md#images)). If the file is missing, the start says so and runs text-only; empty (`VISION=`) turns it off. About 0.9 GB beside the cache. |
 | `SECOND_COPY` | `/Volumes/ssd/flashnext/...-00001-of-00004.gguf` | Two SSDs only: the first file of the copy on the second drive. |
 | `SECOND_SPLIT` | `53` | Two SSDs only: the percent of experts read from the internal copy ([Settings](docs/flashnext/settings.md#two-drives)). |
@@ -315,8 +341,9 @@ This is a fork of a fork of a fork, and it stands on the work underneath it:
 
 This fork adds two-drive striping, the reading room, the measured-depth draft head and its token
 list, union attention, the n-gram shelf, the pinned checkpoint, the cheaper per-layer stops, the
-chat window, the trained two-layer lookahead and its keep rule, the drive choice by load, fewer undo
-copies and chat's opening copy, and the study that measured them.
+chat window, the trained two-layer lookahead and its keep rule, the trained one-layer guess, the
+drive choice by load, fewer undo copies, chat's opening copy and the pin that keeps it whichever
+request came first, and the study that measured them.
 
 ## Licence
 
