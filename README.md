@@ -58,8 +58,8 @@ When the cache is full, it lets go the expert that has gone longest without bein
 
 When the expert cache is full and a new expert has to come in, another has to go. The old rule let
 go the expert with the lowest recent use count. The new default lets go the one that has gone
-longest without being used (least recently used, LRU). The rule itself came with Marian
-Mihailescu's streaming; the study measured it on both sets at a 28 GiB cache:
+longest without being used (least recently used, LRU). The rule itself was written by Marian
+Mihailescu, in his GPU slot-resolution work, and sat off until now; the study measured it on both sets at a 28 GiB cache:
 
 - **Writing +9.6% on the coding set and +9.7% on chat** (21.5 → 23.6 and 22.7 → 25.0 tokens/s).
 - Experts fetched from the SSD per written token fell by 17% (chat) and 28% (code), and the share of
@@ -129,7 +129,8 @@ SSDs 15% of the time instead of 20%. Both are on by default (`LLAMA_MOE_STREAM_D
 A small draft head guesses up to 5 tokens ahead, and the model checks them all in one pass
 (`-md` with `--spec-type draft-mtp-adaptive`, which `--flashnext` sets). It picks its own guessing
 depth from how often recent guesses were kept; that measured depth is the engine's default
-(`LLAMA_SPEC_ADAPTIVE_RATE=0` falls back to a fixed table). On the agent conversations (tool calls,
+(`LLAMA_SPEC_ADAPTIVE_RATE=0` goes back to the older rule, a depth that climbs and falls with
+how many guesses were kept). On the agent conversations (tool calls,
 code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
 its own experts fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from, for
 another +2.6%, but the study's list is not published ([what you add](#what-you-add)).
@@ -192,7 +193,7 @@ environment variable; to go back to the old way, set it to the value in the last
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | A full cache lets go the expert unused longest ([above](#which-expert-the-cache-lets-go-new-in-october)). | `0`: the lowest recent use count |
 | `LLAMA_RS_SKIP_SLOTS` | The draft head's check saves only the undo copies a rollback can reach. | `0`: every copy, every round |
-| `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: a fixed table |
+| `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: the older rule, a depth that climbs and falls with the guesses kept |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | The expert cache is claimed in 4 GiB steps with short pauses, so macOS is not rushed at load. | `0`: all at once |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | The model stays wired in RAM while the server is idle (10,000,000 s). | `0`: upstream's 180 s, after which the next request wires ~41 GiB back in one go |
 | `GGML_METAL_STAFF_MV` | The check's matrix work runs on the route the study measured. | `1`: the M5's matrix units (below the study's bar) |

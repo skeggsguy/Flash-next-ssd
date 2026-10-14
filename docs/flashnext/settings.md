@@ -60,7 +60,7 @@ is one value away:
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | on: a full cache lets go the expert unused longest | `0`: the lowest recent use count |
 | `LLAMA_RS_SKIP_SLOTS` | on: only the undo copies a rollback can reach | `0`: every copy |
-| `LLAMA_SPEC_ADAPTIVE_RATE` | `1`: the draft head's measured depth | `0`: the climb table |
+| `LLAMA_SPEC_ADAPTIVE_RATE` | `1`: the draft head's measured depth | `0`: the older climb-table rule |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | `4096`: the cache claimed in 4 GiB steps | `0`: all at once |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | `10000000`: the model stays wired while idle | `0`: upstream's 180 s |
 | `GGML_METAL_STAFF_MV` | off: the check's matrix work on the measured route | `1`: the M5's matrix units |

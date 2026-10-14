@@ -72,7 +72,7 @@ Wired limit 59,392 MiB (58 GiB) in every run.
 | Expert cache | With | Result |
 |---|---|---|
 | **28 GiB** | draft head on, 200K context, 3 checkpoints | **The everyday setting.** About 41-42 GiB wired in all. The Mac then runs at memory level ~33 for hours; the study's final 120-conversation run at this setting had one small spill, caused from outside (below). |
-| 24 GiB | draft head on, the LRU rule (the default) | As fast as the old rule at 28 GiB (+0.4% coding, +2.8% chat), with ~4.1 GiB of the server's memory back: 39.5-39.7 GiB at its peak, against 43.6-43.8 at 28. |
+| 24 GiB | draft head on, the LRU rule (the default) | As fast as the old rule at 28 GiB (+0.4% coding, +2.8% chat), with ~4.1 GiB of the server's memory back: 39.5-39.7 GiB at its peak, against 43.6-43.8 at 28 (the study's peak for the whole server, a different measure from the wired figure above). |
 | 30 GiB | draft head off, long prompts | Safe in the tests. |
 | 32 GiB | draft head off, 96K context | The ceiling without the draft head: +8.6% writing over 28 GiB. Long prompts at 32 took the memory level down to 16-22, so use 30 for long prompts. |
 | 36 GiB | draft head off | **Too big.** The early brake stopped one run (memory level 12 for 10 s), and another swapped as it opened. |
