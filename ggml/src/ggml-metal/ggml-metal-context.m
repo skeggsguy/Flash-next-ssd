@@ -9,6 +9,7 @@
 #import "ggml-metal-fusion.h"
 #import "ggml-metal-fusion-fn.h"
 #import "ggml-metal-staff-mv.h"
+#import "ggml-metal-moe-gate.h"
 
 #import <Foundation/Foundation.h>
 
@@ -107,6 +108,12 @@ struct ggml_metal {
     uint64_t             ahead_uid;
     int                  ahead_n_cb;
     id<MTLCommandBuffer> ahead_bufs[GGML_METAL_MAX_COMMAND_BUFFERS + 1]; // same indices as cmd_bufs
+
+    // desk books first (study #39, ggml-metal-moe-gate.h): the gate fn, NULL = off (no scan, the usual split)
+    ggml_metal_moe_gate_t moe_gate_fn;
+    void *                moe_gate_ud;
+    int                   gate_idx;  // this graph's first gate node, -1 = none
+    bool                  gate_hold; // the plain path's encode block leaves cb[0..n_cb) (or the only one) unsent
 };
 
 static void ggml_metal_cblog_open(void);
@@ -227,6 +234,11 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
                 res->ahead_bufs[i] = nil;
             }
         }
+
+        res->moe_gate_fn = NULL;
+        res->moe_gate_ud = NULL;
+        res->gate_idx    = -1;
+        res->gate_hold   = false;
 
         res->gf = nil;
         res->encode_async = nil;
@@ -665,10 +677,11 @@ static void ggml_metal_kprof_print_json_string(const char * value, size_t length
     fputc('"', stderr);
 }
 
-// how a graph's nodes are split between the main command buffer and the n_cb others (both encoding paths)
-static void ggml_metal_split_nodes(struct ggml_cgraph * gf, int n_cb, int * n_nodes_0, int * n_nodes_1, int * n_nodes_per_cb) {
+// how a graph's nodes are split between the main command buffer and the n_cb others (both encoding paths);
+// idx_gate >= 0 (desk books first): the main buffer ends right after that gate node
+static void ggml_metal_split_nodes(struct ggml_cgraph * gf, int n_cb, int idx_gate, int * n_nodes_0, int * n_nodes_1, int * n_nodes_per_cb) {
     // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
+    const int n_main = idx_gate >= 0 ? idx_gate + 1 : MAX(64, 0.1*gf->n_nodes);
 
     if (n_cb == 0) {
         // single-threaded encoding: the whole graph is encoded by one command buffer
@@ -677,7 +690,7 @@ static void ggml_metal_split_nodes(struct ggml_cgraph * gf, int n_cb, int * n_no
         *n_nodes_per_cb = 0;
     } else {
         *n_nodes_0      = MIN(n_main, gf->n_nodes);
-        if (ggml_metal_fusion_fn_enabled()) {
+        if (ggml_metal_fusion_fn_enabled() && idx_gate < 0) {
             // fix 2 (P8): start the next command buffer at a fusion group, not inside it (a cut
             // group runs unmerged); only this first split, as the expert servicer pins n_cb to 1
             *n_nodes_0 = ggml_metal_fusion_fn_split(gf, *n_nodes_0);
@@ -761,8 +774,10 @@ void ggml_metal_graph_encode_ahead(ggml_metal_t ctx, struct ggml_cgraph * gf) {
         return;
     }
 
+    const int idx_gate = ctx->moe_gate_fn ? ggml_metal_moe_gate_first(gf) : -1;
+
     int n_nodes_0, n_nodes_1, n_nodes_per_cb;
-    ggml_metal_split_nodes(gf, n_cb, &n_nodes_0, &n_nodes_1, &n_nodes_per_cb);
+    ggml_metal_split_nodes(gf, n_cb, idx_gate, &n_nodes_0, &n_nodes_1, &n_nodes_per_cb);
 
     @autoreleasepool {
         id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
@@ -799,12 +814,19 @@ static bool ggml_metal_ahead_commit(ggml_metal_t ctx, struct ggml_cgraph * gf) {
 
     @autoreleasepool {
         ctx->gf = gf;
-        ggml_metal_split_nodes(gf, n_cb, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
+        ctx->gate_idx = ctx->moe_gate_fn ? ggml_metal_moe_gate_first(gf) : -1;
+        ggml_metal_split_nodes(gf, n_cb, ctx->gate_idx, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
 
         for (int k = 0; k <= n_cb; ++k) {
             const int cb_idx = k == 0 ? n_cb : k - 1;
             id<MTLCommandBuffer> cmd_buf = ctx->ahead_bufs[cb_idx];
             ctx->ahead_bufs[cb_idx] = nil;
+
+            // desk books first: the main buffer (the desk's books) is sent; the floor waits for its trips here
+            // before anything after the gate is sent (with n_cb == 0, before the only buffer)
+            if (ctx->gate_idx >= 0 && k == MIN(1, n_cb)) {
+                ggml_metal_moe_gate_run(gf, ctx->gate_idx, n_cb > 0, ctx->moe_gate_fn, ctx->moe_gate_ud);
+            }
 
             if (ctx->cmd_bufs[cb_idx].obj) {
                 [ctx->cmd_bufs[cb_idx].obj release];
@@ -911,7 +933,11 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     @autoreleasepool {
         ctx->gf = gf;
 
-        ggml_metal_split_nodes(gf, ctx->n_cb, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
+        ctx->gate_idx = ctx->moe_gate_fn ? ggml_metal_moe_gate_first(gf) : -1;
+        ggml_metal_split_nodes(gf, ctx->n_cb, ctx->gate_idx, &ctx->n_nodes_0, &ctx->n_nodes_1, &ctx->n_nodes_per_cb);
+
+        // desk books first: the encode block below leaves what comes after the gate unsent (gate_hold)
+        ctx->gate_hold = ctx->gate_idx >= 0;
 
         if (ctx->capture_compute >= 0) {
             ctx->capture_compute--;
@@ -968,6 +994,14 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             [cmd_buf enqueue];
 
             ctx->encode_async(n_cb);
+
+            if (ctx->gate_hold && n_cb == 0) {
+                // one command buffer: the gate fn before it is sent (exact, no overlap)
+                ggml_metal_moe_gate_run(gf, ctx->gate_idx, false, ctx->moe_gate_fn, ctx->moe_gate_ud);
+                ggml_metal_prof_track(ctx, cmd_buf);
+                ggml_metal_cblog_track(ctx, cmd_buf, n_cb);
+                [cmd_buf commit];
+            }
         }
 
         // remember the command buffer for the next iteration
@@ -996,6 +1030,20 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         }
 
         dispatch_apply(n_cb, ctx->d_queue, ctx->encode_async);
+
+        if (ctx->gate_hold && n_cb > 0) {
+            // desk books first: the main buffer is on the GPU and the rest is encoded; wait for the trips, then send
+            ggml_metal_moe_gate_run(gf, ctx->gate_idx, true, ctx->moe_gate_fn, ctx->moe_gate_ud);
+            for (int cb_idx = 0; cb_idx < n_cb; ++cb_idx) {
+                if (cb_idx < 2 || ctx->abort_callback == NULL) {
+                    id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs[cb_idx].obj;
+                    ggml_metal_prof_track(ctx, cmd_buf);
+                    ggml_metal_cblog_track(ctx, cmd_buf, cb_idx);
+                    [cmd_buf commit];
+                }
+            }
+        }
+        ctx->gate_hold = false;
 
         // for debugging: block until graph is computed
         //[ctx->cmd_buf_last waitUntilCompleted];
@@ -1145,7 +1193,10 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
 
         ggml_metal_encode_nodes(ctx, ctx->gf, cmd_buf, idx_start, idx_end);
 
-        if (cb_idx < 2 || ctx->abort_callback == NULL) {
+        // desk books first: graph_compute sends what comes after the gate once the gate fn returns
+        const bool held = ctx->gate_hold && (cb_idx < n_cb_l || n_cb_l == 0);
+
+        if (!held && (cb_idx < 2 || ctx->abort_callback == NULL)) {
             ggml_metal_prof_track(ctx, cmd_buf);
             ggml_metal_cblog_track(ctx, cmd_buf, cb_idx);
             [cmd_buf commit];
@@ -1164,6 +1215,13 @@ void ggml_metal_set_moe_servicer(ggml_metal_t ctx, ggml_metal_moe_servicer_t fn,
     if (fn) {
         ggml_metal_set_n_cb(ctx, 1);
     }
+}
+
+void ggml_metal_set_moe_gate(ggml_metal_t ctx, ggml_metal_moe_gate_t fn, void * user_data) {
+    ggml_metal_ahead_drop(ctx); // encoded for the old split of the nodes
+
+    ctx->moe_gate_fn = fn;
+    ctx->moe_gate_ud = user_data;
 }
 
 void ggml_metal_set_abort_callback(ggml_metal_t ctx, ggml_abort_callback abort_callback, void * user_data) {

@@ -64,6 +64,16 @@ typedef void (*ggml_backend_metal_moe_servicer_t)(void * user_data, void * state
 
 GGML_BACKEND_API void ggml_backend_metal_set_moe_servicer(ggml_backend_t backend, ggml_backend_metal_moe_servicer_t fn, void * user_data);
 
+// Desk books first (study #39): the fn a GGML_OP_MOE_GATE node (ggml_moe_gate, ggml.h) calls. When a graph holds a
+// gate, its first command buffer ends right after the gate and is sent; the rest is encoded; then fn(user_data,
+// the gate's userdata) runs for every gate in the graph, in node order, on the thread computing the graph, and
+// only after it returns is the rest sent. So the GPU runs everything before the gate (the desk's books, the shared
+// expert) while fn waits, and the kernels after it see what fn's thread wrote to shared buffers before returning.
+// NULL (the default) turns it off: gates are no-ops and the split is the usual one. Set it before the first graph.
+typedef void (*ggml_backend_metal_moe_gate_t)(void * user_data, void * gate_userdata);
+
+GGML_BACKEND_API void ggml_backend_metal_set_moe_gate(ggml_backend_t backend, ggml_backend_metal_moe_gate_t fn, void * user_data);
+
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metal_reg(void);
 
 #ifdef __cplusplus

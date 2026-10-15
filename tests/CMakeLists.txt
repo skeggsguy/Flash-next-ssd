@@ -219,6 +219,22 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         set_tests_properties(test-metal-encode-ahead-on-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
         set_tests_properties(test-metal-encode-ahead-on-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
         set_tests_properties(test-metal-encode-ahead-off     PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
+        # desk books first (study #39, step 1): the gate cuts the command buffers and its fn runs between them, in
+        # the encode-ahead commit and the plain path, with one and two extra command buffers and with none
+        llama_build(test-metal-moe-gate.cpp)
+        foreach (MG ahead-ncb1 ahead-ncb2 plain-ncb1 plain-ncb2)
+            llama_test(test-metal-moe-gate NAME test-metal-moe-gate-${MG})
+        endforeach()
+        foreach (MG ahead-ncb0 plain-ncb0)
+            llama_test(test-metal-moe-gate NAME test-metal-moe-gate-${MG} ARGS ncb0)
+        endforeach()
+        set_tests_properties(test-metal-moe-gate-ahead-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
+        set_tests_properties(test-metal-moe-gate-ahead-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
+        set_tests_properties(test-metal-moe-gate-plain-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1;GGML_METAL_ENCODE_AHEAD=0")
+        set_tests_properties(test-metal-moe-gate-plain-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2;GGML_METAL_ENCODE_AHEAD=0")
+        set_tests_properties(test-metal-moe-gate-plain-ncb0 PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
+        # a gate over a CPU op's output (the stop's own id plane) is refused before any kernel reads it
+        llama_test(test-metal-moe-gate NAME test-metal-moe-gate-cpu-view ARGS cpu-view)
         # the fork's proven defaults, ggml-metal's two (GGML_METAL_STAFF_MV, GGML_METAL_RESIDENCY_KEEP_ALIVE_S): unset,
         # "0" and the rest, and that common's start-up line names the defaults the device runs
         llama_build(test-flashnext-metal.cpp)

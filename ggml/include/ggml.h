@@ -605,6 +605,7 @@ extern "C" {
         GGML_OP_UNION_BUILD,
         GGML_OP_FLASH_ATTN_UNION,
         GGML_OP_MUL_MAT_ID_INTO,
+        GGML_OP_MOE_GATE,
 
         GGML_OP_COUNT,
     };
@@ -2492,6 +2493,23 @@ extern "C" {
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids,
             struct ggml_tensor  * into);
+
+    // Desk books first (study #39): a gate in a floor's expert GEMMs. The result is a view of a, so the GEMMs
+    // that must wait (the arrivals: books still being fetched) take it, or a view of it, as an input; the
+    // deps (the desk link, the shared expert) are sources only, so they come before the gate in the graph.
+    // CPU: a no-op. Metal: nothing is encoded; the graph's first command buffer ends at the gate and is sent,
+    // the rest is encoded, the fn set by ggml_backend_metal_set_moe_gate is called with userdata on the
+    // thread computing the graph, and only then is the rest sent. Nothing is reordered across a gate.
+    // a must be computed on the gate's backend (e.g. the floor's input, which the arrivals' GEMMs read): a
+    // view of a CPU op's output would point the Metal kernels at CPU memory, and Metal refuses that.
+    GGML_API struct ggml_tensor * ggml_moe_gate(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor ** deps,
+            int                   n_deps,
+            void                * userdata);
+
+    GGML_API void * ggml_moe_gate_get_userdata(const struct ggml_tensor * gate);
 
     // union-8 support: dedup the top-k selections of a BLOCK of queries into one shared list.
     // sel is I32 [n_sel, n_tokens]; the result is I32 [max_union + 1, n_blocks] where each entry

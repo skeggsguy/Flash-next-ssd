@@ -675,6 +675,18 @@ void ggml_backend_metal_set_moe_servicer(ggml_backend_t backend, ggml_backend_me
     ggml_metal_set_moe_servicer(ctx, (ggml_metal_moe_servicer_t) fn, user_data);
 }
 
+void ggml_backend_metal_set_moe_gate(ggml_backend_t backend, ggml_backend_metal_moe_gate_t fn, void * user_data) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    ggml_metal_set_moe_gate(ctx, (ggml_metal_moe_gate_t) fn, user_data);
+}
+
+bool ggml_metal_moe_gate_buffer_ok(ggml_backend_buffer_t buffer) {
+    return ggml_backend_buffer_is_metal(buffer);
+}
+
 void ggml_backend_metal_set_abort_callback(ggml_backend_t backend, ggml_abort_callback abort_callback, void * user_data) {
     GGML_ASSERT(ggml_backend_is_metal(backend));
 
@@ -1010,6 +1022,13 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_backend_metal_encode_ahead_counts") == 0) {
         return (void *)ggml_metal_encode_ahead_counts;
+    }
+    // desk books first (study #39, ggml-metal-moe-gate.h): the gate fn's setter, and its counts for tests
+    if (strcmp(name, "ggml_backend_metal_set_moe_gate") == 0) {
+        return (void *)ggml_backend_metal_set_moe_gate;
+    }
+    if (strcmp(name, "ggml_backend_metal_moe_gate_counts") == 0) {
+        return (void *)ggml_metal_moe_gate_counts;
     }
     // C2 keep-awake (study patch, ggml-metal-awake.m): the book manager pings an idle GPU while a floor waits on a trip
     if (strcmp(name, "ggml_backend_metal_keep_awake") == 0) {
