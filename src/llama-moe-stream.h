@@ -215,7 +215,7 @@ struct llama_moe_stream {
     int64_t n_one_lookup = 0; // remap calls whose picks read slot_of (graph thread only)
     int64_t test_land_delay_us = 0; // tests only: a runner sleeps this long before each read (a slow drive)
     void c2_init();
-    bool remap_quick(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n, int64_t n_tok, int64_t t_op0);
+    bool remap_quick(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n, int64_t n_tok, int64_t t_op0, int32_t * out_arr = nullptr);
     void wait_trips_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, int64_t t_op0);
 
     llama_moe_stream_stats stats;
@@ -344,8 +344,8 @@ void llama_moe_stream_service_gpu(void * user_data, void * state_host, int32_t l
 // path, where one graph serves the whole ubatch and the split costs almost nothing anyway.
 static const int32_t LLAMA_MOE_GPU_SLOT_MAX_TOKENS = 32;
 
-// the remap's last step (llama-moe-stream-quick.cpp): each pick's desk slot into out, with its LRU stamp
-void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n);
+// the remap's last step (llama-moe-stream-quick.cpp): each pick's desk slot into out, with its LRU stamp (out_arr: desk books first)
+void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n, int32_t * out_arr = nullptr, const uint8_t * arriving = nullptr);
 
 // callback of the id-remapping custom op inserted by build_moe_ffn
 void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * userdata);

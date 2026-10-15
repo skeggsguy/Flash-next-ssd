@@ -20,6 +20,7 @@ set(LLAMA_CORE_SOURCES
     llama-graph.cpp
     llama-graph-moe-gemms.cpp
     llama-graph-moe-room.cpp
+    llama-graph-moe-desk-first.cpp
     llama-graph-moe-stream.cpp
     llama-graph-moe-waves.cpp
     llama-hparams.cpp
@@ -61,6 +62,7 @@ set(LLAMA_CORE_SOURCES
     llama-moe-stream-split.cpp
     llama-moe-stream-lookahead.cpp
     llama-moe-stream-quick.cpp
+    llama-moe-stream-desk-first.cpp
     llama-moe-stream-stats.cpp
     llama-moe-stream-trace.cpp
     llama-moe-stream-statelog.cpp

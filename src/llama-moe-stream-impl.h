@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 static const uint32_t MOE_STREAM_IO_THREADS_DEFAULT = 9;
 static const uint32_t MOE_STREAM_IO_THREADS_MAX     = 18;
@@ -53,3 +54,18 @@ static inline void    moe_slot_state_publish(uint8_t & s, uint8_t v) { s = v; }
 void *          moe_aligned_alloc(size_t n);
 void            moe_aligned_free(void * p);
 const uint8_t * llama_moe_stream_pread(llama_file & file, uint8_t * staging, size_t len, size_t offs, bool direct);
+
+// The floor stop's work under the lock, up to its wait (llama-moe-stream-remap.cpp), shared by the remap and desk books
+// first's stop (llama-moe-stream-desk-first.cpp): the borrowing log, the floor's distinct books (sl.uniq), their
+// hotness, then each book a hit (its slot kept) or a miss (a slot reserved and its trips queued), and the lent belt's
+// copies. sl.slot_of names every book's slot and sl.demand_slots every slot the floor uses. Returns whether any book
+// is not on the desk yet (a trip, or a guess still landing); arriving, if not null ([n_slots]), gets a 1 at each of
+// their slots. t, if not null, gets the floor-stop log's send and wait times and its trips.
+struct llama_moe_stream_stop_times {
+    int64_t  send_ns = 0;
+    int64_t  wait_ns = 0;
+    uint32_t trips   = 0;
+};
+struct llama_moe_stream_layer;
+bool llama_moe_stream_classify_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, const int32_t * ids,
+        int64_t n, int64_t n_tok, llama_moe_stream_stop_times * t, uint8_t * arriving);

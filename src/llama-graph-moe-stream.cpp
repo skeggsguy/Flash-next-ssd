@@ -16,7 +16,7 @@
 
 // the wave shape of one ubatch; the two log lines keep build_moe_ffn's name, where they were written
 llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * msl,
-        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed) {
+        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed, bool desk_first_allowed) {
     // A read-in long enough to read nearly every book takes the reading room instead of waves: a mode
     // for the whole floor, so neither the remap nor the waves run beside it (llama-graph-moe-room.cpp).
     // Asked on every streamed floor, so a floor that falls back is recorded as not taking it.
@@ -175,7 +175,9 @@ llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * m
         }
     }
 
-    return { n_stream_waves, stream_wave_cap, use_partition };
+    llm_moe_stream_shape shape = { n_stream_waves, stream_wave_cap, use_partition };
+    shape.desk_first = desk_first_allowed && msl && n_stream_waves == 1; // llama-graph-moe-desk-first.cpp
+    return shape;
 }
 
 bool llm_graph_context::moe_stream_state_log_on() const {
@@ -243,7 +245,9 @@ ggml_tensor * llm_graph_context::build_moe_stream_ids(llama_moe_stream_layer * m
             // adds no graph split. Only when the floor sees every row of the ubatch: a read-in's last floor
             // keeps only the output rows, and its records could not be told from writing's.
             ggml_tensor * shexp = moe_stream_shexp;
-            if (shexp && logits && moe_stream_state_log_on() && cur->ne[1] == this->n_tokens) {
+            if (shape.desk_first) { // the stop writes two id planes (llama-graph-moe-desk-first.cpp)
+                ids_gemm = build_moe_desk_first_ids(msl, ids_cont, la_logits);
+            } else if (shexp && logits && moe_stream_state_log_on() && cur->ne[1] == this->n_tokens) {
                 ggml_tensor * args[5] = { ids_cont, logits, cur, shexp, la_logits };
                 ids_gemm = ggml_custom_4d(ctx0, GGML_TYPE_I32, ids_cont->ne[0], ids_cont->ne[1], 1, 1,
                         args, la_logits ? 5 : 4, llama_moe_stream_remap_log, 1, msl);

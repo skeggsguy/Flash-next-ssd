@@ -1793,10 +1793,11 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
         return ffn_shexp;
     };
 
-    // the state log (LLAMA_MOE_STREAM_STATE_LOG) reads the shared expert's output at the floor stop, so with it
-    // on the shared expert is built first and handed over; off, the graph is built exactly as before
+    // the state log (LLAMA_MOE_STREAM_STATE_LOG) reads the shared expert's output at the floor stop, and desk books
+    // first runs it while the floor's gate waits, so with either on the shared expert is built first and handed over;
+    // off, the graph is built exactly as before
     ggml_tensor * ffn_shexp = nullptr;
-    if (model.layers[il].ffn_up_shexp != nullptr && moe_stream_state_log_on()) {
+    if (model.layers[il].ffn_up_shexp != nullptr && (moe_stream_state_log_on() || moe_stream_desk_first_on(il, cur->ne[1]))) {
         ffn_shexp = build_shexp();
         moe_stream_shexp = ffn_shexp;
     }

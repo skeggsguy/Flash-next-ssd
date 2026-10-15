@@ -1048,6 +1048,7 @@ struct llm_moe_stream_shape {
     uint32_t cap       = 0;     // experts per wave
     bool     partition = false; // each wave gathers its own pairs instead of masking the others'
     bool     room      = false; // the reading room: a desk group and one group per belt part, no waves
+    bool     desk_first = false; // desk books first (llama-moe-stream-desk-first.h): two id planes and a gate
 };
 
 struct llama_model;
@@ -1055,7 +1056,7 @@ struct llama_moe_stream_layer;
 
 // the wave shape of a ubatch of n_tokens on a streamed layer (msl null: not streamed, one pass)
 llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * msl,
-        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed);
+        int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed, bool desk_first_allowed = false);
 
 // graph nodes the waves may add to a ubatch of n_tokens, for llama_context::graph_max_nodes
 uint32_t llama_moe_stream_graph_nodes_max(const llama_model & model, uint32_t n_tokens);
@@ -1113,6 +1114,9 @@ struct llm_graph_context {
     // here for the floor stop to log, and clears it after
     bool moe_stream_state_log_on() const;
     mutable ggml_tensor * moe_stream_shexp = nullptr;
+    // desk books first (llama-graph-moe-desk-first.cpp) for floor il's batch of n_tokens; a model with a shared
+    // expert builds it before build_moe_ffn then (moe_stream_shexp), for the GPU to run while the gate waits
+    bool moe_stream_desk_first_on(int il, int64_t n_tokens) const;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1278,6 +1282,11 @@ struct llm_graph_context {
     // the reading room (llama-graph-moe-room.cpp): a desk group, then one group per belt part
     ggml_tensor * build_moe_room_experts(llama_moe_stream_layer * msl, const llm_moe_gemms & gemms,
             ggml_tensor * cur, ggml_tensor * selected_experts) const;
+    // desk books first: the stop's two id planes, then the desk's books, the gate, the arrivals' books
+    ggml_tensor * build_moe_desk_first_ids(llama_moe_stream_layer * msl, ggml_tensor * ids_cont,
+            ggml_tensor * la_logits) const;
+    ggml_tensor * build_moe_desk_first_experts(llama_moe_stream_layer * msl, const llm_moe_gemms & gemms,
+            ggml_tensor * cur, ggml_tensor * ids2, ggml_tensor * selected_experts) const;
 
     //
     // inputs

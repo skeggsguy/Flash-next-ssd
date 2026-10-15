@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h"
+#include "llama-moe-stream-desk-first.h"
 #include "llama-moe-stream-guesser.h"
 
 #include <cstdint>
@@ -211,6 +212,9 @@ struct llama_moe_stream_layer {
     ggml_tensor * la_guess_b  = nullptr;   // and its bias
     ggml_tensor * la_bias_src = nullptr;   // next layer's exp_probs_b, may be null
     struct llama_moe_stream_lookahead * la = nullptr;
+
+    // desk books first (llama-moe-stream-desk-first.h): this floor's state between its stop and its gate
+    llama_moe_stream_desk_first_floor df;
 };
 
 // A layer whose expert choice is a token-id lookup instead of a router matmul (deepseek4 sets

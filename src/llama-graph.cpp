@@ -2238,7 +2238,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     //   (llama-graph-moe-stream.cpp)
     // (the reading room is the target's: an MTP draft context never takes it)
     const llm_moe_stream_shape stream_shape = llm_moe_stream_graph_shape(msl, n_expert, n_expert_used, n_tokens,
-            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP);
+            cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP, !weight_before_ffn && moe_stream_desk_first_on(il, n_tokens));
     ggml_tensor * ids_gemm = build_moe_stream_ids(msl, stream_shape, cur, logits, selected_experts, il);
 
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
