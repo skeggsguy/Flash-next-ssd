@@ -30,19 +30,6 @@ effort (`chat`).
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-"Since the last update" compares with this repo's previous release (14 October), run A-B-A on one
-day: that release's setup, then the same with the new rule for which expert the cache lets go
-([below](#which-expert-the-cache-lets-go-new-in-october)), then that release's setup again. The run
-used 12 conversations of each set, the study's shorter list for one change; the base is the mean of
-the two runs of the old setup (21.55 and 21.48 coding, 22.90 and 22.59 chat). The previous release
-had itself added the one-layer guesser (+7.5% coding, +7.3% chat), and the releases before it took
-the full sets from 17.5 to 21.2 tokens/s (coding) and from 17.6 to 21.1 (chat) since 5 October.
-
-**Also new in this update, the proven settings are the defaults.** The engine now runs the study's
-everyday values without being told, and one flag, `--flashnext`, sets llama.cpp's general options
-to the everyday values. [Out of the box, and what you add](#out-of-the-box-and-what-you-add) says
-which is which, and the quick start's command is down to a few lines.
-
 ## What it adds
 
 ### SSD expert streaming with an expert cache
@@ -60,14 +47,7 @@ When the cache is full, it lets go the expert that has gone longest without bein
 When the expert cache is full and a new expert has to come in, another has to go. The old rule let
 go the expert with the lowest recent use count. The new default lets go the one that has gone
 longest without being used (least recently used, LRU). The rule itself was written by Marian
-Mihailescu, in his GPU slot-resolution work, and sat off until now; the study measured it on both sets at a 28 GiB cache:
-
-- **Writing +9.6% on the coding set and +9.7% on chat** (21.5 → 23.6 and 22.7 → 25.0 tokens/s).
-- Experts fetched from the SSD per written token fell by 17% (chat) and 28% (code), and the share of
-  lookups found in RAM while writing rose from about 92% to 94%.
-- It gains most on long conversations, where the topic moves furthest (+14-15% on the longest).
-- At a 24 GiB cache it writes as fast as the old rule at 28 GiB, with about 4 GiB of RAM back: a
-  choice for a Mac that keeps other apps open.
+Mihailescu, in his GPU slot-resolution work.
 
 It changes which experts are in RAM, never which are used, so the output is unchanged (byte-identical
 word checks). It is on by default; `LLAMA_MOE_STREAM_LRU=0` restores the old rule.
