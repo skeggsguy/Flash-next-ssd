@@ -111,7 +111,7 @@ weights, the router) stays resident.
 | Option | Env var | Default | What it does |
 |---|---|---|---|
 | `--moe-stream` | `LLAMA_ARG_MOE_STREAM` | off; **`--flashnext`**: on | Stream the routed experts from disk. Any `--moe-stream-*` flag below turns it on too. |
-| `--moe-stream-cache N` | `LLAMA_ARG_MOE_STREAM_CACHE` | auto (20 experts per layer, far too small); `--flashnext` leaves it to you | The expert cache: `28` = 28 GiB, or `200s` = 200 experts per layer. **The biggest speed setting.** Study: **28** with the draft head on. See [Memory sizing](memory-sizing.md). |
+| `--moe-stream-cache N` | `LLAMA_ARG_MOE_STREAM_CACHE` | auto (20 experts per layer); `--flashnext` leaves it to you | The expert cache: `28` = 28 GiB, or `200s` = 200 experts per layer. **The biggest speed setting.** Change it to suit how much memory you want spare. Study: **28** with the draft head on. See [Memory sizing](memory-sizing.md). |
 | `--moe-stream-io-threads N` | `LLAMA_ARG_MOE_STREAM_IO_THREADS` | 9 (max 18); **`--flashnext`**: 8 | Parallel expert reads. Study: **8** (npanj measured 8, 12 and 16 the same). |
 | `--moe-stream-direct` | `LLAMA_ARG_MOE_STREAM_DIRECT` | off; **`--flashnext`**: on | Read experts past macOS's file cache (`F_NOCACHE`), so cached copies of experts don't crowd out RAM the expert cache and the system need. **Always set it.** |
 | `-ngl 99` | `LLAMA_ARG_N_GPU_LAYERS` | auto; **`--flashnext`**: 99 | Everything that is not streamed goes on the GPU. |

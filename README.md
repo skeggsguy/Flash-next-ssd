@@ -338,7 +338,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | What | How | Notes |
 |---|---|---|
 | The model (download, 111.3 GB) | `-m` and its first file | [Quick start](#quick-start), step 2. |
-| The expert cache's size | `--moe-stream-cache 28` | **Always set it**: unset, it holds 20 experts per layer, far too few. 28 GiB on 64 GB with the draft head; 24 if you keep other apps open (about 6-8% slower, ~4 GiB back); start at 16 on 48 GB ([Memory sizing](docs/flashnext/memory-sizing.md)). |
+| The expert cache's size | `--moe-stream-cache 28` | Change the GiB to suit how much memory you want to keep spare; it's yours to adjust each time you start the server. 28 GiB on 64 GB with the draft head; 24 if you keep other apps open (about 6-8% slower, ~4 GiB back); start at 16 on 48 GB ([Memory sizing](docs/flashnext/memory-sizing.md)). |
 | The draft head (download, 1.9 GB) | `-md` and its file | `--flashnext` then sets the draft options. |
 | The two trained guessers (downloads, 121 and 123 MB) | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=` and `LLAMA_MOE_STREAM_GUESSER1=`, each with its file | Environment variables, not flags. Naming the two-layer guesser also turns on its tuning and the keep rule. |
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
@@ -354,7 +354,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | Extra | What it's worth | Without it |
 |---|---|---|
 | `--flashnext` | The whole setup: streaming, big batches, the right context and cache settings | Upstream's defaults don't stream, so the model won't run well on 64 GB |
-| A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Unset, it's far too small. 24 GiB writes about 6-8% slower |
+| A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Set the GiB to fit how much memory you want spare: 24 GiB gives about 4 GiB back and writes about 6-8% slower |
 | The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
 | The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
 | A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
