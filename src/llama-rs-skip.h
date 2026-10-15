@@ -27,12 +27,13 @@
 // (gate-prose at n3, 2026-10-10: 46750edd against off's 05da8e0c; on and off agree with fusion off, or
 // with this history's slots kept). The PLE conv history's slots and the state's clamp still skip.
 //
-// LLAMA_RS_SKIP_SLOTS (read when the context is made, so per context): "1" skips; anything else, unset or
-// "0", is today's graph and memory exactly.
+// LLAMA_RS_SKIP_SLOTS (read when the context is made, so per context): unset or "1" skips (on by default from
+// 2026-10-15, the fork's proven defaults, llama-flashnext.h); anything else, "0" included, is the old graph and
+// memory exactly.
 
 #include <cstdint>
 
-// LLAMA_RS_SKIP_SLOTS's value (nullptr: unset) as on/off: only "1" is on
+// LLAMA_RS_SKIP_SLOTS's value (nullptr: unset) as on/off: unset and "1" are on
 bool llama_rs_skip_slots_parse(const char * value);
 
 // the context's setting, with its start-up line (at WARN, from every context, with its n_rs_seq)

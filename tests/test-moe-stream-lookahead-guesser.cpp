@@ -219,7 +219,7 @@ int main(int argc, char ** argv) {
     llama_model_free(ref_model);
 
     const counts c_off   = run_arm(nullptr, nullptr, off);
-    const counts c_fixed = run_arm(random_path.c_str(), nullptr, fixed);
+    const counts c_fixed = run_arm(random_path.c_str(), "0", fixed); // "0": the fixed pick (unset is 0.2 beside a guesser)
     const counts c_conf  = run_arm(random_path.c_str(), "0.2", conf);
     ident.bias = bias;
     const counts c_ident = run_arm(ident_path.c_str(), "0.2", ident);
@@ -258,7 +258,8 @@ int main(int argc, char ** argv) {
     check(refuses(wide_path.c_str(), "0.2", "4"), "a guesser of another width refuses to load");
     check(refuses(nullptr, "0.2", "4"), "CONF without GUESSER refuses to load");
     check(refuses(random_path.c_str(), "abc", "4"), "a CONF that is not a cut refuses to load");
-    check(refuses(random_path.c_str(), nullptr, nullptr), "a guesser without the two-floor guess (DEPTH2 unset) refuses");
+    check(refuses(random_path.c_str(), nullptr, "0"), "a guesser without the two-floor guess (DEPTH2=0) refuses");
+    check(!refuses(random_path.c_str(), nullptr, nullptr), "a guesser with DEPTH2 and CONF unset loads (4 and 0.2 beside it)");
     check(refuses("/nonexistent/guesser.gguf", nullptr, "4"), "a missing guesser file refuses");
 
     for (const char * e : { "LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER", "LLAMA_MOE_STREAM_LOOKAHEAD_CONF",

@@ -10145,7 +10145,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    // #23: the staff's Q8_0 mat-vec on the matrix units (GGML_METAL_STAFF_MV, ggml-metal-staff-mv.h): 2-16
+    // #23: the staff's Q8_0 mat-vec on the matrix units (GGML_METAL_STAFF_MV=1 since 2026-10-15, when unset became
+    // today's route: run with it to cover the staff kernel; ggml-metal-staff-mv.h): 2-16
     // columns on 2,048+ rows; rows off 32's multiple, k off the simdgroups' 4 blocks (k 320: 10 blocks, the
     // library's hc up; k 2592: 81), a batch of 2 and a broadcast batch (src1 twice src0's)
     for (int n = 2; n <= 16; ++n) {

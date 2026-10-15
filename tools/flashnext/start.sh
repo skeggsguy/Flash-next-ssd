@@ -153,43 +153,33 @@ if [ "${PILE:-0}" -gt 90000 ]; then
          "(docs/flashnext/memory-sizing.md, \"Opening the model safely\")."
 fi
 
-# --- The command: the guides' everyday settings ------------------------------------------
-ENVS=(LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000
-      GGML_METAL_STAFF_MV=0)   # the matrix-unit check route did not clear its bar: the measured route
-ARGS=(-m "$MODEL" -ngl 99
-      --moe-stream --moe-stream-cache "$CACHE_GIB" --moe-stream-io-threads 8 --moe-stream-direct)
-if [ "$DRIVES" = two-ssds ]; then
-    ARGS+=(--moe-stream-alt-path "$SECOND_COPY" --moe-stream-alt-split "$SECOND_SPLIT")
-fi
-if [ -n "$DRAFT_HEAD" ]; then
-    ENVS=(LLAMA_SPEC_ADAPTIVE_RATE=1 "${ENVS[@]}")
-    ARGS+=(-md "$DRAFT_HEAD" --spec-draft-ngl 99
-           --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3
-           --spec-max-prompt 0)
-    ENVS+=(LLAMA_RS_SKIP_SLOTS=1)   # fewer undo copies: proven with the draft head on
-fi
+# --- The command: the engine's defaults, --flashnext, and your settings --------------------
+# The engine runs the study's proven switches unset, and --flashnext sets llama.cpp's general
+# flags to the everyday values (README.md, "Out of the box, and what you add"). What is left is
+# what only you can say: the files, the expert cache, the second drive, the context and the chat window.
+ENVS=()   # the trained guessers' files: their tuning follows from the engine's defaults
 if [ -n "$GUESSER" ]; then
-    ENVS+=(LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER="$GUESSER" LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2
-           LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1
-           LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1)
+    ENVS+=(LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER="$GUESSER")
 fi
 if [ -n "$GUESSER1" ]; then
     ENVS+=(LLAMA_MOE_STREAM_GUESSER1="$GUESSER1")
 fi
+ARGS=(--flashnext -m "$MODEL" --moe-stream-cache "$CACHE_GIB")
+if [ "$DRIVES" = two-ssds ]; then
+    ARGS+=(--moe-stream-alt-path "$SECOND_COPY" --moe-stream-alt-split "$SECOND_SPLIT")
+fi
+if [ -n "$DRAFT_HEAD" ]; then
+    ARGS+=(-md "$DRAFT_HEAD")   # --flashnext sets the draft settings once there is a draft head
+fi
 if [ -n "$VISION" ]; then
     ARGS+=(--mmproj "$VISION")
 fi
-CACHE_RAM=(--cache-ram 0)
-if [ "${CHAT_WINDOW:-0}" != 0 ]; then
-    CACHE_RAM=(--cache-ram 400 --cache-ram-opening)   # one RAM copy of chat's opening
-fi
-ARGS+=(-c "$CONTEXT" -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on
-       --cache-reuse 0 "${CACHE_RAM[@]}" --jinja --reasoning-format deepseek)
-if [ "${CHAT_WINDOW:-0}" != 0 ]; then
-    ARGS+=(--chat-window "$CHAT_WINDOW")
-fi
+ARGS+=(-c "$CONTEXT")
+# --flashnext keeps chat's opening in RAM and opens a 90 s chat window; 0 turns the window off
+ARGS+=(--chat-window "${CHAT_WINDOW:-90}")
 ARGS+=(--host 127.0.0.1 --port "$PORT")
-CMD=(env "${ENVS[@]}" "$BIN" "${ARGS[@]}")
+# ${ENVS[@]+...}: macOS's bash 3.2 calls an empty array unbound under set -u
+CMD=(env ${ENVS[@]+"${ENVS[@]}"} "$BIN" "${ARGS[@]}")
 
 if [ "$DRY_RUN" = 1 ]; then
     printf '\nWould run:\n'

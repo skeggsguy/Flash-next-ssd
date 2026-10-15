@@ -5,7 +5,7 @@
 // each output within a half-rounding bound of the exact sum (in double, from the CPU's dequantized weights).
 // Four parts:
 //
-// - the switch and the rule, on the CPU: unset/"1" on, "0" today's route, off without the tensor API; the
+// - the switch and the rule, on the CPU: "1" on, unset/"0" today's route, off without the tensor API; the
 //   fewest columns (4 where mul_mv_ext takes the product, k a multiple of 128, else 2), the most (16), the
 //   fewest rows (2,048), Q8_0 x F32 with a column's values side by side;
 // - the route, from the pipelines the library compiles (its debug log): on, the staff kernel at 8 and 16
@@ -18,7 +18,8 @@
 // Beside them, the route's start-up line: its three texts, and one line a context from ggml_metal_init at WARN
 // (a server installs its log callback after the device init, and shows the library's INFO only at -lv 4).
 //
-// ctest runs it with the switch unset and at "0" (today's sums, which the bound holds too).
+// ctest runs it with the switch at "1", at "0" and unset (today's sums, which the bound holds too; unset is today's
+// route since 2026-10-15, the fork's proven defaults).
 
 #include "testing.h"
 
@@ -204,15 +205,18 @@ std::vector<float> first(const result & r, const product & p, int64_t n) {
 
 void test_switch(testing & t) {
     bool bad = true;
-    t.assert_equal("unset is on", 1, ggml_metal_staff_mv_parse(nullptr, &bad));
+    // off unless "1" since 2026-10-15 (the study's C-staff rung kept it off: the fork's proven defaults)
+    t.assert_equal("unset is today's route", 0, ggml_metal_staff_mv_parse(nullptr, &bad));
     t.assert_true("unset is not bad", !bad);
-    t.assert_equal("empty is on", 1, ggml_metal_staff_mv_parse("", &bad));
+    t.assert_equal("empty is today's route", 0, ggml_metal_staff_mv_parse("", &bad));
+    t.assert_true("empty is not bad", !bad);
     t.assert_equal("\"1\" is on", 1, ggml_metal_staff_mv_parse("1", &bad));
+    t.assert_true("\"1\" is not bad", !bad);
     t.assert_equal("\"0\" is today's route", 0, ggml_metal_staff_mv_parse("0", &bad));
     t.assert_true("\"0\" is not bad", !bad);
-    t.assert_equal("a word is on", 1, ggml_metal_staff_mv_parse("off", &bad));
+    t.assert_equal("a word is today's route", 0, ggml_metal_staff_mv_parse("on", &bad));
     t.assert_true("a word is bad", bad);
-    t.assert_equal("\"2\" is on", 1, ggml_metal_staff_mv_parse("2", &bad));
+    t.assert_equal("\"2\" is today's route", 0, ggml_metal_staff_mv_parse("2", &bad));
     t.assert_true("\"2\" is bad", bad);
 }
 
@@ -351,8 +355,8 @@ int main(int argc, char ** argv) {
         t.set_filter(argv[1]);
     }
     const char * env = getenv("GGML_METAL_STAFF_MV");
-    // read here, not by the parser under test: ctest sets it unset or "0"
-    const bool on = env == nullptr || strcmp(env, "0") != 0;
+    // read here, not by the parser under test: ctest sets it "1", "0" or unset (today's route since 2026-10-15)
+    const bool on = env != nullptr && strcmp(env, "1") == 0;
     printf("GGML_METAL_STAFF_MV=%s: %s\n", env ? env : "(unset)", on ? "on" : "today's route");
 
     t.test("the switch", test_switch);

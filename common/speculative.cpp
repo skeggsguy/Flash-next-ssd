@@ -14,6 +14,7 @@
 #include "speculative-rate2.h"
 #include "speculative-rate-trace.h"
 #include "spec-phase-log.h"
+#include "flashnext.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
 
@@ -1547,9 +1548,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
             SPC_TRC("%s", "adaptive draft depth enabled (draft-mtp-adaptive)\n");
 
-            const char * rate_env = std::getenv("LLAMA_SPEC_ADAPTIVE_RATE");
-            rate2_mode = rate_env != nullptr && std::strcmp(rate_env, "2") == 0;
-            rate_mode  = rate_env != nullptr && std::strcmp(rate_env, "0") != 0 && *rate_env != '\0' && !rate2_mode;
+            // the measured depth unless "0" (the fork's default from 2026-10-15, flashnext.h)
+            const int rate = common_flashnext_adaptive_rate(std::getenv("LLAMA_SPEC_ADAPTIVE_RATE"));
+            rate2_mode = rate == 2;
+            rate_mode  = rate == 1;
             if (rate2_mode) {
                 rate2_ctrl.assign(n_seq, common_speculative_rate2());
                 for (auto & r : rate2_ctrl) {

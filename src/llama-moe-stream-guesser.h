@@ -74,8 +74,9 @@ const char * llama_moe_stream_guesser_env();
 // LLAMA_MOE_STREAM_GUESSER1: the one-floor file's path, or null (unset, "" or "0")
 const char * llama_moe_stream_guesser1_env();
 
-// LLAMA_MOE_STREAM_LOOKAHEAD_CONF: the cut, or 0 for the fixed pick (unset, "" or "0"). Throws on anything that is
-// not a number in (0, 1], so a mistyped arm never runs on the fixed pick.
+// LLAMA_MOE_STREAM_LOOKAHEAD_CONF: the cut, or 0 for the fixed pick ("" or "0"); unset, 0.2 with the guesser named and
+// 0 without (llama-flashnext.h). Throws on anything that is not a number in (0, 1], so a mistyped arm never runs on
+// the fixed pick.
 float llama_moe_stream_lookahead_conf_env();
 
 // reads a guesser file for a library of n_layer floors, n_embd wide, n_expert books a floor, whose guess reads the

@@ -14,8 +14,9 @@
 // kernel column by column today), up to 16. Its sums are not today's (half columns, another order): a
 // rounding-level change, as MV16 and U-union were.
 //
-//   GGML_METAL_STAFF_MV unset or "1"   on (when the device has the Metal 4 tensor API, M5 on)
-//   GGML_METAL_STAFF_MV=0              today's route (mul_mv_ext, mul_mm past its limit)
+//   GGML_METAL_STAFF_MV=1              on (when the device has the Metal 4 tensor API, M5 on)
+//   GGML_METAL_STAFF_MV unset or "0"   today's route (mul_mv_ext, mul_mm past its limit): the fork's default from
+//                                      2026-10-15 (the study's C-staff rung kept it off; src/llama-flashnext.h)
 //
 // Read once at device init (ggml_metal_device_props.staff_mv). The start-up line says which: at INFO from the
 // device init, and again at WARN from each context's init (ggml_metal_init), since a server installs its log
@@ -37,7 +38,7 @@ extern "C" {
 #define GGML_METAL_STAFF_MV_ROWS     2048
 #define GGML_METAL_STAFF_MV_MIN_EXT  4
 
-// the switch's value: unset, empty or "1" -> 1 (on); "0" -> 0 (today's route); anything else -> 1 and *bad
+// the switch's value: "1" -> 1 (on); unset, empty or "0" -> 0 (today's route); anything else -> 0 and *bad
 // is set, so the caller can warn
 int ggml_metal_staff_mv_parse(const char * s, bool * bad);
 

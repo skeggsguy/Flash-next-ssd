@@ -8,13 +8,15 @@ window decides the turns: **chat goes first**.
 
 ## Turning it on
 
+`--flashnext` turns it on at 90 seconds, along with chat's opening copy. Without the preset:
+
 ```sh
-llama-server ... -np 1 --chat-window 300
+llama-server ... -np 1 --chat-window 90
 ```
 
 | Option | Env var | Default | What it does |
 |---|---|---|---|
-| `--chat-window N` | `LLAMA_ARG_CHAT_WINDOW` | `0` (off) | Seconds after the last chat reply during which background requests wait. The study uses 300 (5 minutes). |
+| `--chat-window N` | `LLAMA_ARG_CHAT_WINDOW` | `0` (off); **`--flashnext`**: 90 | Seconds after the last chat reply during which background requests wait. The study uses 90. |
 | `--chat-window-header NAME` | `LLAMA_ARG_CHAT_WINDOW_HEADER` | `X-Lane` | The request header that marks background requests. |
 | `--chat-window-background VALUE` | `LLAMA_ARG_CHAT_WINDOW_BACKGROUND` | `code` | The header value that means "background". |
 | `--sse-ping-interval N` | `LLAMA_ARG_SSE_PING_INTERVAL` | `30` | How often a waiting streamed request gets a keep-alive comment. |
@@ -24,7 +26,7 @@ In a `--models-preset` INI file:
 ```ini
 [flashnext]
 parallel = 1
-chat-window = 300
+chat-window = 90
 chat-window-header = X-Lane
 chat-window-background = code
 ```

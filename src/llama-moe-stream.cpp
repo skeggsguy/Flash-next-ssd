@@ -1,6 +1,7 @@
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
 #include "llama-moe-stream-statelog.h"
+#include "llama-flashnext.h"
 #include "llama-moe-room.h"
 
 #include "llama-impl.h"
@@ -82,17 +83,14 @@ llama_moe_stream::llama_moe_stream(uint32_t n_layer, uint32_t n_slots, int32_t n
     // the keep rule (llama-moe-stream-keep.cpp); the GPU slot servicer picks victims without it
     la_keep = gpu_slot == 0 && llama_moe_stream_lookahead_keep_env();
 
-    if (const char * s = std::getenv("LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB")) {
-        alloc_chunk_bytes = (size_t) std::max<int64_t>(0, std::atoll(s)) << 20;
-    }
+    // the gentle opening, and the put-back rule: on unless "0" (llama-flashnext.h, the fork's proven defaults)
+    alloc_chunk_bytes = (size_t) llama_flashnext_alloc_chunk_mib(std::getenv("LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB")) << 20;
     alloc_pause_ms = alloc_chunk_bytes > 0 ? 500 : 0;
     if (const char * s = std::getenv("LLAMA_MOE_STREAM_ALLOC_PAUSE_MS")) {
         alloc_pause_ms = std::max(0, atoi(s));
     }
 
-    if (const char * s = std::getenv("LLAMA_MOE_STREAM_LRU")) {
-        pure_lru = atoi(s) != 0; // an EMPTY value must mean off, not on
-    }
+    pure_lru = llama_flashnext_lru(std::getenv("LLAMA_MOE_STREAM_LRU"));
 
     // enough to keep every reader busy a few slabs deep, not so much that a prefetch is still
     // queued when its layer arrives

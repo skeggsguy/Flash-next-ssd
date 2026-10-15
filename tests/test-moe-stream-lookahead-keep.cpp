@@ -132,6 +132,9 @@ int main(int argc, char ** argv) {
     }
     setenv("LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2", "4", 1);
     setenv("LLAMA_MOE_STREAM_LOOKAHEAD_ALL", "1", 1);
+    // the put-back rule this was proven on (hotness): under LRU, the default since 2026-10-15, this fixture's desk
+    // puts back no guess unread with the rule off, so "the rule must be seen working" would have nothing to see
+    setenv("LLAMA_MOE_STREAM_LRU", "0", 1);
 
     outputs ref;
     check(run_writing(ref_model, ref), "no streaming: the tokens ran");

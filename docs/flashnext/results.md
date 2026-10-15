@@ -75,14 +75,20 @@ an efficiency fix, stay level within that noise).
 | Fewer undo copies (`LLAMA_RS_SKIP_SLOTS=1`) | **+4.3%** (18.07 → 18.84) | level, −2.0% (20.86 → 20.44) | C-tax, C-taxfix-chat |
 | The drive choice by load and read-thread priority (plumbing) | **+12.5%** (18.92 → 21.28) | **+10.4%** (19.14 → 21.13) | C-plumb |
 | The trained one-layer guess, on top of all the above (12 conversations each) | **+7.5%** (20.19 → 21.71) | **+7.3%** (21.16 → 22.70) | T43-code-lean, T43-chat-lean |
+| A full cache lets go the expert unused longest (LRU), not the lowest recent use count, on top of all the above (12 conversations each) | **+9.6%** (21.52 → 23.57) | **+9.7%** (22.75 → 24.96) | L44-code-lean, L44-chat-lean |
+| The same at a 24 GiB cache, against the old rule at 28 GiB: ~4.1 GiB of memory back | level, +0.4% (21.52 → 21.59) | level, +2.8% (22.75 → 23.38) | L44-code-lean, L44-chat-lean |
 | Chat's opening kept in RAM | | a new chat after coding work: first token in **4.1 s**, from 14.2 s | chat-return |
 | The pin knows chat from coding work | | with the agent first, a new chat read in 463 tokens instead of 5-7K: **3.5 s** to the first token, from 14-20 s | pin-lanes live check |
 
-The best measured arms: **21.7 tokens/s on code** and **22.7 on chat** with the one-layer guess, on
-12 conversations each (T43). Over all 24, before it: **21.2** and **21.1**, against 17.5 and 17.6 for
+The best measured arms: **23.6 tokens/s on code** and **25.0 on chat** with the LRU rule, on 12
+conversations each (L44); the L44 bases are the mean of the old rule's two runs, before and after.
+LRU cut the experts fetched from the SSD per written token by 28% (code) and 17% (chat), and gained
+most on the longest conversations (+14-15%). Before it, the one-layer guess's arms wrote 21.7 and
+22.7 (T43). Over all 24, before the one-layer guess: **21.2** and **21.1**, against 17.5 and 17.6 for
 the same sets before the trained guessers, run in another week: about +21% and +20%. None of these
-changes alters an output token (the guessers change only what is fetched early; the one-layer guess,
-the undo copies and the plumbing passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
+changes alters an output token (the guessers change only what is fetched early, LRU only what the
+cache holds; the one-layer guess, the undo copies, the plumbing and LRU passed byte-identical word
+checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
 from 20%. The one-layer guess wastes less drive time: 65-71% of its early fetches are used,
 against 30-32% for the borrowed guess, and the fetches per token that are never used fall from about
 42 to 7-8.
@@ -94,6 +100,13 @@ missing expert from both drives at once (`LLAMA_MOE_STREAM_SPLIT`; the GPU's wai
 move, T11b-probe), and a lookup draft that copies the words that followed the same words earlier in
 the conversation (best setting −0.06% on code in a replay of recorded rounds, under the +3% bar;
 lookup replay).
+
+From this release the switches behind these changes are the engine's defaults (the trained
+guessers' tuning as soon as their files are named), and `--flashnext` sets llama.cpp's options to
+the everyday values, the chat window (90 s) and chat's opening copy included
+([Settings](settings.md#defaults-and---flashnext)). The study's own server runs exactly that, plus
+the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
+cache, the draft head, both guessers and the second SSD.
 
 ## Expert cache size (draft head off)
 

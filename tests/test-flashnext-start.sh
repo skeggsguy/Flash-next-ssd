@@ -23,7 +23,7 @@ cp "$SRC/tools/flashnext/launchd/"* "$R/tools/flashnext/launchd/"
 cp "$SRC/flashnext.conf.example" "$SRC/"*.command "$R/"
 cat > "$R/build/bin/llama-server" <<'EOF'
 #!/bin/bash
-echo "FAKE-SERVER ADAPTIVE=${LLAMA_SPEC_ADAPTIVE_RATE:-unset} CHUNK=${LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB:-unset} $*"
+echo "FAKE-SERVER ADAPTIVE=${LLAMA_SPEC_ADAPTIVE_RATE:-unset} CHUNK=${LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB:-unset} GUESSER=${LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER:-unset} GUESSER1=${LLAMA_MOE_STREAM_GUESSER1:-unset} $*"
 EOF
 cat > "$T/stub/pgrep" <<'EOF'
 #!/bin/bash
@@ -96,14 +96,23 @@ BIN=$(Q "$R/build/bin/llama-server")
 conf
 run internal --dry-run
 code "internal dry run" 0
+# The engine's own defaults and --flashnext carry the everyday values (README.md, "Out of the
+# box, and what you add"): the command names only the files, the expert cache and the machine's choices.
 has "internal command" "Would run:
-env LLAMA_SPEC_ADAPTIVE_RATE=1 LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096 GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000 GGML_METAL_STAFF_MV=0 LLAMA_RS_SKIP_SLOTS=1 LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_LOOKAHEAD_CONF=0.2 LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 LLAMA_MOE_STREAM_LOOKAHEAD_ALL=1 LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=1 LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf $BIN -m $T/models/m1.gguf -ngl 99 --moe-stream --moe-stream-cache 28 --moe-stream-io-threads 8 --moe-stream-direct -md $T/models/head.gguf --spec-draft-ngl 99 --spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-max-prompt 0 --mmproj $T/models/eyes.gguf -c 200000 -b 4096 -ub 4096 -cms 8192 -ctxcp 3 -np 1 -fa on --cache-reuse 0 --cache-ram 400 --cache-ram-opening --jinja --reasoning-format deepseek --chat-window 300 --host 127.0.0.1 --port $FREE_PORT "
+env LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$T/models/guess.gguf LLAMA_MOE_STREAM_GUESSER1=$T/models/guess1.gguf $BIN --flashnext -m $T/models/m1.gguf --moe-stream-cache 28 -md $T/models/head.gguf --mmproj $T/models/eyes.gguf -c 200000 --chat-window 90 --host 127.0.0.1 --port $FREE_PORT "
+for now_default in LLAMA_SPEC_ADAPTIVE_RATE LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB GGML_METAL_RESIDENCY_KEEP_ALIVE_S \
+        GGML_METAL_STAFF_MV LLAMA_RS_SKIP_SLOTS LLAMA_MOE_STREAM_LOOKAHEAD_CONF LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2 \
+        LLAMA_MOE_STREAM_LOOKAHEAD_ALL LLAMA_MOE_STREAM_LOOKAHEAD_KEEP LLAMA_MOE_STREAM_LRU \
+        " -ngl " "--moe-stream-direct" "--moe-stream-io-threads" " -b " " -ub " " -cms " " -ctxcp " " -np " " -fa " \
+        "--cache-reuse" "--jinja" "--reasoning-format" "--spec-"; do
+    lacks "the engine or --flashnext sets $now_default" "$now_default"
+done
 lacks "internal leaves the second drive out" "--moe-stream-alt"
 
 # --- The command, two SSDs ------------------------------------------------------------------
 run two-ssds --dry-run
 code "two-ssds dry run" 0
-has "two-ssds command" "--moe-stream-direct --moe-stream-alt-path $T/models/copy1.gguf --moe-stream-alt-split 53 -md "
+has "two-ssds command" "--moe-stream-cache 28 --moe-stream-alt-path $T/models/copy1.gguf --moe-stream-alt-split 53 -md "
 
 # --- The .command files pass the right switch -------------------------------------------
 OUT=$("$R/Start Flash-Next.command" --dry-run 2>&1); CODE=$?
@@ -123,9 +132,9 @@ has "split setting" "--moe-stream-alt-split 60 "
 
 conf "CHAT_WINDOW=0"
 run internal --dry-run
-lacks "chat window 0 is off" "--chat-window"
-has "chat window 0: no opening copy" " --cache-ram 0 --jinja "
-lacks "chat window 0: no opening copy flag" "--cache-ram-opening"
+has "chat window 0 is off" " --chat-window 0 "
+lacks "the opening copy is --flashnext's" "--cache-ram"
+has "chat window 0: the context, the window, then the address" " -c 200000 --chat-window 0 --host 127.0.0.1 "
 
 conf "GUESSER="
 run internal --dry-run
@@ -176,8 +185,16 @@ run internal --dry-run
 code "no draft head" 0
 lacks "no draft head: no -md" " -md "
 lacks "no draft head: no --spec" "--spec-"
-lacks "no draft head: no measured depth" "LLAMA_SPEC_ADAPTIVE_RATE"
-lacks "no draft head: all undo copies" "LLAMA_RS_SKIP_SLOTS"
+has "no draft head: still the preset" " --flashnext -m "
+
+# Without either guesser the command sets no switch at all: an empty list must not trip
+# macOS's bash 3.2, which calls an empty array unbound under set -u.
+conf "GUESSER=" "GUESSER1="
+run internal
+code "no guessers at all: starts" 0
+has "no guessers at all: the server runs" "FAKE-SERVER ADAPTIVE=unset CHUNK=unset GUESSER=unset GUESSER1=unset --flashnext -m "
+run internal --dry-run
+has "no guessers at all: a bare env" "env $BIN --flashnext "
 
 conf 'MODEL="~/tilde.gguf"'
 run internal --dry-run
@@ -274,9 +291,9 @@ lacks "at login, later" "waiting"
 conf
 run two-ssds
 code "real start" 0
-has "real start runs the server" "FAKE-SERVER ADAPTIVE=1 CHUNK=4096 -m $T/models/m1.gguf -ngl 99 "
+has "real start runs the server" "FAKE-SERVER ADAPTIVE=unset CHUNK=unset GUESSER=$T/models/guess.gguf GUESSER1=$T/models/guess1.gguf --flashnext -m $T/models/m1.gguf --moe-stream-cache 28 "
 has "real start, same flags" "--moe-stream-alt-split 53 -md $T/models/head.gguf"
-has "real start, chat window" "--chat-window 300 --host 127.0.0.1 --port $FREE_PORT"
+has "real start, chat window" "--chat-window 90 --host 127.0.0.1 --port $FREE_PORT"
 
 unset FLASHNEXT_CONF
 run internal --dry-run

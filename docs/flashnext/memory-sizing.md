@@ -60,7 +60,7 @@ To estimate it for another context length:
 
 The reading room (about 1.4 GiB) is carved out of the expert cache, not added to it. Without the
 draft head, take off about 1 GiB plus most of the recurrent-state copies. `-np` above 1 adds a
-whole working-memory set per slot. `--cache-ram` (default 8 GiB) comes on top unless set to 0.
+whole working-memory set per slot. `--cache-ram` (upstream's default 8 GiB) comes on top; `--flashnext` sets it to 400 MiB, for chat's opening only.
 
 These estimates come out a little above what was measured wired at the everyday setting (below),
 so treat them as a safe upper bound.
@@ -72,6 +72,7 @@ Wired limit 59,392 MiB (58 GiB) in every run.
 | Expert cache | With | Result |
 |---|---|---|
 | **28 GiB** | draft head on, 200K context, 3 checkpoints | **The everyday setting.** About 41-42 GiB wired in all. The Mac then runs at memory level ~33 for hours; the study's final 120-conversation run at this setting had one small spill, caused from outside (below). |
+| 24 GiB | draft head on, the LRU rule (the default) | As fast as the old rule at 28 GiB (+0.4% coding, +2.8% chat), with ~4.1 GiB of the server's memory back: 39.5-39.7 GiB at its peak, against 43.6-43.8 at 28 (the study's peak for the whole server, a different measure from the wired figure above). |
 | 30 GiB | draft head off, long prompts | Safe in the tests. |
 | 32 GiB | draft head off, 96K context | The ceiling without the draft head: +8.6% writing over 28 GiB. Long prompts at 32 took the memory level down to 16-22, so use 30 for long prompts. |
 | 36 GiB | draft head off | **Too big.** The early brake stopped one run (memory level 12 for 10 s), and another swapped as it opened. |
@@ -83,7 +84,8 @@ during a long prompt, under the study's 2 GiB bar. Swap stayed at 0, but neither
 What tipped the everyday setting over, once: during a long run, Xcode and Apple's on-device
 inference service woke and the compressed-memory pool jumped by ~400 MB in two seconds, and 16 pages
 went to swap. At 28 GiB the Mac has little to spare, so **close heavy apps** (Xcode, browsers with
-many tabs, other models) while the server runs, or use 26 GiB if you need them open.
+many tabs, other models) while the server runs, or use 24 GiB if you need them open: with the LRU
+rule that costs 6-8% writing against 28, and is as fast as 28 was before it.
 
 ## 48 GB Macs: a starting point (untested)
 
@@ -93,7 +95,8 @@ Nothing here was measured on a 48 GB Mac. Working from the table above:
   30 GiB in all.
 - With a 64K context and 3 checkpoints, everything but the cache is about 12.3 GiB (estimate), which
   leaves about **16-18 GiB** for the expert cache.
-- **Start at `--moe-stream-cache 16 -c 65536 -ctxcp 3`**, with the draft head on and `--cache-ram 0`.
+- **Start at `--flashnext --moe-stream-cache 16 -c 65536`**, with the draft head on (`--flashnext`
+  brings `-ctxcp 3` and `--cache-ram 400`).
   macOS's default wired limit is 75% of RAM, so 36 GiB (36,864 MiB) on a 48 GB Mac, which already
   covers ~30 GiB; if loading fails with a GPU allocation error, raise it in small steps (for example
   `sudo sysctl iogpu.wired_limit_mb=40960`) rather than to the maximum.
@@ -109,11 +112,12 @@ from the SSD. Two drives help more here, since they make each miss cheaper.
 Most of the study's swap events happened in the first seconds after the server loads, when it
 claims the whole cache at once and macOS has to compress other memory just as fast.
 
-- Set `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096` so the cache is claimed in 4 GiB steps with short pauses.
+- The engine claims the cache in 4 GiB steps with short pauses (`LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB`,
+  4096 unless set; `0` claims it all at once, the old way).
 - Check `vm_stat`'s "Pages stored in compressor" before a big start. The compressed pool grows
   with long prompts and does not drain by itself. One 28 GiB start spilled from a steady 124K pages
   stored; keep it near 90K or less, and run `sudo purge` or reboot if it is larger.
 - Don't start a big cache in the first ~10 minutes after a reboot, while macOS is still busy.
-- Keep the model wired between requests (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000`). Otherwise
-  Metal un-wires it after 3 idle minutes and wires ~41 GiB back in one go on the next request: a
-  small repeat of the opening rush.
+- The engine keeps the model wired between requests (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S`,
+  10000000 s unless set). With `0`, upstream's 3 minutes, Metal un-wires it after 3 idle minutes
+  and wires ~41 GiB back in one go on the next request: a small repeat of the opening rush.

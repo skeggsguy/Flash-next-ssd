@@ -4,6 +4,7 @@
 #include "chat.h"
 #include "common.h"
 #include "download.h"
+#include "flashnext.h"
 #include "json-schema-to-grammar.h"
 #include "json.h"
 #include "llama.h"
@@ -715,7 +716,9 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
 // apply config files (if present), a later file overrides an earlier one:
 // 1. system-wide: /etc/llama.cpp/config.ini (%PROGRAMDATA%\llama.cpp\config.ini on windows)
 // 2. user-level: ${XDG_CONFIG_HOME:-~/.config}/llama.cpp/config.ini (%APPDATA%\llama.cpp\config.ini on windows)
-static void common_params_apply_system_config(common_params & params, llama_example ex) {
+// returns the first spelling (`args[0]`) of every option the files set, so --flashnext leaves them alone
+static std::set<std::string> common_params_apply_system_config(common_params & params, llama_example ex) {
+    std::set<std::string> given;
     std::vector<std::string> paths;
 
 #if defined(_WIN32)
@@ -741,7 +744,7 @@ static void common_params_apply_system_config(common_params & params, llama_exam
         }
     }
     if (found.empty()) {
-        return;
+        return given;
     }
 
     common_preset_context ctx(ex);
@@ -751,11 +754,22 @@ static void common_params_apply_system_config(common_params & params, llama_exam
         common_preset global;
         common_presets presets = ctx.load_from_ini(path, global);
         global.apply_to_params(params);
+        for (const auto & kv : global.options) {
+            if (!kv.first.args.empty()) {
+                given.insert(kv.first.args[0]);
+            }
+        }
         auto it = presets.find(COMMON_PRESET_DEFAULT_NAME);
         if (it != presets.end()) {
             it->second.apply_to_params(params);
+            for (const auto & kv : it->second.options) {
+                if (!kv.first.args.empty()) {
+                    given.insert(kv.first.args[0]);
+                }
+            }
         }
     }
+    return given;
 }
 
 static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
@@ -764,8 +778,9 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // setup log directly from params.verbosity: see tools/cli/cli.cpp
     common_log_set_verbosity_thold(params.verbosity);
 
-    // config file applies first, so env variables and CLI arguments override it
-    common_params_apply_system_config(params, ctx_arg.ex);
+    // config file applies first, so env variables and CLI arguments override it; `given` collects the first
+    // spelling of every option set by any of the three, which --flashnext leaves as the user set it
+    std::set<std::string> given = common_params_apply_system_config(params, ctx_arg.ex);
 
     std::unordered_map<std::string, std::pair<common_arg *, bool>> arg_to_options;
     for (auto & opt : ctx_arg.options) {
@@ -781,6 +796,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     for (auto & opt : ctx_arg.options) {
         std::string value;
         if (opt.get_value_from_env(value)) {
+            given.insert(opt.args[0]);
             try {
                 if (opt.handler_void && is_truthy(value)) {
                     opt.handler_void(params);
@@ -832,6 +848,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
             auto & tmp = arg_to_options[arg];
             auto opt = *tmp.first;
             bool is_positive = tmp.second;
+            given.insert(opt.args[0]);
             if (opt.has_value_from_env()) {
                 fprintf(stderr, "warn: %s environment variable is set, but will be overwritten by command line argument %s\n", opt.env, arg.c_str());
             }
@@ -875,6 +892,14 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
 
     // parse all CLI args now, so that -hf is available below for remote preset resolution
     parse_cli_args();
+
+    // --flashnext: the everyday values where the user set nothing, after every source of flags (flashnext.h)
+    if (params.flashnext) {
+        common_flashnext_apply(params, [&](const std::string & name) -> const common_arg * {
+            auto it = arg_to_options.find(name);
+            return it == arg_to_options.end() ? nullptr : it->second.first;
+        }, given);
+    }
 
     postprocess_cpu_params(params.cpuparams,       nullptr);
     postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
@@ -2796,6 +2821,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_DENSE_REGEX, params.tensor_buft_overrides);
         }
     ).set_env("LLAMA_ARG_N_CPU_FFN"));
+    add_opt(common_arg(
+        {"--flashnext"},
+        "the Flash-Next everyday settings, each only where you did not set that flag yourself (on the command "
+        "line, as its LLAMA_ARG_* or in a config file): " + common_flashnext_preset_str() + "; the desk "
+        "(--moe-stream-cache), the model files and the draft head (-md) stay yours",
+        [](common_params & params) {
+            params.flashnext = true;
+        }
+    ).set_env("LLAMA_ARG_FLASHNEXT"));
     add_opt(common_arg(
         {"--moe-stream"},
         "stream Mixture of Experts (MoE) routed expert weights from disk on demand",

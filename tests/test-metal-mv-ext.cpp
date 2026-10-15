@@ -15,7 +15,8 @@
 //
 // ctest runs it twice: GGML_METAL_MV_EXT_MAX unset (16) and =8.
 //
-// STAFF-MATRIX-PLAN step 2 (#23): with GGML_METAL_STAFF_MV on (unset), Q8_0 on 2,048+ rows at 4-16 columns
+// STAFF-MATRIX-PLAN step 2 (#23): with GGML_METAL_STAFF_MV on ("1"; it was on unset until 2026-10-15), Q8_0 on
+// 2,048+ rows at 4-16 columns
 // takes the staff mat-vec (ggml-metal-staff-mv.h), whatever this limit, and its columns' bytes do not depend
 // on the columns beside them, so 9-16 columns there are the bytes of two small batches. ctest also runs it
 // at 16 with GGML_METAL_STAFF_MV=0.
@@ -204,7 +205,7 @@ int main(int argc, char ** argv) {
                            ggml_metal_mv_ext_max_parse(env, nullptr);
     printf("GGML_METAL_MV_EXT_MAX=%s: up to %d columns\n", env ? env : "(unset)", mv_ext_max);
     const char * staff_env = getenv("GGML_METAL_STAFF_MV");
-    const bool staff_mv = staff_env == nullptr || strcmp(staff_env, "0") != 0;
+    const bool staff_mv = staff_env != nullptr && strcmp(staff_env, "1") == 0; // off unset since 2026-10-15
     printf("GGML_METAL_STAFF_MV=%s: the staff mat-vec %s\n", staff_env ? staff_env : "(unset)", staff_mv ? "on" : "off");
 
     t.test("the switch", test_switch);

@@ -4,6 +4,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
+#include "flashnext.h"
 #include "log.h"
 #include "llama.h"
 #include "sampling.h"
@@ -404,6 +405,8 @@ void common_params_print_info(const common_params & params, bool print_devices) 
 
     const int verbosity = common_log_get_verbosity_thold();
     COM_INF("%s: verbosity = %d (adjust with the `-lv N` CLI arg)\n", __func__, verbosity);
+    // the fork's defaults in force and the preset (flashnext.h): first word "flashnext:", never a desk line's
+    COM_INF("%s\n", common_flashnext_load_line(params).c_str());
 
     // device enumeration creates a primary context on CUDA backends, skip it when the caller does not own any device
     if (print_devices && verbosity >= LOG_LEVEL_TRACE) {

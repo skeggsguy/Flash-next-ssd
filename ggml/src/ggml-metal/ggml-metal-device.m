@@ -7,6 +7,7 @@
 #import "ggml-metal-common.h"
 #import "ggml-metal-mv-ext.h"
 #import "ggml-metal-staff-mv.h"
+#import "ggml-metal-keep-alive.h"
 
 #include <Foundation/Foundation.h>
 
@@ -1382,17 +1383,8 @@ ggml_metal_rsets_t ggml_metal_rsets_init(ggml_metal_device_t dev) {
     res->lock = [[NSLock alloc] init];
     res->data = [[NSMutableArray alloc] init];
 
-    // by default keep the memory wired for 3 minutes
-    res->keep_alive_s = 3*60;
-
-    const char * GGML_METAL_RESIDENCY_KEEP_ALIVE_S = getenv("GGML_METAL_RESIDENCY_KEEP_ALIVE_S");
-    if (GGML_METAL_RESIDENCY_KEEP_ALIVE_S) {
-        res->keep_alive_s = atoi(GGML_METAL_RESIDENCY_KEEP_ALIVE_S);
-    }
-
-    if (res->keep_alive_s <= 0) {
-        res->keep_alive_s = 3*60;
-    }
+    // keep the memory wired for ~115 days unless told otherwise; "0" is upstream's 3 minutes (ggml-metal-keep-alive.h)
+    res->keep_alive_s = ggml_metal_keep_alive_parse(getenv("GGML_METAL_RESIDENCY_KEEP_ALIVE_S"));
 
     res->time_per_loop_ms = 5;
     res->loops_per_s = 1000/res->time_per_loop_ms;
@@ -1707,7 +1699,7 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                     bool bad = false;
                     dev->props.staff_mv = ggml_metal_staff_mv_parse(getenv("GGML_METAL_STAFF_MV"), &bad);
                     if (bad) {
-                        GGML_LOG_WARN("%s: GGML_METAL_STAFF_MV=%s is not 0 or 1: on\n", __func__, getenv("GGML_METAL_STAFF_MV"));
+                        GGML_LOG_WARN("%s: GGML_METAL_STAFF_MV=%s is not 0 or 1: off\n", __func__, getenv("GGML_METAL_STAFF_MV"));
                     }
                 }
 

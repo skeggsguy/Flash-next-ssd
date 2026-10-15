@@ -4,6 +4,7 @@
 
 #include "llama-moe-stream-guesser.h"
 
+#include "llama-flashnext.h"
 #include "llama-impl.h"
 #include "llama-moe-stream.h"
 
@@ -34,21 +35,12 @@ size_t llama_moe_stream_guesser::nbytes() const {
 
 const char * llama_moe_stream_guesser_env() {
     const char * s = std::getenv("LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER");
-    return s != nullptr && *s != '\0' ? s : nullptr;
+    return llama_flashnext_guesser_named(s) ? s : nullptr;
 }
 
+// the parse and its default (0.2 with the guesser named, else 0) are llama-flashnext.cpp's
 float llama_moe_stream_lookahead_conf_env() {
-    const char * s = std::getenv("LLAMA_MOE_STREAM_LOOKAHEAD_CONF");
-    if (s == nullptr || *s == '\0' || strcmp(s, "0") == 0) {
-        return 0.0f;
-    }
-    char * end = nullptr;
-    errno = 0;
-    const float cut = std::strtof(s, &end);
-    if (errno != 0 || end == s || *end != '\0' || !(cut > 0.0f && cut <= 1.0f)) {
-        throw std::runtime_error(format("LLAMA_MOE_STREAM_LOOKAHEAD_CONF=%s is not a confidence cut in (0, 1]", s));
-    }
-    return cut;
+    return llama_flashnext_lookahead_conf(std::getenv("LLAMA_MOE_STREAM_LOOKAHEAD_CONF"), llama_moe_stream_guesser_env() != nullptr);
 }
 
 namespace {

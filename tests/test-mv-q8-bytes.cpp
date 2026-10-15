@@ -26,7 +26,8 @@
 // STAFF-MATRIX-PLAN step 2 (#23, the staff's Q8_0 mat-vec on the matrix units, GGML_METAL_STAFF_MV) adds Q8_0
 // MUL_MAT at n = 2..16 on 37 and 4,099 rows (k 640 and 2,560) and a broadcast batch: against the build before
 // it (build/bin.4d080cede: ggml is unchanged from there to b4745dbc3), every line must list the same hash at
-// "0"; with the switch unset, only the 4,099-row lines at 4-16 columns may differ (the staff kernel's sums).
+// "0"; with the switch on, only the 4,099-row lines at 4-16 columns may differ (the staff kernel's sums). On was
+// unset until 2026-10-15; it is "1" since (unset is today's route, the fork's proven defaults).
 
 #include "testing.h"
 

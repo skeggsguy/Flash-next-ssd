@@ -3,6 +3,7 @@
 #include "ggml-backend.h"
 #include "llama.h"
 
+#include "../src/llama-flashnext.h"
 #include "../src/llama-io.h"
 #include "../src/llama-memory.h"
 
@@ -88,11 +89,11 @@ static llama_context * make_ctx(const common_params & params, llama_model * mode
     return init_ctx(model, cparams, fill);
 }
 
-// LLAMA_RS_SKIP_SLOTS=1 (the ceiling tax, src/llama-rs-skip.h): a round writes only the undo slots a
-// rollback after it can reach, and a rollback past the last round is refused
+// LLAMA_RS_SKIP_SLOTS (the ceiling tax, src/llama-rs-skip.h; unset or "1" on since 2026-10-15): a round writes
+// only the undo slots a rollback after it can reach, and a rollback past the last round is refused. Read with the
+// engine's own parser, so the harness expects what the engine does
 static bool rs_skip_slots() {
-    const char * v = getenv("LLAMA_RS_SKIP_SLOTS");
-    return v != nullptr && strcmp(v, "1") == 0;
+    return llama_flashnext_rs_skip_slots(getenv("LLAMA_RS_SKIP_SLOTS"));
 }
 
 static float logit_diff(float a, float b) {

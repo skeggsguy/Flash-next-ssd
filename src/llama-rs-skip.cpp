@@ -1,11 +1,12 @@
 #include "llama-rs-skip.h"
 
+#include "llama-flashnext.h"
 #include "llama-impl.h"
 
 #include <cstring>
 
 bool llama_rs_skip_slots_parse(const char * value) {
-    return value != nullptr && std::strcmp(value, "1") == 0;
+    return llama_flashnext_rs_skip_slots(value); // unset: on, the fork's default
 }
 
 bool llama_rs_skip_slots_init(const char * value, uint32_t n_rs_seq) {
