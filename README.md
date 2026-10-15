@@ -82,13 +82,6 @@ Put a byte-identical copy of the model on a second SSD and the expert reads are 
 over Thunderbolt 5 (5.7 GB/s) give 12.3 GB/s together. That made writing 15% faster and cut the time
 to first token by 31%.
 
-**New in October, the plumbing:** each read now goes to whichever drive has fewer reads waiting (the
-53/47 split by expert id only breaks ties), where before an expert's drive was fixed by its id, so
-one drive could queue while the other sat idle. The read threads also run at macOS's interactive
-priority. Together: **+12.5% writing on the coding set and +10.4% on chat**, and the GPU waits on the
-SSDs 15% of the time instead of 20%. Both are on by default (`LLAMA_MOE_STREAM_DYN_DRIVE=0` and
-`LLAMA_MOE_STREAM_QOS=0` turn them off); they change only where bytes are read from, never which.
-
 <p align="center"><img src="media/flashnext/two-ssds.svg" width="760" alt="Gain from a second SSD: reading in +40% before the reading room and +15% after; writing +15%; time to first word −31% to −33%"></p>
 
 ### The MTP draft head, at a depth it measures for itself
@@ -100,12 +93,6 @@ depth from how often recent guesses were kept; that measured depth is the engine
 how many guesses were kept). On the agent conversations (tool calls,
 code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
 its own experts fetched.
-
-**New in October, fewer undo copies:** before each check, the model saves copies of its running
-(recurrent) state so it can roll back the guesses it rejects. It used to save every slot each round;
-now it saves only the slots a rollback can actually reach. Coding: **+4.3% writing**; chat: level
-(−2.0%, within the runs' noise). Output is byte-identical. It is on by default
-(`LLAMA_RS_SKIP_SLOTS=0` saves every slot again).
 
 ### Union attention
 
@@ -123,19 +110,6 @@ then wait until 90 seconds after the last chat reply. Only the background client
 header (`X-Lane: code`). `--flashnext` turns it on at 90 s (`--chat-window 90`); with no such client
 it changes nothing.
 
-**New in October, chat's opening kept in RAM:** a coding agent's long conversation fills the prompt
-cache, so a new chat used to read its opening (system prompt and tools, ~4,200 tokens) in again.
-`--cache-ram 400 --cache-ram-opening` (both set by `--flashnext`) keeps one RAM copy of chat's
-opening only (~232 MiB), never the agent's. A new chat after coding work then starts writing in
-**4.1 s instead of 14.2 s**.
-
-**Fixed in this update:** when the coding agent had the server first, the opening's pin landed at
-token 3, where chat's prompt and the agent's part ways. The RAM copy then held almost nothing (3 of
-5,864 tokens), and every new chat read in 5-7K tokens again (14-20 s). The pin now knows whether a
-chat follows the agent's work, and then pins at the chat's first message. In a live check after a
-73K-token coding prompt, the next new chat read in 463 tokens and started writing in **3.5 s**. The
-first new chat after each start still reads its opening once, since nothing has saved it yet.
-
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
 
 ### And smaller wins, all on by default
@@ -145,6 +119,7 @@ first new chat after each start still reads its opening once, since nothing has 
   long one resumes in 4 s instead of 14 s.
 - Cheaper per-layer stops: less locking and lookup at each layer, the next layer's GPU work encoded
   ahead, and a tiny keep-awake ping so the GPU does not power down while it waits (+7% writing).
+  
 ## Quick start
 
 **What you need:** an Apple Silicon Mac with 64 GB, about 115 GB free on the internal SSD, Xcode's
