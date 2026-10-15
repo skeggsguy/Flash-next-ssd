@@ -60,22 +60,8 @@ evicted from the cache before their layer comes. Two small trained guessers on
 [crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) fix both. Each was trained on the
 model's own routing while it wrote real replies.
 
-- **The two-layer guesser** (`c1-guesser.gguf`, 121 MB) runs on every layer: on layer n it scores all
-  512 experts of layer n+2 and fetches the confident ones (above 0.2), so the SSD has two layers'
-  time. 84% of its fetches are used.
-- **The one-layer guesser** (`c1-guesser-gap1.gguf`, 123 MB) replaces the engine's own guess for the
-  next layer and tops up what the two-layer guess missed. Its top 10 hold 73-77% of the experts the
-  next layer uses, against 61-65% for the engine's own, and 65-71% of its fetches are used.
-- **The keep rule** keeps every guessed expert in the cache until its layer has run, so a right
-  guess is never evicted unread. It is on whenever the two-layer guesser is
-  (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=0` turns it off).
-
 Together: **about +12% writing on the coding set and +16% on chat**, against the engine's own guess
-without the keep rule. That is an estimate. The two-layer guesser was measured first (+4.2% coding,
-+8.2% chat), then the one-layer guesser on top of it another day (+7.5% and +7.3%), and the combined
-figures multiply the two. Neither guesser changes which experts are used, only which are fetched early,
-so the output is unchanged. Both are off unless you point the engine at the files (Quick start,
-steps 2 and 4).
+without the keep rule.
 
 <p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the two-layer guesser fetches experts two layers ahead, the one-layer guesser tops up a layer later, and each guess is kept until its layer runs; 84% and 65-71% of guesses used. Writing about +12% coding and +16% chat, estimated from two runs"></p>
 
