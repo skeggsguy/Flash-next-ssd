@@ -76,6 +76,11 @@ void llama_moe_stream_desk_first_remap(ggml_tensor * dst, int ith, int nth, void
 // is the floor's llama_moe_stream_lookahead
 void llama_moe_stream_desk_first_remap_la(ggml_tensor * dst, int ith, int nth, void * userdata);
 
+// A decode that ended before its graph's gates ran (aborted by the abort callback right after a stop, or failed) left
+// floors armed, with guesses and a stop line held for gates that will never run: clear them all, so the next decode's
+// stops do not trip the armed check (llama_context::graph_compute calls this on any status but success).
+void llama_moe_stream_desk_first_reset(llama_moe_stream & mgr);
+
 // The gate fn (ggml_backend_metal_set_moe_gate): gate_userdata is the floor. On the graph thread, after the desk's
 // books were sent and before the arrivals' are.
 void llama_moe_stream_desk_first_gate(void * user_data, void * gate_userdata);

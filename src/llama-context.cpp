@@ -2639,6 +2639,10 @@ ggml_status llama_context::graph_compute(
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+        if (cparams.moe_desk_first) {
+            // the graph stopped before its gates ran: no floor is waiting for one (llama-moe-stream-desk-first.h)
+            llama_moe_stream_desk_first_reset(*model.moe_stream());
+        }
     }
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));

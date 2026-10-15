@@ -191,6 +191,17 @@ void llama_moe_stream_desk_first_gate(void * user_data, void * gate_userdata) {
     }
 }
 
+void llama_moe_stream_desk_first_reset(llama_moe_stream & mgr) {
+    for (auto & sl : mgr.layers) {
+        if (sl) {
+            sl->df.armed    = false;
+            sl->df.held     = false;
+            sl->df.rec_held = false;
+            sl->demand_slots.clear();
+        }
+    }
+}
+
 void llama_moe_stream_desk_first_print(const llama_moe_stream_stats & s, const llama_moe_stream_stats * prev) {
     static const llama_moe_stream_stats zero;
     const llama_moe_stream_stats & p = prev != nullptr ? *prev : zero;

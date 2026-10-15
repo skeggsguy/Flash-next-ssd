@@ -13,6 +13,8 @@
 //   desk    off and on leave the same book in every slot, the same LRU stamps, hotness and counts
 //   CPU     -ngl 0 (a desk the GPU does not read): desk books first stays off and the bytes are the same
 //   off     with the state log or the GPU slot check on, desk books first stays off
+//   abort   a decode abandoned between a floor's stop and its gate (the abort callback fires right after the stop)
+//           returns 2, and the next decode on the same context runs and gives a fresh context's bytes
 // A gate that returns before the arrivals land turns "same" red (mutation, by hand).
 //
 // --stops: the floor-stop log and the stats lines instead (run_stops says what it checks).
@@ -232,6 +234,51 @@ int run_stops(const config & c, int64_t delay) {
     return finish();
 }
 
+#ifdef DF_BUILT
+// the abort callback fires once, right after the first desk-first stop: the graph ends there and the gate never runs
+struct abort_once { llama_moe_stream * ms; bool fired = false; };
+
+void check_abandoned(const config & c) {
+    setenv(ENV_DF, "1", 1);
+    llama_model * m = load(c);
+    unsetenv(ENV_DF);
+    check(m != nullptr, "abandon: model loaded");
+    if (m == nullptr) { return; }
+    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(m));
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = 256, cp.n_batch = cp.n_ubatch = 64, cp.op_offload = false;
+    setenv(ENV_DF, "1", 1);
+    llama_context * ctx = llama_init_from_model(m, cp);
+    llama_context * ref = llama_init_from_model(m, cp);
+    unsetenv(ENV_DF);
+    abort_once ab = { m->moe_stream() };
+    check(ctx != nullptr && ref != nullptr, "abandon: contexts opened");
+    if (ctx != nullptr && ref != nullptr) {
+        llama_set_abort_callback(ctx, [](void * d) {
+            auto * a = (abort_once *) d;
+            const bool go = !a->fired && a->ms->stats.n_df_stops > 0;
+            a->fired = a->fired || go;
+            return go;
+        }, &ab);
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        auto one = [&](llama_context * x) { common_batch_clear(batch); common_batch_add(batch, 5, 0, { 0 }, true);
+                return llama_decode(x, batch); };
+        const int r_abort = one(ctx);
+        llama_set_abort_callback(ctx, nullptr, nullptr);
+        check(ab.fired && r_abort == 2, "abandon: the decode was aborted between a stop and its gate");
+        llama_memory_clear(llama_get_memory(ctx), true);
+        const int r_next = one(ctx); // a stale armed floor aborts the process here
+        const int r_ref  = one(ref);
+        check(r_next == 0 && r_ref == 0 && memcmp(llama_get_logits(ctx), llama_get_logits(ref), n_vocab*sizeof(float)) == 0,
+                "abandon: the next decode on the same context ran, with a fresh context's logits byte for byte");
+        llama_batch_free(batch);
+    }
+    llama_free(ctx);
+    llama_free(ref);
+    llama_model_free(m);
+}
+#endif
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -342,5 +389,10 @@ int main(int argc, char ** argv) {
                 "CPU desk: desk books first stays off (no stop, no gate)");
         check(on.desk == off.desk, "CPU desk: the same desk as off");
     }
+#ifdef DF_BUILT
+    if (gpu) {
+        check_abandoned(c);
+    }
+#endif
     return finish();
 }
