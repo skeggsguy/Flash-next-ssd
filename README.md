@@ -23,9 +23,10 @@ and chat conversations. Any run that touched swap was thrown out, not just marke
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
 > **These numbers are with all the extras on.** That means `--flashnext`, a 28 GiB expert cache,
-> the MTP draft head, both trained guessers, a second SSD, and the study's own draft-head token list
-> (which isn't published, see [What you add](#what-you-add)). Leave an extra off and you'll be
-> slower. The table below shows roughly how much each one is worth.
+> the MTP draft head, both trained guessers and a second SSD. They were also measured with a
+> draft-head token list, which the study has since dropped (worth about 2%, see the last row
+> below). Leave an extra off and you'll be slower. The table below shows roughly how much each one
+> is worth.
 
 | Extra | What it's worth | Without it |
 |---|---|---|
@@ -34,7 +35,7 @@ and chat conversations. Any run that touched swap was thrown out, not just marke
 | The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
 | The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
 | A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
-| The study's token list (not published) | **+2.6%** writing | Build your own, or go without |
+| A draft-head token list (optional, not supplied) | **+2.7%** chat, **+1.5%** coding (October re-test) | What the study runs now: in October it dropped its list, too small a gain to keep an extra file for. Build one if you want it ([Settings](docs/flashnext/settings.md#the-mtp-draft-head)) |
 
 These were measured one at a time, months apart, so don't just add them up. Each one counts, though.
 
@@ -125,7 +126,7 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
   already turns on the 90-second [chat window](#the-chat-window), so your chats go first.
 
 With all three, you're running the study's everyday server. The only differences are where its
-files sit, its unpublished token list, and the statistics it records for the study.
+files sit and the statistics it records for the study.
 
 **Watch your memory.** At a 28 GiB cache the Mac doesn't have much room to spare, so close
 memory-hungry apps. If you see swap (`sysctl vm.swapusage`), use a smaller cache or context.
@@ -301,8 +302,9 @@ depth from how often recent guesses were kept; that measured depth is the engine
 (`LLAMA_SPEC_ADAPTIVE_RATE=0` goes back to the older rule, a depth that climbs and falls with
 how many guesses were kept). On the agent conversations (tool calls,
 code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
-its own experts fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from, for
-another +2.6%, but the study's list is not published ([what you add](#what-you-add)).
+its own experts fetched. An optional token list (`LLAMA_MTP_VOCAB`) narrows what it guesses from,
+for another +2.7% on chat and +1.5% on coding. The study dropped its list in October: too small a
+gain to keep an extra file for ([what you add](#what-you-add)).
 
 **New in October, fewer undo copies:** before each check, the model saves copies of its running
 (recurrent) state so it can roll back the guesses it rejects. It used to save every slot each round;
@@ -415,7 +417,8 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
 | A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
 | The GPU's wired-memory limit | `sudo sysctl iogpu.wired_limit_mb=59392` | [Quick start](#quick-start), step 3. |
-| The draft head's token list | `LLAMA_MTP_VOCAB=` and a list file | **Not available for download.** The study's list of 96K tokens (+2.6% writing) was built from the author's own conversations, so it isn't published, and the numbers on this page were measured with it. Build one from text like yours ([Settings](docs/flashnext/settings.md#the-mtp-draft-head)), or leave it off. |
+| The draft head's token list (optional) | `LLAMA_MTP_VOCAB=` and a list file | **Not supplied, and the study doesn't use one any more.** A 96K-token list made writing +2.7% faster on chat and +1.5% on coding (October re-test), too small a gain to keep an extra file for. The headline numbers on this page were measured with one. Build your own from text like yours if you want it ([Settings](docs/flashnext/settings.md#the-mtp-draft-head)). |
+
 ## Guides
 
 - [Getting started](docs/flashnext/getting-started.md): the steps above in detail, the second drive, and what a healthy start looks like.
