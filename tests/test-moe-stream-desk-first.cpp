@@ -5,10 +5,11 @@
 // each read, test_land_delay_us) so trips are still on their way at the gate, and with the lookahead off
 // (LOOKAHEAD=0) the desk does not depend on timing, so off and on must also leave the same desk. The workload: a
 // 20-token prompt (waves: desk books first is off), 48 single-token writes, 6 checks of 4 tokens (the apprentice's
-// shape) and one of 16 (more books than the desk holds: waves again). Checked:
-//   same    off and on give the reference's bytes, with and without the eval callback (which splits the graph at
-//           every ffn_moe_out), and with the lookahead at its default width (its guesses held for the gate)
-//   ran     every one-wave batch's floors stopped desk-first, the 16-token check's did not; some floors were split
+// shape) and one of 16 (more books than the desk holds: waves again). Off is "0", on "1"; unset is on (the default
+// since #39 kept). Checked:
+//   same    off, on and unset give the reference's bytes, with and without the eval callback (which splits the graph
+//           at every ffn_moe_out), and with the lookahead at its default width (its guesses held for the gate)
+//   ran     on and unset: every one-wave batch's floors stopped desk-first, the 16-token check's did not; some split
 //           (books on both planes), the gates really waited, and Metal ran one gate per stop, the cut made
 //   desk    off and on leave the same book in every slot, the same LRU stamps, hotness and counts
 //   CPU     -ngl 0 (a desk the GPU does not read): desk books first stays off and the bytes are the same
@@ -17,8 +18,7 @@
 //           returns 2, and the next decode on the same context runs and gives a fresh context's bytes
 // A gate that returns before the arrivals land turns "same" red (mutation, by hand).
 //
-// --stops: the floor-stop log and the stats lines instead (run_stops says what it checks).
-//
+// --stops: the floor-stop log, the stats lines and "0"'s off line instead (run_stops says what it checks).
 // --fingerprint prints the off arm's hashes (logits, MoE outputs, desk) and nothing else. It compiles against the
 // engine before desk books first too (DF_BUILT unset), so an old build of this file is the reference for the plain
 // remap, whose classify moved into llama_moe_stream_classify_locked (gotchas: a same-binary test proves only the
@@ -132,14 +132,10 @@ struct arm {
     int64_t floors = 0; // streamed floors
 };
 
-// a fresh streamed model of config c, desk books first on or off, runners slowed by delay_us
-arm run_arm(const config & c, bool df, int64_t delay_us, bool capture, bool print = false) {
+// a fresh streamed model of config c, the switch at df ("0", "1", or nullptr unset), runners slowed by delay_us
+arm run_arm(const config & c, const char * df, int64_t delay_us, bool capture, bool print = false) {
     arm a;
-    if (df) {
-        setenv(ENV_DF, "1", 1);
-    } else {
-        unsetenv(ENV_DF);
-    }
+    df != nullptr ? setenv(ENV_DF, df, 1) : unsetenv(ENV_DF);
     llama_model * m = load(c);
     if (m == nullptr) {
         unsetenv(ENV_DF);
@@ -189,6 +185,7 @@ uint64_t fnv(const void * p, size_t n) {
 
 std::string g_cblog;           // --stops: the timeline's path; its .stops log is the floor-stop log
 std::string g_df_window, g_df_run; // the "desk first:" stats lines: every window's, and the run's last
+int g_df_off = 0;                  // the "off" lines a context turned off by "0" prints
 
 void remove_cblog() { // registered before the stops log's own exit handler, so it runs after the write
     std::filesystem::remove(g_cblog);
@@ -209,22 +206,24 @@ int run_stops(const config & c, int64_t delay) {
             g_df_window += text;
         } else if (strstr(text, "print_stats: moe stream: desk first:") != nullptr) {
             g_df_run = text;
+        } else if (strstr(text, "moe stream: desk first: off (LLAMA_MOE_STREAM_DESK_FIRST=0)") != nullptr) {
+            g_df_off++; // "0" says it is off, once a context
         }
     }, nullptr);
     setenv("LLAMA_MOE_STREAM_LOOKAHEAD", "0", 1);
     setenv("LLAMA_MOE_STREAM_STATS_MS", "1", 1);
     const size_t r0 = st->n_records();
-    const arm off = run_arm(c, false, delay, false);
+    const arm off = run_arm(c, "0", delay, false);
     const size_t r1 = st->n_records();
-    const arm on = run_arm(c, true, delay, false, true);
+    const arm on = run_arm(c, "1", delay, false, true);
     const size_t r2 = st->n_records();
-    unsetenv("LLAMA_MOE_STREAM_STATS_MS");
-    unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD");
+    unsetenv("LLAMA_MOE_STREAM_STATS_MS"), unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD");
     printf("  stop lines: off %zu, on %zu\n  on: %s\n  the run's line: %s", r1 - r0, r2 - r1, str(on.n).c_str(),
             g_df_run.c_str());
     check(off.ran && on.ran && same(off.out.logits, on.out.logits), "stops log on: off and on ran, the same logits");
     check(r1 > r0 && r2 - r1 == r1 - r0, "every floor stop put its line, desk-first ones too (held ones at the gate)");
     check(on.n.stops > 0 && on.n.split > 0, "on: desk-first stops, some split");
+    check(g_df_off == 1, "\"0\": one off line, from the off arm's one context (" + std::to_string(g_df_off) + ")");
     check(!g_df_window.empty() && g_df_window.find("desk first: floors ") != std::string::npos,
             "the stats dump's windows carry the desk-first line");
     const std::string want = "desk first: floors " + std::to_string(on.n.stops) + ", split " + std::to_string(on.n.split) +
@@ -312,9 +311,9 @@ int main(int argc, char ** argv) {
     }
     if (fingerprint) { // the plain remap's bytes and desk, for an old build of this file to match
         setenv("LLAMA_MOE_STREAM_LOOKAHEAD", "0", 1);
-        const arm off = run_arm(c, false, delay, true);
+        const arm off = run_arm(c, "0", delay, true);
         unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD");
-        const arm la = run_arm(c, false, delay, true);
+        const arm la = run_arm(c, "0", delay, true);
         printf("fingerprint ran %d %d\n", off.ran, la.ran);
         printf("fingerprint logits %016llx moe %016llx desk %016llx\n",
                 (unsigned long long) fnv(off.out.logits.data(), off.out.logits.size()*sizeof(float)),
@@ -334,20 +333,21 @@ int main(int argc, char ** argv) {
     llama_model_free(ref_model);
 
     setenv("LLAMA_MOE_STREAM_LOOKAHEAD", "0", 1);
-    const arm off = run_arm(c, false, delay, true);
-    const arm on  = run_arm(c, true, delay, true);
-    const arm on_plain = run_arm(c, true, delay, false);
+    const arm off = run_arm(c, "0", delay, true);
+    const arm on  = run_arm(c, "1", delay, true);
+    const arm on_plain = run_arm(c, "1", delay, false);
     unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD");
-    const arm on_la = run_arm(c, true, delay, true); // the lookahead at its default width
+    const arm on_la = run_arm(c, "1", delay, true); // the lookahead at its default width
+    const arm dflt  = run_arm(c, nullptr, delay, false); // the switch unset: the engine's default (on, since #39 kept)
     // what it is off with, read at model load: the state log, and the GPU slot servicer (at its verify stage)
     const std::string slog = (std::filesystem::temp_directory_path() /
             ("test-moe-stream-desk-first-" + std::to_string(getpid()) + ".statelog")).string();
     setenv("LLAMA_MOE_STREAM_STATE_LOG", slog.c_str(), 1);
-    const arm on_slog = run_arm(c, true, 0, false);
+    const arm on_slog = run_arm(c, "1", 0, false);
     unsetenv("LLAMA_MOE_STREAM_STATE_LOG");
     std::filesystem::remove(slog);
     setenv("LLAMA_MOE_STREAM_GPU_SLOT", "1", 1);
-    const arm on_slot = gpu ? run_arm(c, true, 0, false) : on_slog; // a CPU desk refuses GPU_SLOT at load
+    const arm on_slot = gpu ? run_arm(c, "1", 0, false) : on_slog; // a CPU desk refuses GPU_SLOT at load
     unsetenv("LLAMA_MOE_STREAM_GPU_SLOT");
     check(on_slog.ran && on_slog.n.stops == 0 && on_slog.n.calls == 0 && same(ref_plain.logits, on_slog.out.logits),
             "on with the state log: desk books first stays off, the reference's logits");
@@ -356,7 +356,8 @@ int main(int argc, char ** argv) {
 
     printf("  off: %s\n  on: %s\n  on, no eval callback: %s\n  on, lookahead: %s\n", str(off.n).c_str(),
             str(on.n).c_str(), str(on_plain.n).c_str(), str(on_la.n).c_str());
-    check(off.ran && on.ran && on_plain.ran && on_la.ran, "every arm ran");
+    check(off.ran && on.ran && on_plain.ran && on_la.ran && dflt.ran, "every arm ran");
+    check(same(ref_plain.logits, dflt.out.logits), "unset: logits byte-identical to no streaming");
     check(same(ref.logits, off.out.logits) && same(ref.moe, off.out.moe), "off: logits and every ffn_moe_out are the reference's");
     check(off.n.stops == 0 && off.n.calls == 0, "off: no desk-first stop, no gate");
     check(same(ref.logits, on.out.logits), "on: logits byte-identical to no streaming");
@@ -372,7 +373,7 @@ int main(int argc, char ** argv) {
     if (gpu) {
         // the stops log's and the gates' counts are per floor stop: writes and 4-token checks, not the prompt
         // (waves) or the 16-token check (64 books > a desk of 40: waves)
-        for (const arm * a : { &on, &on_plain, &on_la }) {
+        for (const arm * a : { &on, &on_plain, &on_la, &dflt }) { // unset among them: on by default
             check(a->n.stops == m_stops, "on: every one-wave batch's floors stopped desk-first (" +
                     std::to_string(a->n.stops) + " of " + std::to_string(m_stops) + ")");
             check(a->n.calls == a->n.stops, "on: Metal ran one gate per desk-first stop");
@@ -385,7 +386,7 @@ int main(int argc, char ** argv) {
                 "on, no eval callback: every gate cut its command buffers (the desk's books sent first)");
         check(on_la.n.guesses > 0 && on_la.n.split > 0, "on, lookahead: guesses sent beside split floors");
     } else {
-        check(on.n.stops == 0 && on.n.calls == 0 && on_la.n.stops == 0,
+        check(on.n.stops == 0 && on.n.calls == 0 && on_la.n.stops == 0 && dflt.n.stops == 0,
                 "CPU desk: desk books first stays off (no stop, no gate)");
         check(on.desk == off.desk, "CPU desk: the same desk as off");
     }

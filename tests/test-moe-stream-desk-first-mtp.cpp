@@ -7,8 +7,9 @@
 // the apprentice drafting 3 more. The runners are slowed (test_land_delay_us) so the checks' floors take trips, and the
 // everyday library's guess switches are on (every word of a check, two floors ahead, the keep rule). Checked:
 //   same   the library's logits (prompt and checks) and every draft's logits byte-identical with desk books first on
+//          ("1") and unset (on by default) as off ("0")
 //   ran    only the library's check floors stopped desk-first (rounds x trunk floors), Metal ran one gate per stop,
-//          some floors were split and their gates waited
+//          some floors were split and their gates waited; unset stopped as "1" did
 
 #include "common.h"
 #include "llama.h"
@@ -112,10 +113,11 @@ bool draft(llama_context * dft, int n_embd, int n_vocab, llama_token id, int pos
     return ok;
 }
 
-turn run_turn(const std::vector<llama_token> & prompt, bool df) {
+// df: the switch's value ("0" off, "1" on), or nullptr for unset (the engine's default: on)
+turn run_turn(const std::vector<llama_token> & prompt, const char * df) {
     turn r;
-    if (df) {
-        setenv("LLAMA_MOE_STREAM_DESK_FIRST", "1", 1);
+    if (df != nullptr) {
+        setenv("LLAMA_MOE_STREAM_DESK_FIRST", df, 1);
     } else {
         unsetenv("LLAMA_MOE_STREAM_DESK_FIRST");
     }
@@ -262,23 +264,26 @@ int main(int argc, char ** argv) {
     for (auto & t : prompt) {
         t = (llama_token) (rng() % 128); // the fixture's vocabulary
     }
-    const turn off = run_turn(prompt, false);
-    const turn on  = run_turn(prompt, true);
+    const turn off  = run_turn(prompt, "0");
+    const turn on   = run_turn(prompt, "1");
+    const turn dflt = run_turn(prompt, nullptr); // unset: on, the default since #39 kept
     printf("  on: desk-first stops %lld (trunk floors %lld), split %lld, gate waits %lld, Metal gates %lld\n",
             (long long) on.stops, (long long) on.trunk, (long long) on.split, (long long) on.waits, (long long) on.calls);
 
-    check(off.ran && on.ran, "both arms: the library and the apprentice made their contexts and ran every step");
+    check(off.ran && on.ran && dflt.ran, "every arm: the library and the apprentice made their contexts and ran every step");
     check(nonzero(off.library) && nonzero(off.drafts), "the library's and the drafts' logits carry signal");
     check(off.stops == 0 && off.calls == 0, "off: no desk-first stop, no gate");
     check(same(off.library, on.library), "the library's logits (prompt and checks) byte-identical with desk books first on");
     check(same(off.drafts, on.drafts), "every draft's logits byte-identical with desk books first on");
+    check(same(off.library, dflt.library) && same(off.drafts, dflt.drafts), "unset: the same logits, library and drafts");
     if (gpu) {
         check(on.trunk > 0 && on.stops == ROUNDS*on.trunk,
                 "on: only the library's checks stopped desk-first (rounds x trunk floors), not the apprentice's floor");
         check(on.calls == on.stops, "on: Metal ran one gate per desk-first stop");
         check(on.split > 0 && on.waits > 0, "on: floors split and their gates waited");
+        check(dflt.stops == on.stops && dflt.calls == dflt.stops, "unset: on by default, the library's checks only");
     } else {
-        check(on.stops == 0 && on.calls == 0, "CPU desk: desk books first stays off");
+        check(on.stops == 0 && on.calls == 0 && dflt.stops == 0, "CPU desk: desk books first stays off");
     }
 
     for (const char * e : { "LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2", "LLAMA_MOE_STREAM_LOOKAHEAD_ALL", "LLAMA_MOE_STREAM_LOOKAHEAD_KEEP" }) {

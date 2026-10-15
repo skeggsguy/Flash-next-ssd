@@ -19,7 +19,9 @@
 #include <algorithm>
 
 bool llm_graph_context::moe_stream_desk_first_on(int il, int64_t n_tokens) const {
-    if (!cparams.moe_desk_first || n_tokens > LLAMA_MOE_DESK_FIRST_MAX_TOKENS || mstream == nullptr) {
+    // a floor with no rows (a read-in ubatch with no output rows, on its last floor) computes nothing: the CPU skips
+    // its empty stop, but Metal would still call its gate fn, and the gate would find no stop before it
+    if (!cparams.moe_desk_first || n_tokens < 1 || n_tokens > LLAMA_MOE_DESK_FIRST_MAX_TOKENS || mstream == nullptr) {
         return false;
     }
     const llama_moe_stream_layer * sl = mstream->layer(il);

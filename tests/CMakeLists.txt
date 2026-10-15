@@ -437,8 +437,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
                 test-moe-stream-lookahead-guesser1-qwen4exp-ngl${E64_NGL} PROPERTIES TIMEOUT 300)
     endforeach()
     llama_build(test-moe-stream-desk-first.cpp)
+    llama_build(test-moe-stream-desk-first-rows.cpp) # a read-in asking for the last logits only: floors with no rows
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
-             test-moe-stream-c2 test-moe-stream-book-split-model test-moe-stream-desk-first)
+             test-moe-stream-c2 test-moe-stream-book-split-model test-moe-stream-desk-first test-moe-stream-desk-first-rows)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(

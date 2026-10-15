@@ -292,6 +292,7 @@ environment variable. To go back to the old way, set it to the value in the last
 | Switch | Unset (the default) | The old way |
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | A full cache lets go the expert unused longest ([above](#which-expert-the-cache-lets-go-new-in-october)). | `0`: the lowest recent use count |
+| `LLAMA_MOE_STREAM_DESK_FIRST` | While a layer's missing experts are read, the GPU already works on the ones in the cache (and the shared expert); the rest run as soon as they land. Same output. | `0`: each layer waits for every missing expert before it starts |
 | `LLAMA_RS_SKIP_SLOTS` | The draft head's check saves only the undo copies a rollback can reach. | `0`: every copy, every round |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: the older rule, a depth that climbs and falls with the guesses kept |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | The expert cache is claimed in 4 GiB steps with short pauses, so macOS isn't rushed at load. | `0`: all at once |

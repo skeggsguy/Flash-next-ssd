@@ -238,6 +238,9 @@ int main(int argc, char ** argv) {
                 "ggml_backend_metal_encode_ahead_counts");
     }
     const bool gpu = g_ngl > 0 && g_ping_count != nullptr; // a desk the GPU reads: the pings are sent
+    // C2's paths are the stop that waits: desk books first (the default since #39) moves the wait to its gate, where
+    // the trips have often landed already, so the old stop is named (test-moe-stream-desk-first* cover the new one)
+    setenv("LLAMA_MOE_STREAM_DESK_FIRST", "0", 1);
 
     unsetenv("LLAMA_MOE_STREAM_LOOKAHEAD"); // the lookahead at its default width, as in every rung
     outputs ref;

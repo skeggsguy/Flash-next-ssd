@@ -1,6 +1,7 @@
 #pragma once
 
-// Desk books first (study #39, LLAMA_MOE_STREAM_DESK_FIRST; off unless set and not "0" while it is built and judged).
+// Desk books first (study #39, LLAMA_MOE_STREAM_DESK_FIRST): the engine's default from the D39 rung (+9.1% chat, +4.9%
+// code); "0" (or "") is the old stop that waits for every trip (llama-flashnext.h).
 //
 // Without it a floor's stop reserves slots for the books not on the desk, sends the runners for them, and waits until
 // every one has landed before the GPU does any of the floor's book work. With it the stop does not wait: it writes two
@@ -60,7 +61,7 @@ struct llama_moe_stream_desk_first_floor {
     llama_moe_stream_stops::rec  rec      = {};
 };
 
-// LLAMA_MOE_STREAM_DESK_FIRST: on if set and not "" or "0"
+// LLAMA_MOE_STREAM_DESK_FIRST: on unless set to "" or "0" (llama_flashnext_desk_first)
 bool llama_moe_stream_desk_first_env();
 
 // A context of this model runs desk books first: the switch is on, the context is the library's (not the apprentice's,

@@ -27,6 +27,12 @@ LLAMA_API bool llama_flashnext_rs_skip_slots(const char * value);
 // opening), not in one go. Unset: 4096. "0" (or anything that reads as 0 or less): one go, the old way.
 LLAMA_API int64_t llama_flashnext_alloc_chunk_mib(const char * value);
 
+// LLAMA_MOE_STREAM_DESK_FIRST: desk books first (#39: +9.1% chat, +4.9% code at desk 28, same words): a floor's
+// GPU work starts on the books already on the desk while the runners fetch the rest (llama-moe-stream-desk-first.h,
+// which keeps its own limits: writing and checks only, the library's context, Metal). Unset: on. Set: on unless ""
+// or "0" (the stop that waits for every trip, the old way).
+LLAMA_API bool llama_flashnext_desk_first(const char * value);
+
 // LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER names a file (set and not ""): the guesser tuning below takes its everyday values
 LLAMA_API bool llama_flashnext_guesser_named(const char * guesser_value);
 

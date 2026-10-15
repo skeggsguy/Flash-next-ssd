@@ -3,6 +3,8 @@
 
 #include "llama-moe-stream-desk-first.h"
 
+#include "llama-flashnext.h"
+
 #include "llama-moe-stream.h"
 #include "llama-moe-stream-impl.h"
 
@@ -12,12 +14,10 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
 #include <mutex>
 
 bool llama_moe_stream_desk_first_env() {
-    const char * s = std::getenv("LLAMA_MOE_STREAM_DESK_FIRST");
-    return s != nullptr && *s != '\0' && std::strcmp(s, "0") != 0;
+    return llama_flashnext_desk_first(std::getenv("LLAMA_MOE_STREAM_DESK_FIRST")); // unset: on (llama-flashnext.h)
 }
 
 // ggml_backend_metal_set_moe_gate (ggml-metal.h), found through the backend's registry so this file needs no Metal
@@ -26,8 +26,13 @@ typedef void (*desk_first_set_gate_t)(ggml_backend * backend, desk_first_gate_fn
 
 bool llama_moe_stream_desk_first_register(llama_moe_stream & mgr, ggml_backend * const * backends, size_t n_backends,
         bool mtp) {
-    if (!llama_moe_stream_desk_first_env() || mtp) {
-        return false; // the apprentice's floors keep the plain stop: its graphs build no gates
+    if (mtp) {
+        return false; // the apprentice's floors keep the plain stop: its graphs build no gates, and print no line
+    }
+    if (!llama_moe_stream_desk_first_env()) { // turned off by hand: say so, as the put-back rule's line does
+        LLAMA_LOG_WARN("%s: moe stream: desk first: off (LLAMA_MOE_STREAM_DESK_FIRST=%s)\n", __func__,
+                std::getenv("LLAMA_MOE_STREAM_DESK_FIRST"));
+        return false;
     }
     const char * why = nullptr;
     if (mgr.gpu_slot != 0) {
