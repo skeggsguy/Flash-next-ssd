@@ -2,17 +2,25 @@
 
 **Run Qwen3.8-Flash-Next, a 111 GB model, on a 64 GB Mac.**
 
-This is a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork for Apple Silicon. The trick: the
-model is a mixture of experts (48 layers of 512 experts, and each token only uses 10 per layer), so
-the experts can live on your SSD. The engine reads in the ones each token needs, keeps the busiest
-in an expert cache in RAM, and keeps everything else on the GPU.
+This is a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork for Apple Silicon. The model is a
+mixture of experts: 48 layers of 512 experts, and each token uses only 10 experts on each layer. So
+the experts stay on the SSD. The ones a token needs are read in as it is computed, and the ones used
+most stay in an expert cache in RAM. Everything else stays resident on the GPU.
 
-It was tuned on a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 5, using real agent
-and chat conversations. Any run that touched swap was thrown out, not just marked slow.
+It was tuned for a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 5. The tuning was
+measured on real agent conversations, and any timing that swap touched was thrown out.
 
 <p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs"></p>
 
 ## Headline numbers
+
+Measured on a Mac mini M5 Pro (64 GB) with Unsloth's UD-Q4_K_XL quant, a 28 GiB expert cache, two
+SSDs, the MTP draft head and both trained guessers on ([what each extra is worth](#what-each-extra-is-worth)).
+Sources and method are in [Results](docs/flashnext/results.md).
+
+The October numbers come from two sets of the author's own work, each replayed turn by turn: 24
+coding-agent conversations at high thinking effort (`code`), and 24 chat conversations at medium
+effort (`chat`).
 
 | | |
 |---|---|
@@ -22,36 +30,155 @@ and chat conversations. Any run that touched swap was thrown out, not just marke
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
 
-> **These numbers are with all the extras on.** That means `--flashnext`, a 28 GiB expert cache,
-> the MTP draft head, both trained guessers and a second SSD. Leave an extra off and you'll be
-> slower. The table below shows roughly how much each one is worth.
+"Since the last update" compares with this repo's previous release (14 October), run A-B-A on one
+day: that release's setup, then the same with the new rule for which expert the cache lets go
+([below](#which-expert-the-cache-lets-go-new-in-october)), then that release's setup again. The run
+used 12 conversations of each set, the study's shorter list for one change; the base is the mean of
+the two runs of the old setup (21.55 and 21.48 coding, 22.90 and 22.59 chat). The previous release
+had itself added the one-layer guesser (+7.5% coding, +7.3% chat), and the releases before it took
+the full sets from 17.5 to 21.2 tokens/s (coding) and from 17.6 to 21.1 (chat) since 5 October.
 
-| Extra | What it's worth | Without it |
-|---|---|---|
-| `--flashnext` | The whole setup: streaming, big batches, the right context and cache settings | Upstream's defaults don't stream, so the model won't run well on 64 GB |
-| A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Unset, it's far too small. 24 GiB writes about 6-8% slower |
-| The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
-| The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
-| A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
+**Also new in this update, the proven settings are the defaults.** The engine now runs the study's
+everyday values without being told, and one flag, `--flashnext`, sets llama.cpp's general options
+to the everyday values. [Out of the box, and what you add](#out-of-the-box-and-what-you-add) says
+which is which, and the quick start's command is down to a few lines.
 
-These were measured one at a time, months apart, so don't just add them up. Each one counts, though.
+## What it adds
 
-Where the numbers come from: two sets of the author's own work, replayed turn by turn. That's 24
-coding-agent conversations at high thinking effort (`code`) and 24 chats at medium effort (`chat`),
-on Unsloth's UD-Q4_K_XL quant. Method and sources are in [Results](docs/flashnext/results.md).
-"Since the last update" compares with the previous release (14 October), run A-B-A on one day: the
-old setup, then the new rule for which expert the cache lets go
-([below](#which-expert-the-cache-lets-go-new-in-october)), then the old setup again. It used 12
-conversations of each set; the base is the mean of the two old runs (21.55 and 21.48 coding, 22.90
-and 22.59 chat). Since 5 October, the releases have taken the full sets from 17.5 to 21.2 tokens/s
-(coding) and from 17.6 to 21.1 (chat), and the last one added the one-layer guesser (+7.5% coding,
-+7.3% chat).
+### SSD expert streaming with an expert cache
 
-**Also new: the proven settings are now the defaults.** You don't have to copy a wall of switches.
-The engine runs the study's everyday values out of the box, and `--flashnext` sets the rest. The
-study's own everyday server runs exactly this setup, plus the downloads and its own paths
-([Out of the box, and what you add](#out-of-the-box-and-what-you-add)).
+`--moe-stream` keeps the routed experts on disk and holds a fixed-size expert cache in RAM
+(`--moe-stream-cache 28` = 28 GiB). Reads skip macOS's file cache (`--moe-stream-direct`), so the
+cache and the rest of the system keep their memory, and many reads are in flight at once. While a
+token is being written, the next layer's likely experts are fetched ahead of time; about 1 in 4 of
+those early fetches is used before the cache lets it go (the trained lookahead below does better).
+When the cache is full, it lets go the expert that has gone longest without being used (below). At
+28 GiB about 4 in 5 expert lookups find their expert already in RAM.
 
+### Which expert the cache lets go (new in October)
+
+When the expert cache is full and a new expert has to come in, another has to go. The old rule let
+go the expert with the lowest recent use count. The new default lets go the one that has gone
+longest without being used (least recently used, LRU). The rule itself was written by Marian
+Mihailescu, in his GPU slot-resolution work, and sat off until now; the study measured it on both sets at a 28 GiB cache:
+
+- **Writing +9.6% on the coding set and +9.7% on chat** (21.5 → 23.6 and 22.7 → 25.0 tokens/s).
+- Experts fetched from the SSD per written token fell by 17% (chat) and 28% (code), and the share of
+  lookups found in RAM while writing rose from about 92% to 94%.
+- It gains most on long conversations, where the topic moves furthest (+14-15% on the longest).
+- At a 24 GiB cache it writes as fast as the old rule at 28 GiB, with about 4 GiB of RAM back: a
+  choice for a Mac that keeps other apps open.
+
+It changes which experts are in RAM, never which are used, so the output is unchanged (byte-identical
+word checks). It is on by default; `LLAMA_MOE_STREAM_LRU=0` restores the old rule.
+
+### The trained lookahead: guessing one and two layers ahead (new in October)
+
+Guessing one layer ahead leaves the SSD only one layer's compute time to fetch a missed expert, and
+the engine's own guess is rough: only about 1 in 4 of its early fetches is used, and half are
+evicted from the cache before their layer comes. Two small trained guessers on
+[crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) fix both. Each was trained on the
+model's own routing while it wrote real replies.
+
+- **The two-layer guesser** (`c1-guesser.gguf`, 121 MB) runs on every layer: on layer n it scores all
+  512 experts of layer n+2 and fetches the confident ones (above 0.2), so the SSD has two layers'
+  time. 84% of its fetches are used.
+- **The one-layer guesser** (`c1-guesser-gap1.gguf`, 123 MB) replaces the engine's own guess for the
+  next layer and tops up what the two-layer guess missed. Its top 10 hold 73-77% of the experts the
+  next layer uses, against 61-65% for the engine's own, and 65-71% of its fetches are used.
+- **The keep rule** keeps every guessed expert in the cache until its layer has run, so a right
+  guess is never evicted unread. It is on whenever the two-layer guesser is
+  (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=0` turns it off).
+
+Together: **about +12% writing on the coding set and +16% on chat**, against the engine's own guess
+without the keep rule. That is an estimate. The two-layer guesser was measured first (+4.2% coding,
++8.2% chat), then the one-layer guesser on top of it another day (+7.5% and +7.3%), and the combined
+figures multiply the two. Neither guesser changes which experts are used, only which are fetched early,
+so the output is unchanged. Both are off unless you point the engine at the files (Quick start,
+steps 2 and 4).
+
+<p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the two-layer guesser fetches experts two layers ahead, the one-layer guesser tops up a layer later, and each guess is kept until its layer runs; 84% and 65-71% of guesses used. Writing about +12% coding and +16% chat, estimated from two runs"></p>
+
+### The reading room: a carousel for long prompts
+
+A long prompt needs nearly every expert on every layer. The reading room is a small ring buffer
+(about 1.4 GiB) carved out of the expert cache. The SSDs fill it layer after layer, ahead of the
+GPU, so prompt reading costs whichever of the two is slower, not both added together. The output
+is bit-identical to having every expert in RAM. While writing, the buffer is lent back as extra
+cache, which won back its cost (+5.5% writing). It is on by default.
+
+<p align="center"><img src="media/flashnext/carousel.svg" width="760" alt="Before: the SSD and GPU take turns. After: the reading room keeps both busy, reading in +32%, time to first word −28%"></p>
+
+### Two drives
+
+Put a byte-identical copy of the model on a second SSD and the expert reads are split across both
+(`--moe-stream-alt-path`, `--moe-stream-alt-split 53`). The internal SSD (6.5 GB/s) and a 990 PRO
+over Thunderbolt 5 (5.7 GB/s) give 12.3 GB/s together. That made writing 15% faster and cut the time
+to first token by 31%.
+
+**New in October, the plumbing:** each read now goes to whichever drive has fewer reads waiting (the
+53/47 split by expert id only breaks ties), where before an expert's drive was fixed by its id, so
+one drive could queue while the other sat idle. The read threads also run at macOS's interactive
+priority. Together: **+12.5% writing on the coding set and +10.4% on chat**, and the GPU waits on the
+SSDs 15% of the time instead of 20%. Both are on by default (`LLAMA_MOE_STREAM_DYN_DRIVE=0` and
+`LLAMA_MOE_STREAM_QOS=0` turn them off); they change only where bytes are read from, never which.
+
+<p align="center"><img src="media/flashnext/two-ssds.svg" width="760" alt="Gain from a second SSD: reading in +40% before the reading room and +15% after; writing +15%; time to first word −31% to −33%"></p>
+
+### The MTP draft head, at a depth it measures for itself
+
+A small draft head guesses up to 5 tokens ahead, and the model checks them all in one pass
+(`-md` with `--spec-type draft-mtp-adaptive`, which `--flashnext` sets). It picks its own guessing
+depth from how often recent guesses were kept; that measured depth is the engine's default
+(`LLAMA_SPEC_ADAPTIVE_RATE=0` goes back to the older rule, a depth that climbs and falls with
+how many guesses were kept). On the agent conversations (tool calls,
+code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
+its own experts fetched.
+
+**New in October, fewer undo copies:** before each check, the model saves copies of its running
+(recurrent) state so it can roll back the guesses it rejects. It used to save every slot each round;
+now it saves only the slots a rollback can actually reach. Coding: **+4.3% writing**; chat: level
+(−2.0%, within the runs' noise). Output is byte-identical. It is on by default
+(`LLAMA_RS_SKIP_SLOTS=0` saves every slot again).
+
+### Union attention
+
+The model's sparse attention picks the context blocks each query attends to. Union attention
+shares one deduplicated pick list per batch while reading a prompt. At 160K context its working
+memory drops from 5.6 GiB to 1.9 GiB, and prompt reading gets 5% faster. It sums in a different
+order, so words can differ at near-ties; perplexity is unchanged. It is the default
+(`LLAMA_QSA_UNION=1`).
+
+### The chat window
+
+One server, two users: you chatting, and a coding agent working in the background. A chat request
+stops a running background request, which gets a 503 that its client retries. Background requests
+then wait until 90 seconds after the last chat reply. Only the background client needs to send a
+header (`X-Lane: code`). `--flashnext` turns it on at 90 s (`--chat-window 90`); with no such client
+it changes nothing.
+
+**New in October, chat's opening kept in RAM:** a coding agent's long conversation fills the prompt
+cache, so a new chat used to read its opening (system prompt and tools, ~4,200 tokens) in again.
+`--cache-ram 400 --cache-ram-opening` (both set by `--flashnext`) keeps one RAM copy of chat's
+opening only (~232 MiB), never the agent's. A new chat after coding work then starts writing in
+**4.1 s instead of 14.2 s**.
+
+**Fixed in this update:** when the coding agent had the server first, the opening's pin landed at
+token 3, where chat's prompt and the agent's part ways. The RAM copy then held almost nothing (3 of
+5,864 tokens), and every new chat read in 5-7K tokens again (14-20 s). The pin now knows whether a
+chat follows the agent's work, and then pins at the chat's first message. In a live check after a
+73K-token coding prompt, the next new chat read in 463 tokens and started writing in **3.5 s**. The
+first new chat after each start still reads its opening once, since nothing has saved it yet.
+
+<p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
+
+### And smaller wins, all on by default
+
+- The n-gram table's hot rows sit on a 128 MiB shelf instead of macOS's file cache (`--ple-shelf`, +3% writing).
+- One prompt-cache checkpoint stays pinned at the start of the conversation, so a new chat after a
+  long one resumes in 4 s instead of 14 s.
+- Cheaper per-layer stops: less locking and lookup at each layer, the next layer's GPU work encoded
+  ahead, and a tiny keep-awake ping so the GPU does not power down while it waits (+7% writing).
 ## Quick start
 
 **What you need:** an Apple Silicon Mac with 64 GB, about 115 GB free on the internal SSD, Xcode's
@@ -209,142 +336,6 @@ FileVault waits for your password at the unlock screen) and `sudo pmset -a autor
 after a power failure). Install the wired-limit LaunchDaemon from
 [Getting started](docs/flashnext/getting-started.md#4-the-gpus-wired-memory-limit) too, so the
 limit is set at every boot.
-## What's inside
-
-### SSD expert streaming with an expert cache
-
-`--moe-stream` keeps the routed experts on disk and holds a fixed-size expert cache in RAM
-(`--moe-stream-cache 28` = 28 GiB). Reads skip macOS's file cache (`--moe-stream-direct`), so the
-cache and the rest of the system keep their memory, and many reads are in flight at once. While a
-token is being written, the next layer's likely experts are fetched ahead of time; about 1 in 4 of
-those early fetches is used before the cache lets it go (the trained lookahead below does better).
-When the cache is full, it lets go the expert that has gone longest without being used (below). At
-28 GiB about 4 in 5 expert lookups find their expert already in RAM.
-
-### Which expert the cache lets go (new in October)
-
-When the expert cache is full and a new expert has to come in, another has to go. The old rule let
-go the expert with the lowest recent use count. The new default lets go the one that has gone
-longest without being used (least recently used, LRU). The rule itself was written by Marian
-Mihailescu, in his GPU slot-resolution work, and sat off until now; the study measured it on both sets at a 28 GiB cache:
-
-- **Writing +9.6% on the coding set and +9.7% on chat** (21.5 → 23.6 and 22.7 → 25.0 tokens/s).
-- Experts fetched from the SSD per written token fell by 17% (chat) and 28% (code), and the share of
-  lookups found in RAM while writing rose from about 92% to 94%.
-- It gains most on long conversations, where the topic moves furthest (+14-15% on the longest).
-- At a 24 GiB cache it writes as fast as the old rule at 28 GiB, with about 4 GiB of RAM back: a
-  choice for a Mac that keeps other apps open.
-
-It changes which experts are in RAM, never which are used, so the output is unchanged (byte-identical
-word checks). It is on by default; `LLAMA_MOE_STREAM_LRU=0` restores the old rule.
-
-### The trained lookahead: guessing one and two layers ahead (new in October)
-
-Guessing one layer ahead leaves the SSD only one layer's compute time to fetch a missed expert, and
-the engine's own guess is rough: only about 1 in 4 of its early fetches is used, and half are
-evicted from the cache before their layer comes. Two small trained guessers on
-[crystal-ball](https://huggingface.co/skeggsguy/crystal-ball) fix both. Each was trained on the
-model's own routing while it wrote real replies.
-
-- **The two-layer guesser** (`c1-guesser.gguf`, 121 MB) runs on every layer: on layer n it scores all
-  512 experts of layer n+2 and fetches the confident ones (above 0.2), so the SSD has two layers'
-  time. 84% of its fetches are used.
-- **The one-layer guesser** (`c1-guesser-gap1.gguf`, 123 MB) replaces the engine's own guess for the
-  next layer and tops up what the two-layer guess missed. Its top 10 hold 73-77% of the experts the
-  next layer uses, against 61-65% for the engine's own, and 65-71% of its fetches are used.
-- **The keep rule** keeps every guessed expert in the cache until its layer has run, so a right
-  guess is never evicted unread. It is on whenever the two-layer guesser is
-  (`LLAMA_MOE_STREAM_LOOKAHEAD_KEEP=0` turns it off).
-
-Together: **about +12% writing on the coding set and +16% on chat**, against the engine's own guess
-without the keep rule. That is an estimate. The two-layer guesser was measured first (+4.2% coding,
-+8.2% chat), then the one-layer guesser on top of it another day (+7.5% and +7.3%), and the combined
-figures multiply the two. Neither guesser changes which experts are used, only which are fetched early,
-so the output is unchanged. Both are off unless you point the engine at the files (Quick start,
-steps 2 and 4).
-
-<p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the two-layer guesser fetches experts two layers ahead, the one-layer guesser tops up a layer later, and each guess is kept until its layer runs; 84% and 65-71% of guesses used. Writing about +12% coding and +16% chat, estimated from two runs"></p>
-
-### The reading room: a carousel for long prompts
-
-A long prompt needs nearly every expert on every layer. The reading room is a small ring buffer
-(about 1.4 GiB) carved out of the expert cache. The SSDs fill it layer after layer, ahead of the
-GPU, so prompt reading costs whichever of the two is slower, not both added together. The output
-is bit-identical to having every expert in RAM. While writing, the buffer is lent back as extra
-cache, which won back its cost (+5.5% writing). It is on by default.
-
-<p align="center"><img src="media/flashnext/carousel.svg" width="760" alt="Before: the SSD and GPU take turns. After: the reading room keeps both busy, reading in +32%, time to first word −28%"></p>
-
-### Two drives
-
-Put a byte-identical copy of the model on a second SSD and the expert reads are split across both
-(`--moe-stream-alt-path`, `--moe-stream-alt-split 53`). The internal SSD (6.5 GB/s) and a 990 PRO
-over Thunderbolt 5 (5.7 GB/s) give 12.3 GB/s together. That made writing 15% faster and cut the time
-to first token by 31%.
-
-**New in October, the plumbing:** each read now goes to whichever drive has fewer reads waiting (the
-53/47 split by expert id only breaks ties), where before an expert's drive was fixed by its id, so
-one drive could queue while the other sat idle. The read threads also run at macOS's interactive
-priority. Together: **+12.5% writing on the coding set and +10.4% on chat**, and the GPU waits on the
-SSDs 15% of the time instead of 20%. Both are on by default (`LLAMA_MOE_STREAM_DYN_DRIVE=0` and
-`LLAMA_MOE_STREAM_QOS=0` turn them off); they change only where bytes are read from, never which.
-
-<p align="center"><img src="media/flashnext/two-ssds.svg" width="760" alt="Gain from a second SSD: reading in +40% before the reading room and +15% after; writing +15%; time to first word −31% to −33%"></p>
-
-### The MTP draft head, at a depth it measures for itself
-
-A small draft head guesses up to 5 tokens ahead, and the model checks them all in one pass
-(`-md` with `--spec-type draft-mtp-adaptive`, which `--flashnext` sets). It picks its own guessing
-depth from how often recent guesses were kept; that measured depth is the engine's default
-(`LLAMA_SPEC_ADAPTIVE_RATE=0` goes back to the older rule, a depth that climbs and falls with
-how many guesses were kept). On the agent conversations (tool calls,
-code) it made writing 23% faster. On prose it breaks even, because every guess, right or wrong, needs
-its own experts fetched.
-
-**New in October, fewer undo copies:** before each check, the model saves copies of its running
-(recurrent) state so it can roll back the guesses it rejects. It used to save every slot each round;
-now it saves only the slots a rollback can actually reach. Coding: **+4.3% writing**; chat: level
-(−2.0%, within the runs' noise). Output is byte-identical. It is on by default
-(`LLAMA_RS_SKIP_SLOTS=0` saves every slot again).
-
-### Union attention
-
-The model's sparse attention picks the context blocks each query attends to. Union attention
-shares one deduplicated pick list per batch while reading a prompt. At 160K context its working
-memory drops from 5.6 GiB to 1.9 GiB, and prompt reading gets 5% faster. It sums in a different
-order, so words can differ at near-ties; perplexity is unchanged. It is the default
-(`LLAMA_QSA_UNION=1`).
-
-### The chat window
-
-One server, two users: you chatting, and a coding agent working in the background. A chat request
-stops a running background request, which gets a 503 that its client retries. Background requests
-then wait until 90 seconds after the last chat reply. Only the background client needs to send a
-header (`X-Lane: code`). `--flashnext` turns it on at 90 s (`--chat-window 90`); with no such client
-it changes nothing.
-
-**New in October, chat's opening kept in RAM:** a coding agent's long conversation fills the prompt
-cache, so a new chat used to read its opening (system prompt and tools, ~4,200 tokens) in again.
-`--cache-ram 400 --cache-ram-opening` (both set by `--flashnext`) keeps one RAM copy of chat's
-opening only (~232 MiB), never the agent's. A new chat after coding work then starts writing in
-**4.1 s instead of 14.2 s**.
-
-**Fixed in this update:** when the coding agent had the server first, the opening's pin landed at
-token 3, where chat's prompt and the agent's part ways. The RAM copy then held almost nothing (3 of
-5,864 tokens), and every new chat read in 5-7K tokens again (14-20 s). The pin now knows whether a
-chat follows the agent's work, and then pins at the chat's first message. In a live check after a
-73K-token coding prompt, the next new chat read in 463 tokens and started writing in **3.5 s**. The
-first new chat after each start still reads its opening once, since nothing has saved it yet.
-
-<p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
-
-### And smaller wins, all on by default
-
-- The n-gram table's hot rows sit on a 128 MiB shelf instead of macOS's file cache (`--ple-shelf`, +3% writing).
-- One prompt-cache checkpoint stays pinned at the start of the conversation, so a new chat after a
-  long one resumes in 4 s instead of 14 s.
-- Cheaper per-layer stops: less locking and lookup at each layer, the next layer's GPU work encoded
-  ahead, and a tiny keep-awake ping so the GPU does not power down while it waits (+7% writing).
 ## Out of the box, and what you add
 
 Once a change proves itself in the study, it becomes the engine's default, unless it needs a
@@ -412,6 +403,22 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
 | A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
 | The GPU's wired-memory limit | `sudo sysctl iogpu.wired_limit_mb=59392` | [Quick start](#quick-start), step 3. |
+
+## What each extra is worth
+
+> **The headline numbers are with all the extras on.** That means `--flashnext`, a 28 GiB expert cache,
+> the MTP draft head, both trained guessers and a second SSD. Leave an extra off and you'll be
+> slower. The table shows roughly how much each one is worth.
+
+| Extra | What it's worth | Without it |
+|---|---|---|
+| `--flashnext` | The whole setup: streaming, big batches, the right context and cache settings | Upstream's defaults don't stream, so the model won't run well on 64 GB |
+| A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Unset, it's far too small. 24 GiB writes about 6-8% slower |
+| The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
+| The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
+| A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
+
+These were measured one at a time, months apart, so don't just add them up. Each one counts, though.
 
 ## Guides
 
