@@ -50,7 +50,7 @@ Runs happened on different days and settings, so compare within a line, not down
 | Two drives (final setup) | +15.4% writing (14.46 → 16.59), −31% time to first token | R-drives |
 | Next-layer prefetch, 10 experts wide instead of 1 | +7.3% writing | R-lookahead |
 | The MTP draft head on agent conversations | +22.8% writing (13.31 → 16.35); prose +1.1% | A-auto |
-| The draft head's token list | +2.6% writing; October re-test +2.7% chat, +1.5% coding, then dropped (too small for an extra file) | G-guess, V46 |
+| The draft head's token list | +2.6% writing | G-guess |
 | The reading room | +31.6% reading a prompt, −27.7% time to first token | RR-room |
 | Lending the reading room to the cache while writing | +5.5% writing | RR-lend |
 | Checkpoints every 8,192 tokens instead of 512 | +19.5% reading a prompt, −16.6% time to first token | C-cms |
@@ -106,8 +106,7 @@ guessers' tuning as soon as their files are named), and `--flashnext` sets llama
 the everyday values, the chat window (90 s) and chat's opening copy included
 ([Settings](settings.md#defaults-and---flashnext)). The study's own server runs exactly that, plus
 the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
-cache, the draft head, both guessers and the second SSD. They were also measured with a token list
-for the draft head, which the study dropped afterwards (about 2% of writing: V46 above).
+cache, the draft head, both guessers and the second SSD.
 
 ## Expert cache size (draft head off)
 

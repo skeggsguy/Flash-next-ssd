@@ -68,8 +68,7 @@ is one value away:
 
 The downloads stay yours to add: the draft head (`-md`), the two trained guessers (by their
 variables) and the image encoder (`--mmproj`). So do the choices that depend on your Mac: the
-expert cache, the second drive, the context, the chat window and the opening copy. A token list
-for the draft head (`LLAMA_MTP_VOCAB`) is optional and not supplied; the study no longer runs one.
+expert cache, the second drive, the context, the chat window and the opening copy.
 
 **`--flashnext`** (`LLAMA_ARG_FLASHNEXT=1`) sets llama.cpp's own options to the everyday values,
 each only where you did not set that option yourself, on the command line, as its `LLAMA_ARG_*`
@@ -220,7 +219,7 @@ Environment-only:
 | Variable | Default | What it does |
 |---|---|---|
 | `LLAMA_SPEC_ADAPTIVE_RATE` | 1 | With `draft-mtp-adaptive`, the depth is measured from the guesses actually kept (depths 0 to n-max, a probe every 12 cycles, remembered across answers). `0`: a fixed climb table instead (the old way). |
-| `LLAMA_MTP_VOCAB` | off (the whole vocabulary) | A text file of token ids, one per line (`#` comments allowed): the head guesses only from these, so each guess is cheaper; the words never change. A 96K list built from the model's outputs on code and prose gave +2.6% writing (G-guess), and +2.7% chat, +1.5% coding in October's re-test with the guessers and LRU on. The study dropped its list then, as too small a gain to keep an extra file for, so none is supplied: build one from text like yours, or leave it off. It costs about 256 MiB. |
+| `LLAMA_MTP_VOCAB` | off (the whole vocabulary) | A text file of token ids, one per line (`#` comments allowed): the head guesses only from these, so each guess is cheaper; the words never change. |
 
 **When the draft head pays:** on code, tool calls and structured output, where guesses land
 (agent conversations +23%, up to 1.68x on one long tool-heavy reply). On free prose it breaks even:
