@@ -2175,6 +2175,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 // nop
             } break;
+        case GGML_OP_MOE_GATE:
+            {
+                // nop: a view of src[0]; only Metal splits its command buffers at a gate (ggml.h)
+            } break;
         case GGML_OP_MOE_SLOT_RESOLVE:
             {
                 GGML_ABORT("MOE_SLOT_RESOLVE is only implemented by the Metal backend");
@@ -2398,6 +2402,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_SET:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
+        case GGML_OP_MOE_GATE:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
         case GGML_OP_GET_ROWS_BACK:

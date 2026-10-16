@@ -32,6 +32,10 @@ int64_t llama_flashnext_alloc_chunk_mib(const char * value) {
     return value == nullptr ? FLASHNEXT_ALLOC_CHUNK_MIB : std::max<int64_t>(0, atoll(value));
 }
 
+bool llama_flashnext_desk_first(const char * value) {
+    return value == nullptr || flashnext_flag(value);
+}
+
 bool llama_flashnext_guesser_named(const char * guesser_value) {
     return guesser_value != nullptr && *guesser_value != '\0';
 }

@@ -364,6 +364,15 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
 
         const auto & node0 = nodes[i0];
 
+        // desk books first (GGML_OP_MOE_GATE): nothing moves across a gate in either direction. A later node is
+        // never pulled ahead of it (h_safe stops the search at it), and here a gate ends the concurrent set
+        // without searching ahead, so no node after it is pulled before it either.
+        if (node0.op() == GGML_OP_MOE_GATE) {
+            ggml_mem_ranges_reset(mrs0);
+            res.push_back(i0);
+            continue;
+        }
+
         // the node is not concurrent with the existing concurrent set, so we have to "put a barrier" (i.e reset mrs0)
         // but before we do that, look forward for some other nodes that can be added to the concurrent set mrs0
         //

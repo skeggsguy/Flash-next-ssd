@@ -77,18 +77,23 @@ an efficiency fix, stay level within that noise).
 | The trained one-layer guess, on top of all the above (12 conversations each) | **+7.5%** (20.19 → 21.71) | **+7.3%** (21.16 → 22.70) | T43-code-lean, T43-chat-lean |
 | A full cache lets go the expert unused longest (LRU), not the lowest recent use count, on top of all the above (12 conversations each) | **+9.6%** (21.52 → 23.57) | **+9.7%** (22.75 → 24.96) | L44-code-lean, L44-chat-lean |
 | The same at a 24 GiB cache, against the old rule at 28 GiB: ~4.1 GiB of memory back | level, +0.4% (21.52 → 21.59) | level, +2.8% (22.75 → 23.38) | L44-code-lean, L44-chat-lean |
+| While a layer's missing experts are read, the GPU starts on the ones in the cache (desk first), on top of all the above (12 conversations each) | **+4.9%** (23.12 → 24.26) | **+9.1%** (24.48 → 26.70) | D39-code-lean, D39-chat-lean |
 | Chat's opening kept in RAM | | a new chat after coding work: first token in **4.1 s**, from 14.2 s | chat-return |
 | The pin knows chat from coding work | | with the agent first, a new chat read in 463 tokens instead of 5-7K: **3.5 s** to the first token, from 14-20 s | pin-lanes live check |
 
-The best measured arms: **23.6 tokens/s on code** and **25.0 on chat** with the LRU rule, on 12
-conversations each (L44); the L44 bases are the mean of the old rule's two runs, before and after.
-LRU cut the experts fetched from the SSD per written token by 28% (code) and 17% (chat), and gained
+The best measured arms: **24.3 tokens/s on code** and **26.7 on chat** with desk first, on 12
+conversations each (D39); each base is the mean of its two runs without the change, before and after.
+Desk first hid 66% (chat) and 62% (code) of the GPU's wait for missing experts (D39-probe), so that
+wait fell from about 4.6-5.7 ms to 1.6-1.8 ms a written token (one conversation each). D39's base
+arms (23.1 and 24.5) came in a little under L44's LRU arms (23.6 and 25.0), a day later on the same
+conversations, so compare a change only within its own run. LRU (L44) cut the
+experts fetched from the SSD per written token by 28% (code) and 17% (chat), and gained
 most on the longest conversations (+14-15%). Before it, the one-layer guess's arms wrote 21.7 and
 22.7 (T43). Over all 24, before the one-layer guess: **21.2** and **21.1**, against 17.5 and 17.6 for
 the same sets before the trained guessers, run in another week: about +21% and +20%. None of these
 changes alters an output token (the guessers change only what is fetched early, LRU only what the
-cache holds; the one-layer guess, the undo copies, the plumbing and LRU passed byte-identical word
-checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
+cache holds, desk first only when each expert is worked on; the one-layer guess, the undo copies, the
+plumbing, LRU and desk first passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
 from 20%. The one-layer guess wastes less drive time: 65-71% of its early fetches are used,
 against 30-32% for the borrowed guess, and the fetches per token that are never used fall from about
 42 to 7-8.
@@ -99,7 +104,9 @@ ceiling from 5 to 8 guesses (+1.1%, below the bar). Both runs: C-tax. Later in O
 missing expert from both drives at once (`LLAMA_MOE_STREAM_SPLIT`; the GPU's wait for experts did not
 move, T11b-probe), and a lookup draft that copies the words that followed the same words earlier in
 the conversation (best setting −0.06% on code in a replay of recorded rounds, under the +3% bar;
-lookup replay).
+lookup replay). On top of desk first: sending the next layers' guesses to the SSDs as soon as a
+layer's own reads are queued, not after they land (−0.5% on chat against a +1% bar, G47-chat-lean;
+the probe found 16% more reads a token on code, G47-probe; not in this release).
 
 From this release the switches behind these changes are the engine's defaults (the trained
 guessers' tuning as soon as their files are named), and `--flashnext` sets llama.cpp's options to

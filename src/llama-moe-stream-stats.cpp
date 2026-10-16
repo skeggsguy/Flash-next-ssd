@@ -1,4 +1,5 @@
 #include "llama-moe-stream.h"
+#include "llama-moe-stream-desk-first.h"
 #include "llama-moe-room.h"
 
 #include "llama-impl.h"
@@ -146,6 +147,8 @@ void llama_moe_stream::maybe_dump_stats_locked() {
         if (room) {
             room->dump_stats_locked(dt);
         }
+
+        llama_moe_stream_desk_first_print(stats, &stats_prev);
 
         if (n_slot_chk > 0) {
             LLAMA_LOG_WARN("%s: moe stream: gpu slot resolve verified %" PRId64 " calls, %" PRId64 " mismatches\n",
@@ -325,6 +328,7 @@ void llama_moe_stream::print_stats() {
     if (room) {
         room->print_stats_locked();
     }
+    llama_moe_stream_desk_first_print(stats, nullptr);
     {
         const int64_t n_bytes = stats.n_bytes_file + stats.n_bytes_alt;
         LLAMA_LOG_WARN("%s: moe stream: expert bytes read = %.2f GiB file + %.2f GiB alt (%4.1f%%/%4.1f%%)\n",

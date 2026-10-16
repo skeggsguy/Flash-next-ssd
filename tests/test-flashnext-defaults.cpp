@@ -49,6 +49,11 @@ void test_switches(testing & t) {
     t.assert_equal("chunk \"-3\": one go", (int64_t) 0, llama_flashnext_alloc_chunk_mib("-3"));
     t.assert_equal("chunk \"1024\"", (int64_t) 1024, llama_flashnext_alloc_chunk_mib("1024"));
 
+    t.assert_true("desk first unset: on", llama_flashnext_desk_first(nullptr));
+    t.assert_true("desk first \"1\": on", llama_flashnext_desk_first("1"));
+    t.assert_true("desk first \"0\": the stop waits for every trip", !llama_flashnext_desk_first("0"));
+    t.assert_true("desk first \"\": off", !llama_flashnext_desk_first(""));
+
     t.assert_true("guesser unset: not named", !llama_flashnext_guesser_named(nullptr));
     t.assert_true("guesser \"\": not named", !llama_flashnext_guesser_named(""));
     t.assert_true("guesser a path: named", llama_flashnext_guesser_named("/x/guesser.bin"));
@@ -107,7 +112,7 @@ struct fake_env {
 };
 
 const std::string ENGINE_DEFAULTS = "flashnext: engine defaults: LLAMA_MOE_STREAM_LRU=1, LLAMA_RS_SKIP_SLOTS=1, "
-    "LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096, LLAMA_SPEC_ADAPTIVE_RATE=1, GGML_METAL_STAFF_MV=0, "
+    "LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096, LLAMA_MOE_STREAM_DESK_FIRST=1, LLAMA_SPEC_ADAPTIVE_RATE=1, GGML_METAL_STAFF_MV=0, "
     "GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000";
 
 void test_line(testing & t) {
@@ -120,10 +125,12 @@ void test_line(testing & t) {
 
     env.vars["LLAMA_MOE_STREAM_LRU"] = "0";
     env.vars["GGML_METAL_STAFF_MV"]  = "1";
+    env.vars["LLAMA_MOE_STREAM_DESK_FIRST"] = "0";
     env.vars["LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2"] = "4";
     const std::string l1 = line();
     t.assert_true("the user's LRU marked", l1.find("LLAMA_MOE_STREAM_LRU=0 (yours)") != std::string::npos);
     t.assert_true("the user's staff marked", l1.find("GGML_METAL_STAFF_MV=1 (yours)") != std::string::npos);
+    t.assert_true("the user's desk first marked", l1.find("LLAMA_MOE_STREAM_DESK_FIRST=0 (yours)") != std::string::npos);
     t.assert_true("a tuning set without the guesser",
         l1.find("off, no guesser named, but LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2=4 (yours);") != std::string::npos);
 

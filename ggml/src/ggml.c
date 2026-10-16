@@ -1104,9 +1104,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "UNION_BUILD",
     "FLASH_ATTN_UNION",
     "MUL_MAT_ID_INTO",
+    "MOE_GATE",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1224,9 +1225,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "union_build(x)",
     "flash_attn_union(x)",
     "mul_mat_id_into(as,b,ids,into)",
+    "moe_gate(a,deps)",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3470,6 +3472,39 @@ struct ggml_tensor * ggml_mul_mat_id_into(
     result->src[3] = into;
 
     return result;
+}
+
+// ggml_moe_gate (see ggml.h): a view of a, like ggml_view_tensor, so the graph allocator keeps a alive while
+// the gate's consumers need it; the deps are sources so the graph places them before the gate. The
+// userdata pointer travels in the op params for the backend's gate fn.
+struct ggml_tensor * ggml_moe_gate(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor ** deps,
+        int                   n_deps,
+        void                * userdata) {
+    GGML_ASSERT(n_deps >= 0 && n_deps < GGML_MAX_SRC);
+
+    struct ggml_tensor * result = ggml_view_tensor(ctx, a);
+
+    ggml_set_op_params(result, &userdata, sizeof(userdata));
+
+    result->op     = GGML_OP_MOE_GATE;
+    result->src[0] = a;
+    for (int i = 0; i < n_deps; i++) {
+        GGML_ASSERT(deps[i] != NULL);
+        result->src[1 + i] = deps[i];
+    }
+
+    return result;
+}
+
+void * ggml_moe_gate_get_userdata(const struct ggml_tensor * gate) {
+    GGML_ASSERT(gate->op == GGML_OP_MOE_GATE);
+
+    void * userdata;
+    memcpy(&userdata, gate->op_params, sizeof(userdata));
+    return userdata;
 }
 
 // ggml_out_prod

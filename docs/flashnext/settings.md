@@ -59,6 +59,7 @@ is one value away:
 | Variable | Unset (the default) | The old way |
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | on: a full cache lets go the expert unused longest | `0`: the lowest recent use count |
+| `LLAMA_MOE_STREAM_DESK_FIRST` | on: the GPU starts on the cached experts while the missing ones are read | `0`: each layer waits for every missing expert first |
 | `LLAMA_RS_SKIP_SLOTS` | on: only the undo copies a rollback can reach | `0`: every copy |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | `1`: the draft head's measured depth | `0`: the older climb-table rule |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | `4096`: the cache claimed in 4 GiB steps | `0`: all at once |
@@ -121,6 +122,7 @@ Environment-only switches:
 | Variable | Default | What it does |
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | on | Which expert a full cache lets go. On: the one unused longest (least recently used). `0`: the old rule, the lowest recent use count. Measured at a 28 GiB cache: +9.6% writing on code, +9.7% on chat, 17-28% fewer experts fetched per written token; at 24 GiB it writes as fast as the old rule at 28. Never changes the words. |
+| `LLAMA_MOE_STREAM_DESK_FIRST` | on | While writing (and for the draft head's checks, up to 16 tokens), a layer whose experts are not all in the cache no longer waits for the missing ones before the GPU starts: it works on the cached experts and the shared expert while they are read, then on the rest as they land. Measured at a 28 GiB cache: +9.1% writing on chat, +4.9% on code, with 62-66% of the wait for missing experts hidden. Exact by construction: never changes the words. `0` is the old way, every missing expert first. Off by itself with `LLAMA_MOE_STREAM_GPU_SLOT`, `LLAMA_MOE_STREAM_STATE_LOG`, or a cache the GPU does not read; the log says `desk first: on` or why it is off. |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | 4096 | Claim the expert cache in steps of this many MiB, with a pause between steps (`LLAMA_MOE_STREAM_ALLOC_PAUSE_MS`, 500 ms when chunking). Opening a 28 GiB cache at once drops macOS's free memory in seconds, and the study's only spill inside a test came at such an opening. `0` claims it all at once (the old way). |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | 10000000 | Metal un-wires the model's buffers after this many idle seconds, and the next request wires ~41 GiB back at once, a small rush. The default keeps it wired for good. `0` is upstream's 180 s, if you want the memory back when the server is idle. |
 | `LLAMA_MOE_STREAM_LOOKAHEAD` | the model's experts per token (10) | While writing, fetch this many of the next layer's likely experts ahead of time (about 1 in 4 is used before the cache lets it go). `0` turns it off. Lookahead makes the cache's contents depend on timing, but never changes the words. |

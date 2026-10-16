@@ -10,6 +10,7 @@
 #include "ggml-metal-fusion.h"
 #include "ggml-metal-fusion-fn.h"
 #include "ggml-metal-mv-ext.h"
+#include "ggml-metal-moe-gate.h"
 #include "ggml-metal-staff-mv.h"
 #include "ggml-metal-tuning.h"
 
@@ -259,8 +260,12 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         case GGML_OP_VIEW:
         case GGML_OP_TRANSPOSE:
         case GGML_OP_PERMUTE:
+        case GGML_OP_MOE_GATE: // the command buffers are cut after it, the gate fn runs between (ggml-metal-moe-gate.h)
             {
                 // noop -> next node
+                if (node->op == GGML_OP_MOE_GATE) {
+                    ggml_metal_moe_gate_check(node);
+                }
                 if (ctx->debug_graph > 0) {
                     GGML_LOG_DEBUG("%s: node[%5d] - %-12s %s\n", __func__, idx, ggml_op_name(node->op), "(noop)");
                 }

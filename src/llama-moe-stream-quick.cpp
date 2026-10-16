@@ -66,8 +66,12 @@ void llama_moe_stream::c2_init() {
 }
 
 // the remap's last step, shared by both paths: each pick's slot, its LRU stamp, the guesses' "used" counts,
-// and the end of the floor's stop: its guessed books are no longer kept (llama-moe-stream-keep.cpp)
-void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n) {
+// and the end of the floor's stop: its guessed books are no longer kept (llama-moe-stream-keep.cpp).
+// Desk books first (llama-moe-stream-desk-first.h) passes out_arr, the arrivals' plane: each pick's slot goes into
+// out (the desk's plane) when its book is on the desk, into out_arr when arriving[slot] (null: none arrive), and -1
+// into the other. Everything else is the same.
+void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n,
+        int32_t * out_arr, const uint8_t * arriving) {
     auto * mgr = sl.mgr;
     mgr->n_one_lookup += mgr->one_lookup;
     const bool tagged = sl.slot_la1.size() == (size_t) sl.n_slots && sl.slot_la2.size() == (size_t) sl.n_slots;
@@ -75,6 +79,11 @@ void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids
         const int32_t s = mgr->one_lookup ? sl.slot_of[ids[i]] : sl.expert_slot.at(ids[i]);
         sl.slot_last_use[s] = ++sl.use_counter;
         out[i] = s;
+        if (out_arr != nullptr) {
+            const bool arr = arriving != nullptr && arriving[s];
+            out[i]     = arr ? -1 : s;
+            out_arr[i] = arr ? s : -1;
+        }
         if (tagged && sl.slot_la2[s] == ids[i]) {
             sl.slot_la2[s] = -1; // a two-floors-ahead fetch, read by its floor
             mgr->stats.n_la2_used++;
@@ -89,8 +98,9 @@ void llama_moe_stream_remap_out(llama_moe_stream_layer & sl, const int32_t * ids
 
 // The quick path (see the top of the file). Returns false, having changed nothing the locked path reads,
 // when it cannot serve the call: a book not on the desk or still on its way, a stats dump due, or off.
+// out_arr (desk books first): the arrivals' plane, all -1 here
 bool llama_moe_stream::remap_quick(llama_moe_stream_layer & sl, const int32_t * ids, int32_t * out, int64_t n,
-        int64_t n_tok, int64_t t_op0) {
+        int64_t n_tok, int64_t t_op0, int32_t * out_arr) {
     if (!nolock || !workers_started) {
         return false;
     }
@@ -137,7 +147,7 @@ bool llama_moe_stream::remap_quick(llama_moe_stream_layer & sl, const int32_t * 
         stats.n_hit++;
         sl.n_hit++;
     }
-    llama_moe_stream_remap_out(sl, ids, out, n);
+    llama_moe_stream_remap_out(sl, ids, out, n, out_arr, nullptr);
     stats.t_remap_op_us += ggml_time_us() - t_op0;
     n_quick++;
     return true;

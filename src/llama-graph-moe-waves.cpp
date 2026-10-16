@@ -20,6 +20,9 @@ ggml_tensor * llm_graph_context::build_moe_stream_experts(llama_moe_stream_layer
         GGML_ASSERT(!weight_before_ffn); // refused at load (llama_moe_room_size_model)
         return build_moe_room_experts(msl, gemms, cur, selected_experts);
     }
+    if (msl && shape.desk_first) {
+        return build_moe_desk_first_experts(msl, gemms, cur, ids_gemm, selected_experts);
+    }
     if (msl && n_stream_waves > 1 && use_partition) {
         return build_moe_stream_partition(msl, shape, gemms, cur, selected_experts, n_expert_used, weight_before_ffn);
     }

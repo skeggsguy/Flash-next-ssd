@@ -14,6 +14,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-moe-stream.h"
+#include "llama-moe-stream-desk-first.h"
 #include "llama-mtp-record.h"
 #include "llama-rs-skip.h"
 #include "llama-ext.h"
@@ -418,6 +419,16 @@ llama_context::llama_context(
             if (!ok) {
                 throw std::runtime_error("LLAMA_MOE_STREAM_GPU_SLOT=3 requires the Metal backend");
             }
+        }
+
+        // desk books first (LLAMA_MOE_STREAM_DESK_FIRST): the gate fn on the Metal backend, and the graphs build gates
+        if (auto * mstream = model.moe_stream(); mstream != nullptr) {
+            std::vector<ggml_backend_t> bs;
+            for (auto & backend : backends) {
+                bs.push_back(backend.get());
+            }
+            cparams.moe_desk_first = llama_moe_stream_desk_first_register(*mstream, bs.data(), bs.size(),
+                    cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP);
         }
 
         // create a list of the set_n_threads functions in the backends
@@ -2628,6 +2639,10 @@ ggml_status llama_context::graph_compute(
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+        if (cparams.moe_desk_first) {
+            // the graph stopped before its gates ran: no floor is waiting for one (llama-moe-stream-desk-first.h)
+            llama_moe_stream_desk_first_reset(*model.moe_stream());
+        }
     }
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));

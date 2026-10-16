@@ -44,6 +44,16 @@ struct llama_moe_stream_stats {
     // the trained one-floor guess (LLAMA_MOE_STREAM_GUESSER1): floor stops whose one-floor guess it scored (same thread)
     int64_t n_guess1_stops   = 0;
 
+    // desk books first (LLAMA_MOE_STREAM_DESK_FIRST, llama-moe-stream-desk-first.h), graph thread only, as the guesser's:
+    // its floor stops, the ones split (some book still arriving), the picks on each plane, and the gates that waited
+    // with their wait (not in t_stall_us: the GPU has the desk's books to run meanwhile)
+    int64_t n_df_stops        = 0;
+    int64_t n_df_split        = 0;
+    int64_t n_df_rows_desk    = 0;
+    int64_t n_df_rows_arr     = 0;
+    int64_t n_df_gate_waits   = 0;
+    int64_t t_df_gate_wait_us = 0;
+
     // Decode has no waves, so n_preload_ready above is unreachable there and reads as 0 - it
     // cannot say whether the lookahead prefetch is working. These two split a demand HIT by the
     // slot's state, which distinguishes the two failure modes:

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 760 380" width="760" height="380" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Before: each layer waits for its missing experts before the GPU starts. After: the GPU works on the cached experts while the missing ones are read, hiding about two thirds of the wait; writing +9.1% chat, +4.9% coding">
+<rect width="760" height="380" fill="#ffffff"/>
+<text x="20" y="30" font-size="16" font-weight="700" fill="#1b2228">Before: each layer waits for every missing expert</text>
+<text x="20" y="48" font-size="11.5" fill="#5a6670">A layer with a few experts not in the cache: the GPU stands idle until the SSDs have read all of them</text>
+<text x="20" y="80" font-size="12" font-weight="600" fill="#1b2228">SSD</text>
+<text x="20" y="114" font-size="12" font-weight="600" fill="#1b2228">GPU</text>
+<g fill="#d98a1c"><rect x="70" y="66" width="60" height="22"/><rect x="210" y="66" width="60" height="22"/><rect x="350" y="66" width="60" height="22"/><rect x="490" y="66" width="60" height="22"/></g>
+<g fill="#eef1f3"><rect x="70" y="100" width="60" height="22"/><rect x="210" y="100" width="60" height="22"/><rect x="350" y="100" width="60" height="22"/><rect x="490" y="100" width="60" height="22"/></g>
+<g fill="#1b2228"><rect x="130" y="100" width="40" height="22"/><rect x="270" y="100" width="40" height="22"/><rect x="410" y="100" width="40" height="22"/><rect x="550" y="100" width="40" height="22"/></g>
+<g fill="#0f6e72"><rect x="170" y="100" width="40" height="22"/><rect x="310" y="100" width="40" height="22"/><rect x="450" y="100" width="40" height="22"/><rect x="590" y="100" width="40" height="22"/></g>
+<text x="100" y="138" font-size="10.5" fill="#5a6670" text-anchor="middle">GPU idle</text>
+<line x1="630" y1="60" x2="630" y2="130" stroke="#9a5b00" stroke-dasharray="3 3"/>
+<text x="636" y="114" font-size="11" fill="#9a5b00">4 layers done</text>
+<text x="20" y="190" font-size="16" font-weight="700" fill="#1b2228">After: the GPU starts on the experts already in the cache</text>
+<text x="20" y="208" font-size="11.5" fill="#5a6670">It works on the cached experts and the shared expert while the missing ones are read, then on those as they land</text>
+<text x="20" y="240" font-size="12" font-weight="600" fill="#1b2228">SSD</text>
+<text x="20" y="274" font-size="12" font-weight="600" fill="#1b2228">GPU</text>
+<g fill="#d98a1c"><rect x="70" y="226" width="60" height="22"/><rect x="170" y="226" width="60" height="22"/><rect x="270" y="226" width="60" height="22"/><rect x="370" y="226" width="60" height="22"/></g>
+<g fill="#1b2228"><rect x="70" y="260" width="40" height="22"/><rect x="170" y="260" width="40" height="22"/><rect x="270" y="260" width="40" height="22"/><rect x="370" y="260" width="40" height="22"/></g>
+<g fill="#eef1f3"><rect x="110" y="260" width="20" height="22"/><rect x="210" y="260" width="20" height="22"/><rect x="310" y="260" width="20" height="22"/><rect x="410" y="260" width="20" height="22"/></g>
+<g fill="#0f6e72"><rect x="130" y="260" width="40" height="22"/><rect x="230" y="260" width="40" height="22"/><rect x="330" y="260" width="40" height="22"/><rect x="430" y="260" width="40" height="22"/></g>
+<line x1="470" y1="220" x2="470" y2="290" stroke="#0f6e72" stroke-dasharray="3 3"/>
+<text x="476" y="246" font-size="11" fill="#0f6e72">done</text>
+<rect x="520" y="222" width="222" height="66" rx="6" fill="#e2f0f0"/>
+<text x="631" y="242" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">Measured: writing +9.1% chat</text>
+<text x="631" y="258" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">+4.9% coding</text>
+<text x="631" y="273" font-size="11" fill="#1b2228" text-anchor="middle">about 2/3 of the wait hidden</text>
+<text x="631" y="285" font-size="10.5" fill="#5a6670" text-anchor="middle">output byte-identical</text>
+<rect x="70" y="316" width="12" height="12" fill="#d98a1c"/><text x="88" y="326" font-size="11.5" fill="#1b2228">SSD reading missing experts</text>
+<rect x="262" y="316" width="12" height="12" fill="#1b2228"/><text x="280" y="326" font-size="11.5" fill="#1b2228">GPU on the cached experts</text>
+<rect x="446" y="316" width="12" height="12" fill="#0f6e72"/><text x="464" y="326" font-size="11.5" fill="#1b2228">GPU on the ones just read</text>
+<rect x="628" y="316" width="12" height="12" fill="#eef1f3" stroke="#c4ccd2"/><text x="646" y="326" font-size="11.5" fill="#1b2228">GPU waiting</text>
+<text x="20" y="352" font-size="10.5" fill="#5a6670">Schematic timing, layers with experts to read. Layers with every expert cached run as before.</text>
+<text x="20" y="368" font-size="10.5" fill="#5a6670">Measured on 12 conversations each, A-B-A, 28 GiB cache, two SSDs (study runs D39-chat-lean, D39-code-lean); wait hidden: D39-probe.</text>
+</svg>

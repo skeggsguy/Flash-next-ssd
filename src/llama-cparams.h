@@ -56,6 +56,7 @@ struct llama_cparams {
     bool pipeline_parallel;
     bool mtp_record_only = false; // the apprentice's batches without outputs record K/V only (llama-mtp-record.h)
     const struct llama_mtp_vocab * mtp_vocab = nullptr; // the apprentice's word list, owned by the context (llama-mtp-vocab.h)
+    bool moe_desk_first = false; // desk books first: the gate fn is set on this context's Metal backend (llama-moe-stream-desk-first.h)
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 

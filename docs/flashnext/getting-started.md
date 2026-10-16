@@ -160,8 +160,8 @@ What each part is for, in one line each (details in [Settings](settings.md)):
 | `--moe-stream-cache 28` | a 28 GiB expert cache: the one size you must give, since the engine cannot know your Mac |
 
 The engine's own switches need nothing: unset, they run the study's values (the cache claimed in
-4 GiB steps, the model kept wired while idle, the LRU rule, fewer undo copies, the measured draft
-depth). [Settings](settings.md) lists each with its default and the value that restores the old way.
+4 GiB steps, the model kept wired while idle, the LRU rule, the GPU starting on cached experts while
+the missing ones are read, fewer undo copies, the measured draft depth). [Settings](settings.md) lists each with its default and the value that restores the old way.
 `--flashnext` also turns on the chat window (90 s) and chat's opening copy. To use the second drive
 or the image encoder, add the flags from the
 [README's quick start](../../README.md#quick-start).

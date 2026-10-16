@@ -17,6 +17,9 @@
 // counts; the runners' drive time ahead of the stop does not). send: reserving slots and handing the trips to the
 // runners (and the lent belt's copies). lookup: the rest of the op (the lock, the slip, the desk lookups, the
 // relabel).
+//
+// With desk books first (llama-moe-stream-desk-first.h) the stop does not wait: its line is made at the stop and put
+// by the floor's gate, whose wait is the line's wait. The GPU runs the floor's desk books during part of that wait.
 
 #include <cstdint>
 #include <memory>
@@ -55,6 +58,9 @@ struct llama_moe_stream_stops {
     void put(int32_t il, int64_t t0_ns, int64_t t1_ns, uint32_t n_asked, uint32_t n_trips, int64_t send_ns,
              int64_t wait_ns);
     void put_rec(const rec & r);
+    // the line put would put, not put yet (the graph before it is asked of the Metal backend here)
+    rec make(int32_t il, int64_t t0_ns, int64_t t1_ns, uint32_t n_asked, uint32_t n_trips, int64_t send_ns,
+             int64_t wait_ns) const;
 
     size_t n_records() const;
     size_t n_chunks()  const;

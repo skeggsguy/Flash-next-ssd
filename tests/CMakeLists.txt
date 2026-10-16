@@ -219,6 +219,22 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         set_tests_properties(test-metal-encode-ahead-on-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
         set_tests_properties(test-metal-encode-ahead-on-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
         set_tests_properties(test-metal-encode-ahead-off     PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
+        # desk books first (study #39, step 1): the gate cuts the command buffers and its fn runs between them, in
+        # the encode-ahead commit and the plain path, with one and two extra command buffers and with none
+        llama_build(test-metal-moe-gate.cpp)
+        foreach (MG ahead-ncb1 ahead-ncb2 plain-ncb1 plain-ncb2)
+            llama_test(test-metal-moe-gate NAME test-metal-moe-gate-${MG})
+        endforeach()
+        foreach (MG ahead-ncb0 plain-ncb0)
+            llama_test(test-metal-moe-gate NAME test-metal-moe-gate-${MG} ARGS ncb0)
+        endforeach()
+        set_tests_properties(test-metal-moe-gate-ahead-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1")
+        set_tests_properties(test-metal-moe-gate-ahead-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2")
+        set_tests_properties(test-metal-moe-gate-plain-ncb1 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=1;GGML_METAL_ENCODE_AHEAD=0")
+        set_tests_properties(test-metal-moe-gate-plain-ncb2 PROPERTIES ENVIRONMENT "GGML_METAL_NCB=2;GGML_METAL_ENCODE_AHEAD=0")
+        set_tests_properties(test-metal-moe-gate-plain-ncb0 PROPERTIES ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
+        # a gate over a CPU op's output (the stop's own id plane) is refused before any kernel reads it
+        llama_test(test-metal-moe-gate NAME test-metal-moe-gate-cpu-view ARGS cpu-view)
         # the fork's proven defaults, ggml-metal's two (GGML_METAL_STAFF_MV, GGML_METAL_RESIDENCY_KEEP_ALIVE_S): unset,
         # "0" and the rest, and that common's start-up line names the defaults the device runs
         llama_build(test-flashnext-metal.cpp)
@@ -420,8 +436,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         set_tests_properties(test-moe-stream-lookahead-keep-qwen4exp-ngl${E64_NGL} test-moe-stream-lookahead-guesser-qwen4exp-ngl${E64_NGL}
                 test-moe-stream-lookahead-guesser1-qwen4exp-ngl${E64_NGL} PROPERTIES TIMEOUT 300)
     endforeach()
+    llama_build(test-moe-stream-desk-first.cpp)
+    llama_build(test-moe-stream-desk-first-rows.cpp) # a read-in asking for the last logits only: floors with no rows
     foreach (E64_TEST test-moe-room-model test-moe-room-model-paths test-moe-room-lend-model test-moe-stream-lookahead-all
-             test-moe-stream-c2 test-moe-stream-book-split-model)
+             test-moe-stream-c2 test-moe-stream-book-split-model test-moe-stream-desk-first test-moe-stream-desk-first-rows)
         foreach (E64_ARCH qwen4exp qwen3moe)
             foreach (E64_NGL 99 0)
                 llama_test(
@@ -436,6 +454,16 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
             endforeach()
         endforeach()
     endforeach()
+
+    # desk books first's floor-stop log lines (held for the gate) and stats lines (test-moe-stream-desk-first.cpp --stops)
+    llama_test(test-moe-stream-desk-first NAME test-moe-stream-desk-first-stops-qwen4exp LABEL main
+            ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf" --stops)
+    set_tests_properties(test-moe-stream-desk-first-stops-qwen4exp PROPERTIES FIXTURES_REQUIRED generate-models-e64)
+    # and the gate on Metal's plain encoding path (no encoding ahead)
+    llama_test(test-moe-stream-desk-first NAME test-moe-stream-desk-first-plain-qwen4exp LABEL main
+            ARGS -m "${MODEL_DIR}/qwen4exp-moe-e64.gguf")
+    set_tests_properties(test-moe-stream-desk-first-plain-qwen4exp PROPERTIES FIXTURES_REQUIRED generate-models-e64
+            ENVIRONMENT "GGML_METAL_ENCODE_AHEAD=0")
 
     # The room under union attention (LLAMA_QSA_UNION=1, the default since the study's WRITING-PLAN step 1) on
     # the h256 fixture, whose heads of 256 the Metal union attention kernel takes; the harness's own scenarios
@@ -720,6 +748,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-moe-stream-guesser1-mtp NAME test-moe-stream-guesser1-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-moe-stream-guesser1-mtp NAME test-moe-stream-guesser1-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-moe-stream-guesser1-mtp test-moe-stream-guesser1-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp
+            TIMEOUT 300)
+
+    # #39 (the study's DESK-FIRST-PLAN step 3): desk books first beside the apprentice, whose context opens with the
+    # switch set and must leave it off: the library's and the drafts' logits unchanged
+    llama_build(test-moe-stream-desk-first-mtp.cpp)
+    llama_test(test-moe-stream-desk-first-mtp NAME test-moe-stream-desk-first-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-moe-stream-desk-first-mtp NAME test-moe-stream-desk-first-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-moe-stream-desk-first-mtp test-moe-stream-desk-first-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp
             TIMEOUT 300)
 
     # C1-PROFILE-PLAN step A end to end: llama-server writing with the apprentice on the MTP fixture, given a tiny word

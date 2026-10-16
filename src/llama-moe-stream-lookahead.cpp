@@ -1,4 +1,5 @@
 #include "llama-moe-stream.h"
+#include "llama-moe-stream-desk-first.h"
 #include "llama-flashnext.h"
 #include "llama-moe-stream-guesser.h"
 #include "llama-moe-stream-impl.h"
@@ -209,7 +210,37 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
 
     llama_moe_stream_remap(dst, a, ith, nth, la->sl);
 
-    if (ith != 0 || la->sl_next == nullptr || la->top_k == 0) {
+    if (ith != 0) {
+        return;
+    }
+    llama_moe_stream_lookahead_run(la, b, nullptr);
+}
+
+// hand the picked guesses to the runners. lk not held: with LLAMA_MOE_STREAM_NOLOCK the lock is skipped when every
+// guess is already on the desk or on its way (the issue loop would skip them all)
+static void llama_moe_stream_lookahead_send(llama_moe_stream_lookahead * la, const std::vector<int32_t> & books1,
+        const std::vector<int32_t> & books2, bool two, std::unique_lock<std::mutex> & lk) {
+    auto * mgr = la->sl_next->mgr;
+    if (!lk.owns_lock()) {
+        if (mgr->nolock && llama_moe_stream_lookahead_all_on_desk(*la->sl_next, books1) &&
+                (!two || llama_moe_stream_lookahead_all_on_desk(*la->sl_next2, books2))) {
+            mgr->n_la_quick++;
+            return;
+        }
+        lk.lock();
+        if (mgr->load_failed) {
+            return;
+        }
+    }
+    llama_moe_stream_lookahead_issue(*la->sl_next, books1, false);
+    if (two) {
+        llama_moe_stream_lookahead_issue(*la->sl_next2, books2, true);
+    }
+}
+
+void llama_moe_stream_lookahead_run(llama_moe_stream_lookahead * la, const ggml_tensor * b,
+        llama_moe_stream_desk_first_floor * hold) {
+    if (la->sl_next == nullptr || la->top_k == 0) {
         return;
     }
 
@@ -227,12 +258,12 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
     }
 
     // The guesses depend only on the logits, never on the desk, so with LLAMA_MOE_STREAM_NOLOCK they are picked
-    // before the lock, and when every one is already on the desk or on its way (the issue loop would skip them
-    // all) the lock is not taken at all (llama-moe-stream-quick.cpp says why reading the desk's index here is
-    // safe). Off: the lock first, as before.
+    // before the lock, and when every one is already on the desk or on its way the lock is not taken at all
+    // (llama-moe-stream-quick.cpp says why reading the desk's index here is safe). Off: the lock first, as before.
+    // Held for desk books first's gate (hold): picked here, sent by the gate, so the lock waits for the send.
     auto * mgr = la->sl_next->mgr;
     std::unique_lock<std::mutex> lk(mgr->mtx, std::defer_lock);
-    if (!mgr->nolock) {
+    if (!mgr->nolock && hold == nullptr) {
         lk.lock();
         if (mgr->load_failed) {
             return;
@@ -245,19 +276,23 @@ void llama_moe_stream_remap_la(ggml_tensor * dst, const ggml_tensor * a, const g
     if (two) {
         llama_moe_stream_prefetch_next2(la, (const float *) b->data, n_tok, b->ne[0], n1, books2);
     }
-    if (mgr->nolock) {
-        if (llama_moe_stream_lookahead_all_on_desk(*la->sl_next, books1) &&
-                (!two || llama_moe_stream_lookahead_all_on_desk(*la->sl_next2, books2))) {
-            mgr->n_la_quick++;
-            return;
-        }
-        lk.lock();
-        if (mgr->load_failed) {
-            return;
-        }
+    if (hold != nullptr) {
+        hold->held   = true;
+        hold->la     = la;
+        hold->books1 = std::move(books1);
+        hold->books2 = std::move(books2);
+        hold->two    = two;
+        return;
     }
-    llama_moe_stream_lookahead_issue(*la->sl_next, books1, false);
-    if (two) {
-        llama_moe_stream_lookahead_issue(*la->sl_next2, books2, true);
+    llama_moe_stream_lookahead_send(la, books1, books2, two, lk);
+}
+
+// desk books first's gate, after its wait: the guesses its stop held
+void llama_moe_stream_lookahead_send_held(llama_moe_stream_desk_first_floor & df) {
+    if (!df.held) {
+        return;
     }
+    df.held = false;
+    std::unique_lock<std::mutex> lk(df.la->sl_next->mgr->mtx, std::defer_lock);
+    llama_moe_stream_lookahead_send(df.la, df.books1, df.books2, df.two, lk);
 }

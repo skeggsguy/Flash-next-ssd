@@ -11,6 +11,140 @@
 #include <mutex>
 #include <vector>
 
+// The floor stop's work under the lock, up to its wait (llama-moe-stream-impl.h says what it leaves where)
+bool llama_moe_stream_classify_locked(std::unique_lock<std::mutex> & lk, llama_moe_stream_layer & sl, const int32_t * ids,
+        int64_t n, int64_t n_tok, llama_moe_stream_stop_times * t, uint8_t * arriving) {
+    auto * mgr = sl.mgr;
+    const bool timed = t != nullptr;
+
+    mgr->maybe_dump_stats_locked();
+
+    if (mgr->load_failed) {
+        GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
+    }
+
+    mgr->stats.n_calls++;
+    mgr->start_workers_locked();
+
+    // the borrowing log. One record per call, before any of the staging below, so a record means
+    // "the router chose this", not "the cache managed to serve it". kind 0 is a single decode
+    // token; a multi-token ubatch reaching the single-wave path is reading in, so it is kind 1.
+    mgr->trace_record_locked(sl.il, (uint32_t) n_tok, n_tok == 1 ? 0 : 1, ids, n);
+
+    // distinct experts touched by this ubatch, in first-use order
+    sl.touched.assign(sl.n_expert, 0);
+    sl.uniq.clear();
+    for (int64_t i = 0; i < n; i++) {
+        const int32_t e = ids[i];
+        GGML_ASSERT(e >= 0 && (uint32_t) e < sl.n_expert);
+        if (!sl.touched[e]) {
+            sl.touched[e] = 1;
+            sl.uniq.push_back(e);
+        }
+    }
+
+    if (sl.uniq.size() > sl.n_slots) {
+        GGML_ABORT("MoE expert streaming: layer %d needs %zu distinct experts but the cache has only %u slots; "
+                   "increase --moe-stream-cache or reduce the ubatch size (-ub)",
+                sl.il, sl.uniq.size(), sl.n_slots);
+    }
+
+    // route hotness for eviction; halved periodically so a formerly-hot expert ages out
+    for (const int32_t e : sl.uniq) {
+        sat_inc(sl.route_hotness[e]);
+    }
+    if (mgr->hot_decay_interval > 0 && mgr->stats.n_calls % mgr->hot_decay_interval == 0) {
+        for (auto & sl2 : mgr->layers) {
+            if (sl2) {
+                for (auto & h : sl2->route_hotness) {
+                    h >>= 1;
+                }
+            }
+        }
+    }
+
+    // classify the touched experts; reserve and enqueue demand loads in deterministic order
+    std::fill(sl.keep.begin(), sl.keep.end(), 0);
+    sl.demand_slots.clear();
+
+    // the lent belt (llama-moe-room-lend-ops.cpp): a miss may be copied back from it, and each book this
+    // call puts back is kept on it; the desk's own choices below are the same with it off
+    llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
+    uint32_t n_kept = 0;
+
+    bool waited = false;
+    for (const int32_t e : sl.uniq) {
+        const auto it = sl.expert_slot.find(e);
+        if (it != sl.expert_slot.end()) {
+            const int32_t s = it->second;
+            if (sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
+                mgr->promote_slot_locked(sl, s);
+                waited = true;
+                mgr->stats.n_hit_loading++;
+                if (arriving) {
+                    arriving[s] = 1;
+                }
+            } else {
+                mgr->stats.n_hit_ready++;
+            }
+            mgr->stats.n_hit++;
+            sl.n_hit++;
+            sl.keep[s] = 1;
+            sl.slot_of[e] = s; // ONE_LOOKUP: the final loop reads it
+            sl.demand_slots.push_back(s);
+        } else {
+            const int64_t t_send0 = timed ? llama_moe_stream_stops::now_ns() : 0;
+            const uint64_t lent = lender ? lender->lend_find_locked(sl, e, false) : 0; // pinned before any keep
+            int32_t v;
+            while ((v = mgr->pick_victim_need_locked(sl, sl.keep.data())) < 0) {
+                // every allowed slot is loading; wait for a commit and retry (a kept guess is taken, not waited for)
+                const int64_t t_w0 = timed ? llama_moe_stream_stops::now_ns() : 0;
+                mgr->cv_done.wait(lk);
+                if (timed) {
+                    const int64_t dt = llama_moe_stream_stops::now_ns() - t_w0;
+                    t->wait_ns += dt;
+                    t->send_ns -= dt; // inside the send span below, but it is a wait
+                }
+                if (mgr->load_failed) {
+                    GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
+                }
+            }
+            if (!sl.seen[e]) {
+                mgr->stats.n_miss_cold++;
+                sl.n_miss_cold++;
+            }
+            const uint64_t save = lender ? lender->lend_keep_locked(sl, v, n_kept) : 0; // before reserve forgets the old book
+            mgr->reserve_slot_locked(sl, e, v);
+            // one work item PER SLAB (or per half slab, LLAMA_MOE_STREAM_SPLIT=2): the 2-3 slabs of an expert are
+            // independent reads, and issuing them together is what lifts device queue depth above 1.
+            llama_moe_stream_queue_demand_locked(*mgr, sl, e, v, lent, save);
+            mgr->stats.n_miss++;
+            sl.n_miss++;
+            waited = true;
+            sl.keep[v] = 1;
+            sl.slot_of[e] = v;
+            sl.demand_slots.push_back(v);
+            if (arriving) {
+                arriving[v] = 1;
+            }
+            if (timed) {
+                t->send_ns += llama_moe_stream_stops::now_ns() - t_send0;
+                t->trips++;
+            }
+        }
+    }
+
+    if (lender) {
+        const int64_t t_lend0 = timed ? llama_moe_stream_stops::now_ns() : 0;
+        lender->lend_help_locked(lk); // copy the put-back books out while the runners read
+        if (timed) {
+            t->send_ns += llama_moe_stream_stops::now_ns() - t_lend0;
+        }
+    }
+
+    return waited;
+}
+
 // custom-op callback (single-threaded on ith 0): given the router's expert ids, ensure every touched
 // expert is resident - reserving cache slots and demand-loading misses, stalling until they commit -
 // then rewrite each id to its cache slot. this only relabels ids, so the same experts are computed
@@ -29,9 +163,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     // the floor-stop log (llama-moe-stream-stops.h): one pointer check when off
     llama_moe_stream_stops * stops = llama_moe_stream_stops::get();
     const int64_t t_stop0 = stops ? llama_moe_stream_stops::now_ns() : 0;
-    int64_t  stop_send_ns = 0;
-    int64_t  stop_wait_ns = 0;
-    uint32_t stop_trips   = 0;
+    llama_moe_stream_stop_times times;
 
     auto * sl  = (llama_moe_stream_layer *) userdata;
     auto * mgr = sl->mgr;
@@ -55,124 +187,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
 
     std::unique_lock<std::mutex> lk(mgr->mtx);
 
-    mgr->maybe_dump_stats_locked();
-
-    if (mgr->load_failed) {
-        GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
-    }
-
-    mgr->stats.n_calls++;
-    mgr->start_workers_locked();
-
-    // the borrowing log. One record per call, before any of the staging below, so a record means
-    // "the router chose this", not "the cache managed to serve it". kind 0 is a single decode
-    // token; a multi-token ubatch reaching the single-wave path is reading in, so it is kind 1.
-    mgr->trace_record_locked(sl->il, (uint32_t) a->ne[1], a->ne[1] == 1 ? 0 : 1, ids, n);
-
-    // distinct experts touched by this ubatch, in first-use order
-    sl->touched.assign(sl->n_expert, 0);
-    sl->uniq.clear();
-    for (int64_t i = 0; i < n; i++) {
-        const int32_t e = ids[i];
-        GGML_ASSERT(e >= 0 && (uint32_t) e < sl->n_expert);
-        if (!sl->touched[e]) {
-            sl->touched[e] = 1;
-            sl->uniq.push_back(e);
-        }
-    }
-
-    if (sl->uniq.size() > sl->n_slots) {
-        GGML_ABORT("MoE expert streaming: layer %d needs %zu distinct experts but the cache has only %u slots; "
-                   "increase --moe-stream-cache or reduce the ubatch size (-ub)",
-                sl->il, sl->uniq.size(), sl->n_slots);
-    }
-
-    // route hotness for eviction; halved periodically so a formerly-hot expert ages out
-    for (const int32_t e : sl->uniq) {
-        sat_inc(sl->route_hotness[e]);
-    }
-    if (mgr->hot_decay_interval > 0 && mgr->stats.n_calls % mgr->hot_decay_interval == 0) {
-        for (auto & sl2 : mgr->layers) {
-            if (sl2) {
-                for (auto & h : sl2->route_hotness) {
-                    h >>= 1;
-                }
-            }
-        }
-    }
-
-    // classify the touched experts; reserve and enqueue demand loads in deterministic order
-    std::fill(sl->keep.begin(), sl->keep.end(), 0);
-    sl->demand_slots.clear();
-
-    // the lent belt (llama-moe-room-lend-ops.cpp): a miss may be copied back from it, and each book this
-    // call puts back is kept on it; the desk's own choices below are the same with it off
-    llama_moe_room * lender = mgr->room && mgr->room->lend_on ? mgr->room.get() : nullptr;
-    uint32_t n_kept = 0;
-
-    bool waited = false;
-    for (const int32_t e : sl->uniq) {
-        const auto it = sl->expert_slot.find(e);
-        if (it != sl->expert_slot.end()) {
-            const int32_t s = it->second;
-            if (sl->slot_state[s] == LLAMA_MOE_STREAM_SLOT_LOADING) {
-                mgr->promote_slot_locked(*sl, s);
-                waited = true;
-                mgr->stats.n_hit_loading++;
-            } else {
-                mgr->stats.n_hit_ready++;
-            }
-            mgr->stats.n_hit++;
-            sl->n_hit++;
-            sl->keep[s] = 1;
-            sl->slot_of[e] = s; // ONE_LOOKUP: the final loop reads it
-            sl->demand_slots.push_back(s);
-        } else {
-            const int64_t t_send0 = stops ? llama_moe_stream_stops::now_ns() : 0;
-            const uint64_t lent = lender ? lender->lend_find_locked(*sl, e, false) : 0; // pinned before any keep
-            int32_t v;
-            while ((v = mgr->pick_victim_need_locked(*sl, sl->keep.data())) < 0) {
-                // every allowed slot is loading; wait for a commit and retry (a kept guess is taken, not waited for)
-                const int64_t t_w0 = stops ? llama_moe_stream_stops::now_ns() : 0;
-                mgr->cv_done.wait(lk);
-                if (stops) {
-                    const int64_t dt = llama_moe_stream_stops::now_ns() - t_w0;
-                    stop_wait_ns += dt;
-                    stop_send_ns -= dt; // inside the send span below, but it is a wait
-                }
-                if (mgr->load_failed) {
-                    GGML_ABORT("MoE expert streaming: expert load failed (I/O error)");
-                }
-            }
-            if (!sl->seen[e]) {
-                mgr->stats.n_miss_cold++;
-                sl->n_miss_cold++;
-            }
-            const uint64_t save = lender ? lender->lend_keep_locked(*sl, v, n_kept) : 0; // before reserve forgets the old book
-            mgr->reserve_slot_locked(*sl, e, v);
-            // one work item PER SLAB (or per half slab, LLAMA_MOE_STREAM_SPLIT=2): the 2-3 slabs of an expert are
-            // independent reads, and issuing them together is what lifts device queue depth above 1.
-            llama_moe_stream_queue_demand_locked(*mgr, *sl, e, v, lent, save);
-            mgr->stats.n_miss++;
-            sl->n_miss++;
-            waited = true;
-            sl->keep[v] = 1;
-            sl->slot_of[e] = v;
-            sl->demand_slots.push_back(v);
-            if (stops) {
-                stop_send_ns += llama_moe_stream_stops::now_ns() - t_send0;
-                stop_trips++;
-            }
-        }
-    }
-
-    if (lender) {
-        const int64_t t_lend0 = stops ? llama_moe_stream_stops::now_ns() : 0;
-        lender->lend_help_locked(lk); // copy the put-back books out while the runners read
-        if (stops) {
-            stop_send_ns += llama_moe_stream_stops::now_ns() - t_lend0;
-        }
-    }
+    const bool waited = llama_moe_stream_classify_locked(lk, *sl, ids, n, a->ne[1], stops ? &times : nullptr, nullptr);
 
     if (waited) {
         const int64_t t_wait0 = stops ? llama_moe_stream_stops::now_ns() : 0;
@@ -183,7 +198,7 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
         }
         mgr->stats.t_stall_us += ggml_time_us() - t0;
         if (stops) {
-            stop_wait_ns += llama_moe_stream_stops::now_ns() - t_wait0;
+            times.wait_ns += llama_moe_stream_stops::now_ns() - t_wait0;
         }
     }
 
@@ -197,8 +212,8 @@ void llama_moe_stream_remap(ggml_tensor * dst, const ggml_tensor * a, int ith, i
     mgr->stats.t_remap_op_us += ggml_time_us() - t_op0;
 
     if (stops) {
-        stops->put(sl->il, t_stop0, llama_moe_stream_stops::now_ns(), (uint32_t) sl->uniq.size(), stop_trips,
-                stop_send_ns, stop_wait_ns);
+        stops->put(sl->il, t_stop0, llama_moe_stream_stops::now_ns(), (uint32_t) sl->uniq.size(), times.trips,
+                times.send_ns, times.wait_ns);
     }
 }
 

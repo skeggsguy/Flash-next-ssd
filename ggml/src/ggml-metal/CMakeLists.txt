@@ -16,6 +16,7 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-mv-ext.cpp
                          ggml-metal-staff-mv.cpp
                          ggml-metal-keep-alive.cpp
+                         ggml-metal-moe-gate.cpp
                          ggml-metal-ops.cpp
                          ggml-metal-ops-fn.cpp
                          ggml-metal-tuning.cpp

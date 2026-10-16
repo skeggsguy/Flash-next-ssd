@@ -71,13 +71,18 @@ llama_moe_stream_stops::~llama_moe_stream_stops() {
 
 void llama_moe_stream_stops::put(int32_t il, int64_t t0_ns, int64_t t1_ns, uint32_t n_asked, uint32_t n_trips,
         int64_t send_ns, int64_t wait_ns) {
+    put_rec(make(il, t0_ns, t1_ns, n_asked, n_trips, send_ns, wait_ns));
+}
+
+llama_moe_stream_stops::rec llama_moe_stream_stops::make(int32_t il, int64_t t0_ns, int64_t t1_ns, uint32_t n_asked,
+        uint32_t n_trips, int64_t send_ns, int64_t wait_ns) const {
     void *   ctx = nullptr;
     uint64_t seq = 0;
     if (last_graph != nullptr) {
         last_graph(&ctx, &seq);
     }
     const int64_t lookup_ns = (t1_ns - t0_ns) - send_ns - wait_ns;
-    put_rec({ ctx, seq, t0_ns, lookup_ns, send_ns, wait_ns, il, n_asked, n_trips });
+    return { ctx, seq, t0_ns, lookup_ns, send_ns, wait_ns, il, n_asked, n_trips };
 }
 
 void llama_moe_stream_stops::put_rec(const rec & r) {
