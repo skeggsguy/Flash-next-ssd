@@ -24,8 +24,8 @@ effort (`chat`).
 
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **23.6 tokens/s**: **+9.6% since the last update** (21.5 on the same conversations) |
-| **Writing (decode), chat** | **25.0 tokens/s**: **+9.7% since the last update** (from 22.7) |
+| **Writing (decode), coding agent** | **24.3 tokens/s**: **+4.9%** with the GPU starting on cached experts first (23.1 without it, on the same conversations the same day) |
+| **Writing (decode), chat** | **26.7 tokens/s**: **+9.1%** from the same change (from 24.5) |
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup. None of the October changes alters a single output token |
@@ -64,6 +64,24 @@ Together: **about +12% writing on the coding set and +16% on chat**, against the
 without the keep rule.
 
 <p align="center"><img src="media/flashnext/lookahead.svg" width="760" alt="Before: guessing one layer ahead, the SSD has one layer's time, the GPU waits and only 1 in 4 guesses is used. After: the two-layer guesser fetches experts two layers ahead, the one-layer guesser tops up a layer later, and each guess is kept until its layer runs; 84% and 65-71% of guesses used. Writing about +12% coding and +16% chat, estimated from two runs"></p>
+
+### The GPU starts on the experts already in the cache (new in October)
+
+While a token is written, each layer picks its experts. Most are already in the expert cache, and a
+few have to be read from the SSDs. Before, the layer waited for every missing expert before the GPU
+started on any of them. Now the GPU starts at once on the experts already in the cache (and the
+shared expert) while the missing ones are read, then works on those as they land. Each expert's
+maths is exactly what it was, so the output is byte-identical (word checks at draft depths 3 and 10).
+
+It hides about two thirds of the wait for missing experts, and writing got **+9.1% faster on chat
+and +4.9% on the coding set** (12 conversations each, A-B-A). It is on by default;
+`LLAMA_MOE_STREAM_DESK_FIRST=0` restores the old way.
+
+<p align="center"><img src="media/flashnext/desk-first.svg" width="760" alt="Before: each layer waits for its missing experts before the GPU starts. After: the GPU works on the cached experts and the shared expert while the missing ones are read, then on those as they land; about two thirds of the wait hidden. Writing +9.1% chat, +4.9% coding, output byte-identical"></p>
+
+What is left is the layers whose missing experts take longest to read. Sending the next layers'
+guesses to the SSDs earlier did not help (-0.5% on chat): those layers need better guesses, not
+earlier ones.
 
 ### The reading room: a carousel for long prompts
 
@@ -292,7 +310,7 @@ environment variable. To go back to the old way, set it to the value in the last
 | Switch | Unset (the default) | The old way |
 |---|---|---|
 | `LLAMA_MOE_STREAM_LRU` | A full cache lets go the expert unused longest ([above](#which-expert-the-cache-lets-go-new-in-october)). | `0`: the lowest recent use count |
-| `LLAMA_MOE_STREAM_DESK_FIRST` | While a layer's missing experts are read, the GPU already works on the ones in the cache (and the shared expert); the rest run as soon as they land. Same output. | `0`: each layer waits for every missing expert before it starts |
+| `LLAMA_MOE_STREAM_DESK_FIRST` | While a layer's missing experts are read, the GPU already works on the ones in the cache (and the shared expert); the rest run as soon as they land ([above](#the-gpu-starts-on-the-experts-already-in-the-cache-new-in-october)). Same output. | `0`: each layer waits for every missing expert before it starts |
 | `LLAMA_RS_SKIP_SLOTS` | The draft head's check saves only the undo copies a rollback can reach. | `0`: every copy, every round |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: the older rule, a depth that climbs and falls with the guesses kept |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | The expert cache is claimed in 4 GiB steps with short pauses, so macOS isn't rushed at load. | `0`: all at once |
