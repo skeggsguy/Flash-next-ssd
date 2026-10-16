@@ -179,6 +179,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # the masked waves' parking slots (stage_wave_locked / emit_wave_slots) on a desk made by hand: a wave short of
     # n_ids books borrows distinct resident slots, never its own books' slots, even from a stale pool (desk 8's abort)
     llama_build_and_test(test-moe-stream-wave-parking.cpp)
+    # the partitioned waves' plan (plan_waves_locked / plan_pairs_locked) against the graph's own wave count and chunk:
+    # a batch touching fewer books than the graph has waves still gets every wave, so no wave overflows its chunk
+    # (desk 6's 150K abort) and no floor goes unplanned
+    llama_build_and_test(test-moe-stream-wave-plan.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
     # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
     llama_build_and_test(test-moe-stream-guesser.cpp)
