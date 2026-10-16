@@ -176,6 +176,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-flashnext-defaults.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
+    # the masked waves' parking slots (stage_wave_locked / emit_wave_slots) on a desk made by hand: a wave short of
+    # n_ids books borrows distinct resident slots, never its own books' slots, even from a stale pool (desk 8's abort)
+    llama_build_and_test(test-moe-stream-wave-parking.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
     # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
     llama_build_and_test(test-moe-stream-guesser.cpp)
@@ -382,8 +385,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
     # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
     # Not 24 slots (3*n_expert_used): the partition path's spare-wave sizing then makes 10 waves of
-    # 6-7 books, fewer than n_expert_used, and stage_wave_locked has no parking slots to borrow on
-    # wave 0 - an abort a real desk (~100 books a wave) cannot reach. The reading room is on by default
+    # 6-7 books, fewer than n_expert_used, a shape these runs were not written for (wave 0's parking
+    # from a short or stale pool: test-moe-stream-wave-parking.cpp, since desk 8 reached it on
+    # 2026-10-16 with 41 slots). The reading room is on by default
     # and would take these read-ins, so the wave paths ask for it off.
     llama_build(test-moe-stream-waves.cpp)
     foreach (E64_ARCH qwen4exp qwen3moe)

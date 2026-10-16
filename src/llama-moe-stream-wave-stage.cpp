@@ -18,15 +18,39 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
     std::fill(sl.keep.begin(), sl.keep.end(), 0);
     sl.demand_slots.clear();
 
-    // a small final wave has fewer than n_ids own slots; borrow the rest from the previous wave's
-    //   pool so every token row has n_ids distinct resident parking slots for its masked pairs
+    // a wave with fewer than n_ids books of its own borrows parking slots so every token row has n_ids
+    //   distinct resident slots for its masked pairs. Not only a final wave: the planner spreads the books
+    //   evenly, so a small cap gives short waves from wave 0 on (desk 8: 16 books over cap 15 = 2 waves of
+    //   8 against 10 books a token). Wave 0 borrows from the pool the floor's LAST ubatch left, which may
+    //   be stale: a slot of it can hold one of this wave's own books (it would then count twice, and the
+    //   emit runs off the pool's end) or have been put back since. So a slot is borrowed only if it is
+    //   resident, not yet taken and not one of this wave's own books' slots - the previous pool's first,
+    //   in its order, then the rest of the desk. A miss below takes a victim, never a kept slot, so it
+    //   cannot land on a borrowed one either
     std::vector<int32_t> borrowed;
     if (count < n_ids) {
-        GGML_ASSERT(sl.plan_pool.size() >= n_ids - count);
-        for (size_t i = 0; i < n_ids - count; i++) {
-            borrowed.push_back(sl.plan_pool[i]);
-            sl.keep[sl.plan_pool[i]] = 1; // parking slots must survive this wave's loads
+        std::vector<uint8_t> taken(sl.n_slots, 0);
+        for (size_t i = first; i < first + count; i++) {
+            const auto it = sl.expert_slot.find(sl.uniq[i]);
+            if (it != sl.expert_slot.end()) {
+                taken[it->second] = 1; // resident, or landing from the previous wave's preload
+            }
         }
+        const auto borrow = [&](int32_t s) {
+            if (borrowed.size() < n_ids - count && s >= 0 && (uint32_t) s < sl.n_slots && !taken[s] &&
+                    sl.slot_state[s] == LLAMA_MOE_STREAM_SLOT_RESIDENT) {
+                taken[s] = 1;
+                borrowed.push_back(s);
+                sl.keep[s] = 1; // parking slots must survive this wave's loads
+            }
+        };
+        for (const int32_t s : sl.plan_pool) {
+            borrow(s);
+        }
+        for (int32_t s = 0; (uint32_t) s < sl.n_slots && borrowed.size() < n_ids - count; s++) {
+            borrow(s);
+        }
+        GGML_ASSERT(borrowed.size() == n_ids - count && "a wave short of n_ids books found too few resident parking slots");
     }
 
     // protect the next wave's already-resident experts so this wave's victims do not evict them.
@@ -148,6 +172,12 @@ void llama_moe_stream::stage_wave_locked(std::unique_lock<std::mutex> & lk, llam
     sl.plan_pool = sl.demand_slots;
     sl.plan_pool.insert(sl.plan_pool.end(), borrowed.begin(), borrowed.end());
     GGML_ASSERT(sl.plan_pool.size() >= n_ids);
+    {
+        // a slot twice in the pool leaves a token row short of distinct parking slots (emit_wave_slots)
+        std::vector<int32_t> pool(sl.plan_pool);
+        std::sort(pool.begin(), pool.end());
+        GGML_ASSERT(std::adjacent_find(pool.begin(), pool.end()) == pool.end() && "parking pool holds a slot twice");
+    }
 }
 
 // write out[i] = the cache slot the GEMM should index for each (token, expert) pair of wave w, one
