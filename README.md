@@ -1,6 +1,6 @@
 # Flash-Next SSD
 
-**Run Qwen3.8-Flash-Next, a 111 GB model, on a 64 GB Mac.**
+**Run Qwen3.8-Flash-Next, a 111 GB model, on a 64 GB or 48 GB Mac.**
 
 This is a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork for Apple Silicon. The model is a
 mixture of experts: 48 layers of 512 experts, and each token uses only 10 experts on each layer. So
@@ -9,6 +9,7 @@ lately stay in an expert cache in RAM. Everything else stays resident on the GPU
 
 It was tuned for a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 5. The tuning was
 measured on real chat and coding-agent conversations, and any timing that swap touched was thrown out.
+On a 48 GB Mac, see [Choose your size](#choose-your-size) for the speeds to expect.
 
 <p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs"></p>
 
