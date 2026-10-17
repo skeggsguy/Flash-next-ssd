@@ -115,7 +115,43 @@ the everyday values, the chat window (90 s) and chat's opening copy included
 the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
 cache, the draft head, both guessers and the second SSD.
 
+## Expert cache size
+
+The numbers behind the README's [Choose your size](../../README.md#choose-your-size). Only the cache
+size changed, from 8 to 28 GiB in 2 GiB steps, one fresh server per size. Everything else is the
+everyday `--flashnext` setup with the draft head, both trained guessers, two SSDs and a 200K-token
+context (no image encoder). Each server read the same public prompts, so anyone can rerun them:
+3 chat prompts (smoltalk), 3 coding-agent prompts (SWE-agent), then one cold 150K-token prompt.
+Total memory is the server's own memory at its peak, wired memory included
+([Memory sizing](memory-sizing.md#measure-wired-memory-not-the-memory-column)). These are public
+prompts, not the author's conversations, so the speeds differ from the headline numbers.
+
+| Expert cache | Writing, chat | Writing, coding | Reading a 150K prompt | Total memory (peak) | Run |
+|---|---|---|---|---|---|
+| 8 GiB | 12.7 tokens/s | 10.9 | 376 tokens/s | 24.4 GiB | DS-sweep |
+| 10 GiB | 14.4 tokens/s | 12.6 | 377 tokens/s | 26.3 GiB | DS-sweep |
+| 12 GiB | 16.4 tokens/s | 13.9 | 377 tokens/s | 28.4 GiB | DS-sweep |
+| 14 GiB | 17.8 tokens/s | 15.1 | 379 tokens/s | 30.4 GiB | DS-sweep |
+| 16 GiB | 19.8 tokens/s | 17.4 | 379 tokens/s | 32.3 GiB | DS-sweep |
+| 18 GiB | 21.6 tokens/s | 19.1 | 381 tokens/s | 34.4 GiB | DS-sweep |
+| 20 GiB | 23.3 tokens/s | 20.9 | 382 tokens/s | 36.3 GiB | DS-sweep |
+| 22 GiB | 25.3 tokens/s | 22.2 | 385 tokens/s | 38.2 GiB | DS-sweep |
+| 24 GiB | 26.5 tokens/s | 24.2 | 386 tokens/s | 40.4 GiB | DS-sweep |
+| 26 GiB | 27.9 tokens/s | 25.6 | 387 tokens/s | 42.4 GiB | DS-sweep |
+| 28 GiB | 29.3 tokens/s | 27.1 | 387 tokens/s | 44.5 GiB | DS-sweep |
+
+- 28 GiB ran first and last, and the table gives their mean. The two agreed within the 3% bar
+  (2.5% on chat, 1.4% on coding).
+- 30 GiB swapped as it opened on the 64 GB Mac, so it has no timings; 32 GiB was not tried.
+- 6 GiB is left out. It is too small for the reading room (the prompt carousel), so it reads
+  prompts the older way and holds the same experts as 8 GiB. 2 and 4 GiB don't open.
+- Each Mac's biggest cache in the README is the biggest size here whose peak leaves about 18 GiB of
+  the Mac's memory free: 28 GiB on 64 GB, and 12 GiB on 48 GB (worked out from this table, not yet
+  tried on a 48 GB Mac).
+
 ## Expert cache size (draft head off)
+
+An older, separate test: the draft head off, and a different prompt set, so its speeds don't compare with the table above.
 
 | Expert cache | Writing | Run |
 |---|---|---|
