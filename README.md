@@ -133,8 +133,37 @@ it changes nothing.
 
 ## Quick start
 
-**What you need:** an Apple Silicon Mac with 64 GB, about 115 GB free on the internal SSD, Xcode's
-command line tools, and CMake. A second fast SSD is optional but worth it.
+### Choose your size
+
+<p align="center"><img src="media/flashnext/choose-your-size.svg" width="760" alt="Speed by expert cache size, 8 to 28 GiB. Writing (decode) goes from 12.7 to 29.3 tokens/s for chat and 10.9 to 27.1 for coding; reading a cold 150K-token prompt (prefill) from 376 to 387 tokens/s. Total memory 24.4 to 44.5 GiB. Max cache with about 18 GiB left free: 12 GiB on a 48 GB Mac, 28 GiB on a 64 GB Mac."></p>
+
+The expert cache is the biggest speed setting: the bigger it is, the faster the model writes. But it
+shares memory with macOS and your apps. **The basic setup needs about 18 GiB left free to stay clear
+of swap.** That is what a 64 GB Mac with a browser and a few light apps open needed: a 28 GiB cache
+left about 19.5 GiB free and ran clean, and a 30 GiB cache swapped as it opened. Leave more if you
+run heavy apps.
+
+| Mac memory | Biggest cache | Writing, chat | Writing, coding |
+|---|---|---|---|
+| 48 GB | 12 GiB | 16.4 tokens/s | 13.9 tokens/s |
+| 64 GB | 28 GiB | 29.3 tokens/s | 27.1 tokens/s |
+
+The 48 GB row is worked out from the 64 GB measurements; it hasn't been tried on a 48 GB Mac yet.
+These speeds come from public chat and coding prompts, so they differ from the
+[headline numbers](#headline-numbers), which replay the author's own conversations. All of them use
+the 200K-token context. A shorter context (`-c`) frees a few GiB for a bigger cache: `-c 65536`
+frees about 4 GiB, so a 48 GB Mac can start at 16 GiB ([Memory sizing](docs/flashnext/memory-sizing.md)).
+Every size from 8 to 28 GiB is in [Results](docs/flashnext/results.md#expert-cache-size).
+
+**Where to change it:** the `--moe-stream-cache 28` in step 4 (change 28 to your size), or
+`CACHE_GIB=28` in `flashnext.conf` if you [start it with one click](#start-it-with-one-click). It's
+yours to change at every start. If `sysctl vm.swapusage` shows swap, step down 2 GiB.
+
+### Build and run
+
+**What you need:** an Apple Silicon Mac with 64 GB, or 48 GB with a smaller cache
+([Choose your size](#choose-your-size)), about 115 GB free on the internal SSD, Xcode's command line
+tools, and CMake. A second fast SSD is optional but worth it.
 
 **1. Build it**
 
@@ -186,6 +215,8 @@ LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
   --moe-stream-cache 28
 ```
 
+`--moe-stream-cache 28` is your size from [Choose your size](#choose-your-size).
+
 That's it: your files, the cache size, and `--flashnext` for everything else. The guessers are
 named by environment variables; the model and draft head by flags.
 
@@ -204,9 +235,9 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
 With all three, you're running the study's everyday server. The only differences are where its
 files sit and the statistics it records for the study.
 
-**Watch your memory.** At a 28 GiB cache the Mac doesn't have much room to spare, so close
-memory-hungry apps. If you see swap (`sysctl vm.swapusage`), use a smaller cache or context.
-[Memory sizing](docs/flashnext/memory-sizing.md) helps you choose.
+**Watch your memory.** Leave about 18 GiB free for macOS and your apps, more if you run heavy ones
+([Choose your size](#choose-your-size)). If you see swap (`sysctl vm.swapusage`), step the cache
+down 2 GiB or use a shorter context. [Memory sizing](docs/flashnext/memory-sizing.md) helps you choose.
 
 ## Start it with one click
 

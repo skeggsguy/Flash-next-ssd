@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 760 504" width="760" height="504" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Speed by expert cache size, 8 to 28 GiB. Writing (decode) goes from 12.7 to 29.3 tokens/s for chat and 10.9 to 27.1 for coding; reading a cold 150K-token prompt (prefill) from 376 to 387 tokens/s. Total memory 24.4 to 44.5 GiB. Max cache with about 18 GiB left free: 12 GiB on a 48 GB Mac, 28 GiB on a 64 GB Mac.">
+<rect width="760" height="504" fill="#ffffff"/>
+<text x="20.0" y="30.0" font-size="16" fill="#1b2228" font-weight="700">Choose your size: speed by expert cache</text>
+<text x="20.0" y="48.0" font-size="11.5" fill="#5a6670">The bigger the cache, the faster it writes. Leave about 18 GiB of memory for macOS and your apps.</text>
+<text x="20.0" y="76.0" font-size="11" fill="#1b2228" font-weight="600">Reading a prompt (prefill), tokens/s</text>
+<text x="740.0" y="76.0" font-size="11" fill="#1b2228" font-weight="600" text-anchor="end">Writing (decode), tokens/s</text>
+<line x1="62" y1="344.0" x2="698" y2="344.0" stroke="#c4ccd2"/>
+<text x="56.0" y="347.5" font-size="10.5" fill="#5a6670" text-anchor="end">0</text>
+<text x="704.0" y="347.5" font-size="10.5" fill="#5a6670">0</text>
+<line x1="62" y1="286.0" x2="698" y2="286.0" stroke="#eef1f3"/>
+<text x="56.0" y="289.5" font-size="10.5" fill="#5a6670" text-anchor="end">100</text>
+<text x="704.0" y="289.5" font-size="10.5" fill="#5a6670">10</text>
+<line x1="62" y1="228.0" x2="698" y2="228.0" stroke="#eef1f3"/>
+<text x="56.0" y="231.5" font-size="10.5" fill="#5a6670" text-anchor="end">200</text>
+<text x="704.0" y="231.5" font-size="10.5" fill="#5a6670">20</text>
+<line x1="62" y1="170.0" x2="698" y2="170.0" stroke="#eef1f3"/>
+<text x="56.0" y="173.5" font-size="10.5" fill="#5a6670" text-anchor="end">300</text>
+<text x="704.0" y="173.5" font-size="10.5" fill="#5a6670">30</text>
+<line x1="62" y1="112.0" x2="698" y2="112.0" stroke="#eef1f3"/>
+<text x="56.0" y="115.5" font-size="10.5" fill="#5a6670" text-anchor="end">400</text>
+<text x="704.0" y="115.5" font-size="10.5" fill="#5a6670">40</text>
+<text x="20.0" y="362.0" font-size="11" fill="#1b2228" font-weight="600">Expert cache, GiB</text>
+<text x="20.0" y="380.0" font-size="11" fill="#1b2228" font-weight="600">Total memory, GiB</text>
+<line x1="212.0" y1="344" x2="212.0" y2="348" stroke="#c4ccd2"/>
+<text x="212.0" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">8</text>
+<text x="212.0" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">24.4</text>
+<line x1="259.2" y1="344" x2="259.2" y2="348" stroke="#c4ccd2"/>
+<text x="259.2" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">10</text>
+<text x="259.2" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">26.3</text>
+<line x1="306.4" y1="344" x2="306.4" y2="348" stroke="#c4ccd2"/>
+<text x="306.4" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">12</text>
+<text x="306.4" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">28.4</text>
+<line x1="353.6" y1="344" x2="353.6" y2="348" stroke="#c4ccd2"/>
+<text x="353.6" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">14</text>
+<text x="353.6" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">30.4</text>
+<line x1="400.8" y1="344" x2="400.8" y2="348" stroke="#c4ccd2"/>
+<text x="400.8" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">16</text>
+<text x="400.8" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">32.3</text>
+<line x1="448.0" y1="344" x2="448.0" y2="348" stroke="#c4ccd2"/>
+<text x="448.0" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">18</text>
+<text x="448.0" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">34.4</text>
+<line x1="495.2" y1="344" x2="495.2" y2="348" stroke="#c4ccd2"/>
+<text x="495.2" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">20</text>
+<text x="495.2" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">36.3</text>
+<line x1="542.4" y1="344" x2="542.4" y2="348" stroke="#c4ccd2"/>
+<text x="542.4" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">22</text>
+<text x="542.4" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">38.2</text>
+<line x1="589.6" y1="344" x2="589.6" y2="348" stroke="#c4ccd2"/>
+<text x="589.6" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">24</text>
+<text x="589.6" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">40.4</text>
+<line x1="636.8" y1="344" x2="636.8" y2="348" stroke="#c4ccd2"/>
+<text x="636.8" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">26</text>
+<text x="636.8" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">42.4</text>
+<line x1="684.0" y1="344" x2="684.0" y2="348" stroke="#c4ccd2"/>
+<text x="684.0" y="362.0" font-size="11" fill="#1b2228" text-anchor="middle">28</text>
+<text x="684.0" y="380.0" font-size="10.5" fill="#5a6670" text-anchor="middle">44.5</text>
+<line x1="306.4" y1="104" x2="306.4" y2="344" stroke="#9a5b00" stroke-width="1.5" stroke-dasharray="2 3"/>
+<text x="306.4" y="99.0" font-size="11" fill="#9a5b00" font-weight="600" text-anchor="middle">48 GB Mac: max 12 GiB</text>
+<line x1="684.0" y1="104" x2="684.0" y2="344" stroke="#9a5b00" stroke-width="1.5" stroke-dasharray="2 3"/>
+<text x="673.9" y="99.0" font-size="11" fill="#9a5b00" font-weight="600" text-anchor="middle">64 GB Mac: max 28 GiB</text>
+<polyline points="212.0,126.1 259.2,125.4 306.4,125.2 353.6,124.1 400.8,124.0 448.0,123.1 495.2,122.6 542.4,120.8 589.6,120.3 636.8,119.8 684.0,119.3" fill="none" stroke="#d98a1c" stroke-width="2" stroke-linejoin="round"/>
+<g fill="#d98a1c" stroke="#ffffff" stroke-width="2"><circle cx="212.0" cy="126.1" r="4"/><circle cx="259.2" cy="125.4" r="4"/><circle cx="306.4" cy="125.2" r="4"/><circle cx="353.6" cy="124.1" r="4"/><circle cx="400.8" cy="124.0" r="4"/><circle cx="448.0" cy="123.1" r="4"/><circle cx="495.2" cy="122.6" r="4"/><circle cx="542.4" cy="120.8" r="4"/><circle cx="589.6" cy="120.3" r="4"/><circle cx="636.8" cy="119.8" r="4"/><circle cx="684.0" cy="119.3" r="4"/></g>
+<polyline points="212.0,270.6 259.2,260.6 306.4,249.0 353.6,240.9 400.8,229.1 448.0,218.7 495.2,208.6 542.4,197.1 589.6,190.1 636.8,182.0 684.0,174.1" fill="none" stroke="#0f6e72" stroke-width="2" stroke-linejoin="round"/>
+<g fill="#0f6e72" stroke="#ffffff" stroke-width="2"><circle cx="212.0" cy="270.6" r="4"/><circle cx="259.2" cy="260.6" r="4"/><circle cx="306.4" cy="249.0" r="4"/><circle cx="353.6" cy="240.9" r="4"/><circle cx="400.8" cy="229.1" r="4"/><circle cx="448.0" cy="218.7" r="4"/><circle cx="495.2" cy="208.6" r="4"/><circle cx="542.4" cy="197.1" r="4"/><circle cx="589.6" cy="190.1" r="4"/><circle cx="636.8" cy="182.0" r="4"/><circle cx="684.0" cy="174.1" r="4"/></g>
+<polyline points="212.0,280.6 259.2,271.1 306.4,263.2 353.6,256.7 400.8,242.9 448.0,233.2 495.2,222.6 542.4,215.4 589.6,203.7 636.8,195.7 684.0,187.0" fill="none" stroke="#1b2228" stroke-width="2" stroke-linejoin="round"/>
+<g fill="#1b2228" stroke="#ffffff" stroke-width="2"><circle cx="212.0" cy="280.6" r="4"/><circle cx="259.2" cy="271.1" r="4"/><circle cx="306.4" cy="263.2" r="4"/><circle cx="353.6" cy="256.7" r="4"/><circle cx="400.8" cy="242.9" r="4"/><circle cx="448.0" cy="233.2" r="4"/><circle cx="495.2" cy="222.6" r="4"/><circle cx="542.4" cy="215.4" r="4"/><circle cx="589.6" cy="203.7" r="4"/><circle cx="636.8" cy="195.7" r="4"/><circle cx="684.0" cy="187.0" r="4"/></g>
+<text x="202.0" y="130.1" font-size="11" fill="#1b2228" font-weight="600" text-anchor="end" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">Reading a 150K prompt</text>
+<text x="202.0" y="274.6" font-size="11" fill="#1b2228" font-weight="600" text-anchor="end" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">Writing, chat</text>
+<text x="202.0" y="288.6" font-size="11" fill="#1b2228" font-weight="600" text-anchor="end" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">Writing, coding</text>
+<rect x="20.0" y="402.0" width="12" height="12" fill="#d98a1c"/>
+<text x="38.0" y="412.0" font-size="11.5" fill="#1b2228">Reading a 150K-token prompt, cold (left axis)</text>
+<rect x="329.1" y="402.0" width="12" height="12" fill="#0f6e72"/>
+<text x="347.1" y="412.0" font-size="11.5" fill="#1b2228">Writing, chat (right axis)</text>
+<rect x="524.6" y="402.0" width="12" height="12" fill="#1b2228"/>
+<text x="542.6" y="412.0" font-size="11.5" fill="#1b2228">Writing, coding (right axis)</text>
+<line x1="20.0" y1="426.0" x2="32.0" y2="426.0" stroke="#9a5b00" stroke-width="1.5" stroke-dasharray="2 3"/>
+<text x="38.0" y="430.0" font-size="11.5" fill="#1b2228">Max for each Mac: the biggest cache that leaves about 18 GiB free</text>
+<text x="20.0" y="460.0" font-size="10.5" fill="#5a6670">Measured on a Mac mini M5 Pro (64 GB), two SSDs, 200K context, public chat and coding prompts. Speeds differ from the headline</text>
+<text x="20.0" y="475.0" font-size="10.5" fill="#5a6670">numbers, which replay real conversations.</text>
+<text x="20.0" y="490.0" font-size="10.5" fill="#5a6670">The 48 GB line is worked out from these measurements, not yet tried on a 48 GB Mac. 30 GiB swapped on 64 GB. Study run DS-sweep.</text>
+</svg>
