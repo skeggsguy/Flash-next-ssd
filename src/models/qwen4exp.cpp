@@ -1,4 +1,5 @@
 #include "models.h"
+#include "hc-mean.h"
 #include "qwen4exp-qsa-slice.h"
 #include "qwen4exp-qsa-union.h"
 #include "llama-impl.h"
@@ -762,7 +763,14 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     cb(res_hc, "hc_init", -1);
 
     for (int il = 0; il < n_layer; ++il) {
-        res->t_layer_inp[il] = res_hc;
+        // a floor's input for a draft that reads it (DFlash, EAGLE3): the mean of the hc streams, n_embd wide, so
+        // the previous floor's completed output before this floor's PLE. Built only when asked for, so the graph
+        // without a request is node for node what it was; t_layer_inp stays null for every floor not asked for
+        if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+            res->t_layer_inp[il] = llm_hc_mean(ctx0, res_hc);
+            cb(res->t_layer_inp[il], "layer_inp", il);
+            ggml_build_forward_expand(gf, res->t_layer_inp[il]);
+        }
 
         if (hparams.is_ple(il)) {
             res_hc = build_ple(inp->get_recr(), ple_emb, res_hc, il);

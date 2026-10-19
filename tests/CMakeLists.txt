@@ -734,6 +734,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-qwen4exp-mtp-record NAME test-qwen4exp-mtp-record-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-qwen4exp-mtp-record test-qwen4exp-mtp-record-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # DFLASH-PLAN step 2: a floor's input for a draft (DFlash, EAGLE3) is the plain mean of the four hc streams, n_embd
+    # wide, built only for the floors asked for: the mean byte for byte against the streams captured by name, the
+    # logits and the apprentice's notes unchanged, a floor not asked for builds nothing, and asking mid-context works
+    llama_build(test-qwen4exp-layer-inp.cpp)
+    llama_test(test-qwen4exp-layer-inp NAME test-qwen4exp-layer-inp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-qwen4exp-layer-inp NAME test-qwen4exp-layer-inp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-qwen4exp-layer-inp test-qwen4exp-layer-inp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # WRITING-PLAN step 3e: LLAMA_SPEC_ADAPTIVE_RATE=2 (the priced depth) through common_speculative on the MTP
     # fixture: forced to check every step it is fixed 8 at p-min 0 byte for byte; priced, its guesses are fixed 8's
     # first ones from the same place and every cycle checks one
