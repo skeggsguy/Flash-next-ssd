@@ -4,6 +4,7 @@
 // - the switches: each one unset is the everyday value, "0" (or the old value) the old way, and the guesser's tuning
 //   takes its everyday values only with the guesser's file named;
 // - LLAMA_SPEC_ADAPTIVE_RATE: unset is the measured depth, "" and "0" the acceptance controller, "2" the priced depth;
+// - LLAMA_SPEC_CHAIN_P: unset, "" and "0" off, a number in (0, 1] the threshold (as a double), anything else throws;
 // - the start-up line: its first word, the defaults in force and the user's values marked, the preset on and off;
 // - `--flashnext` through common_params_parse, as llama-server parses: the everyday values where the user passed
 //   nothing; a flag passed on the command line (in any spelling, before or after it), as its LLAMA_ARG_* or in a
@@ -102,6 +103,24 @@ void test_adaptive_rate(testing & t) {
     t.assert_equal("a word: the measured depth", 1, common_flashnext_adaptive_rate("yes"));
 }
 
+void test_chain_p(testing & t) {
+    t.assert_equal("unset: off", 0.0, common_flashnext_chain_p(nullptr));
+    t.assert_equal("\"\": off", 0.0, common_flashnext_chain_p(""));
+    t.assert_equal("\"0\": off", 0.0, common_flashnext_chain_p("0"));
+    t.assert_equal("\"0.3\": the double 0.3, not the float", 0.3, common_flashnext_chain_p("0.3"));
+    t.assert_equal("\"1\": the top of the range", 1.0, common_flashnext_chain_p("1"));
+    t.assert_equal("\"1e-3\"", 1e-3, common_flashnext_chain_p("1e-3"));
+    for (const char * bad : { "abc", "1.5", "1.0000001", "-0.1", "0.2x", "0.0", "nan", "off", "on" }) {
+        bool threw = false;
+        try {
+            common_flashnext_chain_p(bad);
+        } catch (const std::runtime_error & e) {
+            threw = std::string(e.what()).find("LLAMA_SPEC_CHAIN_P") != std::string::npos;
+        }
+        t.assert_true(std::string("CHAIN_P \"") + bad + "\" throws, naming the switch", threw);
+    }
+}
+
 // a fake environment for the start-up line
 struct fake_env {
     std::map<std::string, std::string> vars;
@@ -112,8 +131,8 @@ struct fake_env {
 };
 
 const std::string ENGINE_DEFAULTS = "flashnext: engine defaults: LLAMA_MOE_STREAM_LRU=1, LLAMA_RS_SKIP_SLOTS=1, "
-    "LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096, LLAMA_MOE_STREAM_DESK_FIRST=1, LLAMA_SPEC_ADAPTIVE_RATE=1, GGML_METAL_STAFF_MV=0, "
-    "GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000";
+    "LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB=4096, LLAMA_MOE_STREAM_DESK_FIRST=1, LLAMA_SPEC_ADAPTIVE_RATE=1, "
+    "LLAMA_SPEC_CHAIN_P=off, GGML_METAL_STAFF_MV=0, GGML_METAL_RESIDENCY_KEEP_ALIVE_S=10000000";
 
 void test_line(testing & t) {
     common_params params;
@@ -127,7 +146,9 @@ void test_line(testing & t) {
     env.vars["GGML_METAL_STAFF_MV"]  = "1";
     env.vars["LLAMA_MOE_STREAM_DESK_FIRST"] = "0";
     env.vars["LLAMA_MOE_STREAM_LOOKAHEAD_DEPTH2"] = "4";
+    env.vars["LLAMA_SPEC_CHAIN_P"] = "0.3";
     const std::string l1 = line();
+    t.assert_true("the user's chain stop marked", l1.find(", LLAMA_SPEC_CHAIN_P=0.3 (yours), ") != std::string::npos);
     t.assert_true("the user's LRU marked", l1.find("LLAMA_MOE_STREAM_LRU=0 (yours)") != std::string::npos);
     t.assert_true("the user's staff marked", l1.find("GGML_METAL_STAFF_MV=1 (yours)") != std::string::npos);
     t.assert_true("the user's desk first marked", l1.find("LLAMA_MOE_STREAM_DESK_FIRST=0 (yours)") != std::string::npos);
@@ -314,6 +335,7 @@ int main(int argc, char ** argv) {
     t.test("the switches", test_switches);
     t.test("the guesser's tuning", test_guesser_tuning);
     t.test("the draft depth", test_adaptive_rate);
+    t.test("the chain stop", test_chain_p);
     t.test("the start-up line", test_line);
     t.test("the preset", test_preset);
 

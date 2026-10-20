@@ -755,6 +755,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-trace-wrapper NAME test-speculative-trace-wrapper-mtp LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     set_tests_properties(test-speculative-trace-wrapper-mtp PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # CHAIN-PLAN step 2: the chain stop (LLAMA_SPEC_CHAIN_P) on the MTP fixture: every checked draft's product holds the
+    # threshold and a chain stop's next word falls under it, the drafts are fixed 8's first words, the text is the same
+    # with it on or off, an exact edge is kept, and RATE=2 ignores it
+    llama_build(test-speculative-chain-mtp.cpp)
+    llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-chain-mtp test-speculative-chain-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
     # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context
@@ -848,6 +856,7 @@ llama_build_and_test(test-speculative-adaptive.cpp)
 llama_build_and_test(test-speculative-rate.cpp)
 llama_build_and_test(test-speculative-rate-trace.cpp)
 llama_build_and_test(test-speculative-dflash-walk.cpp)
+llama_build_and_test(test-speculative-chain.cpp)
 llama_build_and_test(test-speculative-trace-wrapper.cpp)
 llama_build_and_test(test-speculative-rate2.cpp)
 llama_build_and_test(test-speculative-rate2-sim.cpp)

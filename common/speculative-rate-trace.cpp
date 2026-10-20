@@ -9,7 +9,7 @@
 
 std::unique_ptr<common_speculative_rate_trace> common_speculative_rate_trace::open_from_env(
         const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode,
-        const std::string & draft, int block) {
+        const std::string & draft, int block, double chain_p) {
     const char * path = std::getenv(env_name);
     if (path == nullptr || *path == '\0' || std::strcmp(path, "0") == 0) {
         return nullptr;
@@ -22,11 +22,23 @@ std::unique_ptr<common_speculative_rate_trace> common_speculative_rate_trace::op
     fprintf(stderr, "apprentice trace: every checking cycle to %s (%s, %s)\n", path, env_name,
             draft.empty() ? "draft" : draft.c_str());
     return std::make_unique<common_speculative_rate_trace>(f, n_seq, n_max, p_min, adaptive, rate_mode,
-            wall_now_us(), draft, block);
+            wall_now_us(), draft, block, chain_p);
+}
+
+// the shortest text that reads back as exactly `v` (a threshold typed as "0.3" prints as 0.3, not 0.29999999999999999)
+static std::string shortest_double(double v) {
+    char buf[32];
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(buf, sizeof(buf), "%.*g", prec, v);
+        if (std::strtod(buf, nullptr) == v) {
+            break;
+        }
+    }
+    return buf;
 }
 
 common_speculative_rate_trace::common_speculative_rate_trace(FILE * f, uint32_t n_seq, int n_max, float p_min,
-        bool adaptive, int rate_mode, int64_t wall_us, const std::string & draft, int block)
+        bool adaptive, int rate_mode, int64_t wall_us, const std::string & draft, int block, double chain_p)
     : f(f), open(n_seq), answer_of(n_seq, -1) {
     std::string name;
     for (char ch : draft) { // a type name; anything a JSON string would need escaped is dropped
@@ -37,8 +49,9 @@ common_speculative_rate_trace::common_speculative_rate_trace(FILE * f, uint32_t 
     char buf[384];
     snprintf(buf, sizeof(buf),
             "{\"trace\":\"spec-rate\",\"version\":2,\"n_seq\":%u,\"n_max\":%d,\"p_min\":%.4f,"
-            "\"adaptive\":%d,\"rate_mode\":%d,\"draft\":\"%.64s\",\"block\":%d,\"wall_us\":%" PRId64 "}\n",
-            n_seq, n_max, (double) p_min, adaptive ? 1 : 0, rate_mode, name.c_str(), block, wall_us);
+            "\"adaptive\":%d,\"rate_mode\":%d,\"draft\":\"%.64s\",\"block\":%d,\"chain_p\":%s,"
+            "\"wall_us\":%" PRId64 "}\n",
+            n_seq, n_max, (double) p_min, adaptive ? 1 : 0, rate_mode, name.c_str(), block, shortest_double(chain_p).c_str(), wall_us);
     put(buf);
 }
 

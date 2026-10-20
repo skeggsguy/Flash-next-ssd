@@ -22,7 +22,8 @@
 // trace itself took. Read by the study's `sim/spec_trace.py`, which reads version 1 too.
 // The header's `rate_mode` names the depth rule: 0 fixed or hand-tuned, 1 the measured depth
 // (LLAMA_SPEC_ADAPTIVE_RATE=1), 2 the priced depth (=2, speculative-rate2.h), whose stops are priced, not
-// p-min. Version 2 adds `draft` (the draft type) and `block` (a block draft's trained block, else 0).
+// p-min. Version 2 adds `draft` (the draft type) and `block` (a block draft's trained block, else 0), and from
+// CHAIN-PLAN step 2 `chain_p`, the chain stop's threshold in force (0: off; LLAMA_SPEC_CHAIN_P, speculative-chain.h).
 //
 // While the C1 phase log is on (GGML_METAL_CBLOG, common/spec-phase-log.h) each cycle line also carries the
 // log's `"round"`, so a cycle joins its phase lines; with that log off the line is unchanged.
@@ -66,10 +67,10 @@ struct common_speculative_rate_trace {
     // that cannot be opened is reported once and gives nullptr, so a typo never stops the server)
     static std::unique_ptr<common_speculative_rate_trace> open_from_env(
             const char * env_name, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode,
-            const std::string & draft = "", int block = 0);
+            const std::string & draft = "", int block = 0, double chain_p = 0.0);
 
     common_speculative_rate_trace(FILE * f, uint32_t n_seq, int n_max, float p_min, bool adaptive, int rate_mode,
-            int64_t wall_us, const std::string & draft = "", int block = 0);
+            int64_t wall_us, const std::string & draft = "", int block = 0, double chain_p = 0.0);
     ~common_speculative_rate_trace(); // writes every unfinished cycle (cycle_us -1), the closing line, and closes
 
     common_speculative_rate_trace(const common_speculative_rate_trace &) = delete;

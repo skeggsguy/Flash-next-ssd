@@ -4,6 +4,7 @@
 // is src/llama-flashnext.h).
 //
 // - LLAMA_SPEC_ADAPTIVE_RATE: the draft depth that seeks the most words a second, the everyday value, now the default.
+// - LLAMA_SPEC_CHAIN_P: the chain stop, off by default (CHAIN-PLAN step 2); on the start-up line as "off" when unset.
 // - `--flashnext`: one preset flag that sets the everyday values of llama.cpp's general flags, each only where the
 //   user did not pass that flag (on the command line, as LLAMA_ARG_* or in a config file); upstream's defaults are
 //   untouched without it. The draft settings wait for a draft model (-md): without one there is nothing to draft.
@@ -23,6 +24,12 @@ struct common_arg;
 // priced depth (speculative-rate2.h), 0 the acceptance controller (the old way). Unset: 1. "" or "0": 0. "2": 2.
 // Anything else: 1 (the switch has always read this way).
 int common_flashnext_adaptive_rate(const char * value);
+
+// LLAMA_SPEC_CHAIN_P, the chain stop's threshold (common/speculative-chain.h): unset, "" or "0" is off (0); a number
+// in (0, 1] is the threshold, read as a double so the study's replay cuts where the engine does; anything else throws,
+// so a typo fails the start instead of running with the stop off. LLAMA_SPEC_ADAPTIVE_RATE=2 ignores it (the price
+// stops that draft), with a warning.
+double common_flashnext_chain_p(const char * value);
 
 // ggml-metal's two, as its parsers read them unset (ggml-metal-staff-mv.h, ggml-metal-keep-alive.h); kept equal by
 // test-flashnext-metal, so the start-up line cannot name a default the device does not run

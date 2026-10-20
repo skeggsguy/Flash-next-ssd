@@ -239,6 +239,28 @@ Environment-only, with the draft head:
 | `LLAMA_RS_SKIP_SLOTS` | on | Before each check the model saves copies of its recurrent state so it can undo rejected guesses. On, it saves only the copies a rollback can reach, and refuses a rollback past them. Byte-identical output; +4.3% writing on code, chat level. `0` saves every copy (the old way). |
 | `GGML_METAL_STAFF_MV` | off | `1` puts the check's Q8_0 matrix-vector work for 2-16 tokens on the GPU's matrix units (with Metal 4, M5 on). It did not clear the study's +3% bar (−0.8% and +1.1% on code), so the default is the older route the study's numbers were measured on. |
 
+### A DFlash draft instead of the head
+
+A DFlash draft is a small separate model that drafts a whole block of words in one go (the study
+runs incoai's DFlash 2, Q8_0). It takes the head's flags; give each one yourself, because with `-md`
+`--flashnext` otherwise sets the head's (`draft-mtp-adaptive`, n-max 5, p-min 0.3):
+
+| Option | What it does |
+|---|---|
+| `-md FILE` | The DFlash gguf. A file with a Markov head (`markov_w1.weight`) is DSpark, otherwise DFlash. |
+| `--spec-type draft-dflash` | The DFlash draft (`draft-dspark` for DSpark). |
+| `--spec-draft-n-max N` | The most words drafted per round, at most the draft's trained block less one (more is clamped, with a warning). Study: 7 (the whole block) and 3. |
+| `--spec-draft-p-min P` | Stop the draft at the first word whose confidence falls below P (`0`: no stop). DSpark needs its confidence head for any P above 0 and for the chain stop. Study: 0.3 at n-max 3, 0 at n-max 7. |
+
+### The chain stop and the draft trace
+
+Environment-only. The chain stop works for every draft that has a p-min (the head, DFlash, DSpark, EAGLE3).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LLAMA_SPEC_CHAIN_P` | off | A threshold in (0, 1]. The draft goes on while the product of its words' confidences so far stays at or above it; the word that takes the product under it ends the draft and is not drafted. P-min is checked first, so a word under both is a p-min stop. Unset, `""` or `0`: off, and the words are the same as without it. Any other value outside (0, 1] (`1.5`, `0.0`, `abc`) stops the server at start. Under `LLAMA_SPEC_ADAPTIVE_RATE=2` it is ignored, with a warning (the price stops the draft there). The `flashnext:` line shows it (`LLAMA_SPEC_CHAIN_P=off`). |
+| `LLAMA_SPEC_RATE_TRACE` | off | A file path: one JSON line per round (`.srtr`, version 2), numbers only, never words: the depth in force, words drafted / checked / kept, each word's confidence and the ones past the stop, why the draft stopped (`cap`, `pmin`, `chain`, `trim`) and the round's times. A header line opens each session with the draft type, its block, n-max, p-min and `chain_p`. The file is appended to, so give each run its own. The head writes its own trace; any other draft is traced around its draft call (a draft model and EAGLE3 report no stops, so theirs read `cap`). Read by the study's `sim/spec_trace.py`. Off, it costs one check a round. |
+
 ## Images
 
 With the image encoder loaded the model reads pictures: attach one in the web page at

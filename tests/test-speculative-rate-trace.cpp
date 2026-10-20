@@ -66,9 +66,11 @@ static void test_env() {
     { auto t = trace_t::open_from_env(var, 2, 5, 0.3f, true, true);   CHECK(t != nullptr, "a path must trace"); }
     { auto t = trace_t::open_from_env(var, 1, 8, 0.3f, true, 2);      CHECK(t != nullptr, "a path must trace"); }
     { auto t = trace_t::open_from_env(var, 1, 7, 0.0f, false, 0, "draft-dflash", 8); CHECK(t != nullptr, "a path must trace"); }
+    { auto t = trace_t::open_from_env(var, 1, 7, 0.0f, false, 0, "draft-dflash", 8, 0.3); CHECK(t != nullptr, "a path must trace"); }
+    { auto t = trace_t::open_from_env(var, 1, 5, 0.3f, true, 1, "draft-mtp", 0, 1.0 / 3.0); CHECK(t != nullptr, "a path must trace"); }
     const auto lines = read_lines(path);
-    CHECK(lines.size() == 8, "four openings append a header and a closing line each, got %zu lines", lines.size());
-    if (lines.size() == 8) {
+    CHECK(lines.size() == 12, "six openings append a header and a closing line each, got %zu lines", lines.size());
+    if (lines.size() == 12) {
         CHECK(has(lines[4], "\"n_max\":8") && has(lines[4], "\"rate_mode\":2"), "header 3 (RATE=2): %s", lines[4].c_str());
         CHECK(has(lines[0], "{\"trace\":\"spec-rate\",\"version\":2,") && has(lines[0], "\"n_max\":8") &&
               has(lines[0], "\"p_min\":0.0000") && has(lines[0], "\"rate_mode\":0") &&
@@ -76,8 +78,12 @@ static void test_env() {
         CHECK(lines[1] == "{\"end\":\"spec-rate\",\"cycles\":0,\"trace_us\":0}", "closing line 1: %s", lines[1].c_str());
         CHECK(has(lines[2], "\"n_seq\":2") && has(lines[2], "\"n_max\":5") && has(lines[2], "\"p_min\":0.3000") &&
               has(lines[2], "\"adaptive\":1") && has(lines[2], "\"rate_mode\":1"), "header 2: %s", lines[2].c_str());
-        CHECK(has(lines[6], "\"n_max\":7,") && has(lines[6], "\"draft\":\"draft-dflash\",\"block\":8,\"wall_us\":"),
-              "header 4 (a block draft): %s", lines[6].c_str());
+        CHECK(has(lines[6], "\"n_max\":7,") && has(lines[6], "\"draft\":\"draft-dflash\",\"block\":8,\"chain_p\":0,\"wall_us\":"),
+              "header 4 (a block draft, the chain stop off): %s", lines[6].c_str());
+        CHECK(has(lines[8], "\"block\":8,\"chain_p\":0.3,\"wall_us\":"), "header 5 (the chain stop at 0.3): %s",
+              lines[8].c_str());
+        CHECK(has(lines[10], "\"chain_p\":0.3333333333333333,"), "header 6 (a threshold that needs 16 digits to read "
+              "back exactly): %s", lines[10].c_str());
     }
     unsetenv(var);
     std::remove(path.c_str());

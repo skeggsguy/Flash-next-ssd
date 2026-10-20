@@ -1,5 +1,5 @@
-// The fork's proven defaults, common's side: LLAMA_SPEC_ADAPTIVE_RATE's parse, the --flashnext preset and the
-// start-up line. The rules are in flashnext.h.
+// The fork's proven defaults, common's side: LLAMA_SPEC_ADAPTIVE_RATE's and LLAMA_SPEC_CHAIN_P's parses, the
+// --flashnext preset and the start-up line. The rules are in flashnext.h.
 
 #include "flashnext.h"
 
@@ -8,8 +8,10 @@
 
 #include "../src/llama-flashnext.h" // the libllama side's parsers: what an unset switch means
 
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 
 int common_flashnext_adaptive_rate(const char * value) {
@@ -20,6 +22,20 @@ int common_flashnext_adaptive_rate(const char * value) {
         return 0;
     }
     return strcmp(value, "2") == 0 ? 2 : 1;
+}
+
+double common_flashnext_chain_p(const char * value) {
+    if (value == nullptr || *value == '\0' || strcmp(value, "0") == 0) {
+        return 0.0;
+    }
+    char * end = nullptr;
+    errno = 0;
+    const double t = std::strtod(value, &end);
+    if (errno != 0 || end == value || *end != '\0' || !(t > 0.0 && t <= 1.0)) {
+        throw std::runtime_error(string_format("LLAMA_SPEC_CHAIN_P=%s is not a chain stop threshold in (0, 1] "
+                "(unset, \"\" or \"0\": off)", value));
+    }
+    return t;
 }
 
 // the everyday values: the study's daily library (serve.py) runs exactly these (Tom, 2026-10-15: "daily and default
@@ -140,6 +156,8 @@ std::string common_flashnext_load_line(const common_params & params,
                 llama_flashnext_desk_first(nullptr) ? "1" : "0"),
         flashnext_switch("LLAMA_SPEC_ADAPTIVE_RATE", env("LLAMA_SPEC_ADAPTIVE_RATE"),
                 std::to_string(common_flashnext_adaptive_rate(nullptr))),
+        flashnext_switch("LLAMA_SPEC_CHAIN_P", env("LLAMA_SPEC_CHAIN_P"),
+                common_flashnext_chain_p(nullptr) > 0.0 ? "on" : "off"),
         flashnext_switch("GGML_METAL_STAFF_MV", env("GGML_METAL_STAFF_MV"),
                 std::to_string(COMMON_FLASHNEXT_STAFF_MV)),
         flashnext_switch("GGML_METAL_RESIDENCY_KEEP_ALIVE_S", env("GGML_METAL_RESIDENCY_KEEP_ALIVE_S"),

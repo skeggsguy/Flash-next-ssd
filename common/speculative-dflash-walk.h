@@ -1,18 +1,19 @@
 #pragma once
 
 // The DFlash 2 selector walk (CHAIN-PLAN step 1): one pure function, so the cut can be tested on made-up
-// lattices (no test model has a selector) and step 2's chain stop slots in at the one cut.
+// lattices (no test model has a selector), and step 2's chain stop rides in the one cut it takes.
 //
 // One decode of the draft gives a lattice row for each drafted position. A row holds `top_k` candidate
 // words (token ids stored as floats), then a top_k x top_k table of scores: row `j` of the table scores the
 // candidates when the previous position picked its candidate j (the first position follows candidate 0).
 // The walk picks the best-scoring candidate at each position, following the picks, and the draft keeps
 // them until the cut drops one. A word's confidence is the softmax of its scores at the pick,
-// 1 / sum(exp(s_k - s_max)), worked out only when something reads it: the cut (p-min > 0, later the chain
-// stop) or the trace. With the trace on, the walk goes on past the stop into `tail` and drafts nothing
-// more, so the library's words never change with the trace on.
+// 1 / sum(exp(s_k - s_max)), worked out only when something reads it: the cut (p-min > 0 or the chain
+// stop, common/speculative-chain.h) or the trace. With the trace on, the walk goes on past the stop into
+// `tail` and drafts nothing more, so the library's words never change with the trace on.
 
 #include "llama.h"
+#include "speculative-chain.h"
 #include "speculative-rate-trace.h"
 
 #include <algorithm>
@@ -27,28 +28,6 @@ struct common_dflash2_lattice {
     size_t        stride = 0;       // floats from one row to the next (the draft's n_embd)
     int32_t       n_pos  = 0;       // drafted positions (the block's tokens less the anchor)
     int32_t       top_k  = 0;       // candidates a position (the selector's top-k)
-};
-
-// Where a draft stops. Today only p-min: a word under it ends the draft and is not drafted.
-// CHAIN-PLAN step 2 adds the chain threshold here (a running product, so `keep` is not const and `start`
-// opens each draft), and every p-min cut that takes this struct takes the chain with it.
-struct common_speculative_cut {
-    float p_min = 0.0f;
-
-    explicit common_speculative_cut(float p_min) : p_min(p_min) {}
-
-    bool needs_conf() const { return p_min > 0.0f; }
-
-    void start() {}
-
-    // false when the word at confidence p ends the draft; `why` says which cut ended it
-    bool keep(float p, common_speculative_rate_trace::stop_reason & why) {
-        if (p < p_min) {
-            why = common_speculative_rate_trace::STOP_PMIN;
-            return false;
-        }
-        return true;
-    }
 };
 
 // What the walk saw, for the trace: each walked word's confidence up to and including the one the cut
