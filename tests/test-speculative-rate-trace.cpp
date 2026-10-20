@@ -1,7 +1,10 @@
-// The apprentice's checking-cycle trace (common/speculative-rate-trace.h): off means no file, and on it
+// The draft's checking-cycle trace (common/speculative-rate-trace.h): off means no file, and on it
 // writes one line per cycle with the numbers a replay needs, each cycle timed to the next draft call of the
 // same answer and the last cycle of an answer left open (-1). Scripted sessions with injected clocks, read
-// back line by line.
+// back line by line. Version 2 (CHAIN-PLAN step 1): the header names the draft and its block, confidences
+// print at %.9g, a reporting draft passes its stop in (chain and trim are new), the tail holds the
+// confidences past the stop, the server's replay counts one word less, and a closing line gives the trace's
+// own time.
 
 #include "speculative-rate-trace.h"
 
@@ -62,14 +65,19 @@ static void test_env() {
     { auto t = trace_t::open_from_env(var, 1, 8, 0.0f, false, false); CHECK(t != nullptr, "a path must trace"); }
     { auto t = trace_t::open_from_env(var, 2, 5, 0.3f, true, true);   CHECK(t != nullptr, "a path must trace"); }
     { auto t = trace_t::open_from_env(var, 1, 8, 0.3f, true, 2);      CHECK(t != nullptr, "a path must trace"); }
+    { auto t = trace_t::open_from_env(var, 1, 7, 0.0f, false, 0, "draft-dflash", 8); CHECK(t != nullptr, "a path must trace"); }
     const auto lines = read_lines(path);
-    CHECK(lines.size() == 3, "three openings append three headers, got %zu lines", lines.size());
-    if (lines.size() == 3) {
-        CHECK(has(lines[2], "\"n_max\":8") && has(lines[2], "\"rate_mode\":2"), "header 3 (RATE=2): %s", lines[2].c_str());
-        CHECK(has(lines[0], "\"trace\":\"spec-rate\"") && has(lines[0], "\"n_max\":8") &&
-              has(lines[0], "\"p_min\":0.0000") && has(lines[0], "\"rate_mode\":0"), "header 1: %s", lines[0].c_str());
-        CHECK(has(lines[1], "\"n_seq\":2") && has(lines[1], "\"n_max\":5") && has(lines[1], "\"p_min\":0.3000") &&
-              has(lines[1], "\"adaptive\":1") && has(lines[1], "\"rate_mode\":1"), "header 2: %s", lines[1].c_str());
+    CHECK(lines.size() == 8, "four openings append a header and a closing line each, got %zu lines", lines.size());
+    if (lines.size() == 8) {
+        CHECK(has(lines[4], "\"n_max\":8") && has(lines[4], "\"rate_mode\":2"), "header 3 (RATE=2): %s", lines[4].c_str());
+        CHECK(has(lines[0], "{\"trace\":\"spec-rate\",\"version\":2,") && has(lines[0], "\"n_max\":8") &&
+              has(lines[0], "\"p_min\":0.0000") && has(lines[0], "\"rate_mode\":0") &&
+              has(lines[0], "\"draft\":\"\",\"block\":0,"), "header 1: %s", lines[0].c_str());
+        CHECK(lines[1] == "{\"end\":\"spec-rate\",\"cycles\":0,\"trace_us\":0}", "closing line 1: %s", lines[1].c_str());
+        CHECK(has(lines[2], "\"n_seq\":2") && has(lines[2], "\"n_max\":5") && has(lines[2], "\"p_min\":0.3000") &&
+              has(lines[2], "\"adaptive\":1") && has(lines[2], "\"rate_mode\":1"), "header 2: %s", lines[2].c_str());
+        CHECK(has(lines[6], "\"n_max\":7,") && has(lines[6], "\"draft\":\"draft-dflash\",\"block\":8,\"wall_us\":"),
+              "header 4 (a block draft): %s", lines[6].c_str());
     }
     unsetenv(var);
     std::remove(path.c_str());
@@ -127,15 +135,16 @@ static void test_session() {
         CHECK(t.n_written() == 4, "4 cycles written before the destructor, got %lld", (long long) t.n_written());
     }
     const auto l = read_lines(path);
-    CHECK(l.size() == 8, "header + 2 answers + 5 cycles = 8 lines, got %zu", l.size());
-    if (l.size() != 8) { std::remove(path.c_str()); return; }
+    CHECK(l.size() == 9, "header + 2 answers + 5 cycles + the closing line = 9 lines, got %zu", l.size());
+    if (l.size() != 9) { std::remove(path.c_str()); return; }
 
     CHECK(has(l[1], "{\"answer\":0,\"seq\":0,\"n_prompt\":17000,\"t_us\":5000,\"wall_us\":1790000000000000}"), "%s", l[1].c_str());
     CHECK(l[2] == "{\"cycle\":0,\"answer\":0,\"seq\":0,\"pos\":17000,\"cap\":3,\"steps\":3,\"drafted\":3,\"checked\":3,"
-                  "\"kept\":2,\"stop\":\"cap\",\"conf\":[0.9100,0.8000,0.5500],\"draft_us\":40,\"accept_us\":90,\"cycle_us\":120}",
+                  "\"kept\":2,\"stop\":\"cap\",\"conf\":[0.910000026,0.800000012,0.550000012],\"tail\":[],\"replay\":0,"
+                  "\"draft_us\":40,\"accept_us\":90,\"cycle_us\":120}",
           "cycle 0: %s", l[2].c_str());
     CHECK(has(l[3], "\"cycle\":1,") && has(l[3], "\"steps\":2,\"drafted\":1,\"checked\":1,\"kept\":0,\"stop\":\"pmin\"") &&
-          has(l[3], "\"conf\":[0.7000,0.1000]") && has(l[3], "\"draft_us\":30,\"accept_us\":80,\"cycle_us\":140}"),
+          has(l[3], "\"conf\":[0.699999988,0.100000001],\"tail\":[]") && has(l[3], "\"draft_us\":30,\"accept_us\":80,\"cycle_us\":140}"),
           "cycle 1: %s", l[3].c_str());
     CHECK(has(l[4], "\"cycle\":2,") && has(l[4], "\"steps\":1,\"drafted\":0,\"checked\":0,\"kept\":0,\"stop\":\"pmin\"") &&
           has(l[4], "\"accept_us\":-1,\"cycle_us\":40}"), "cycle 2 (empty, never accepted): %s", l[4].c_str());
@@ -144,6 +153,7 @@ static void test_session() {
     CHECK(has(l[6], "{\"answer\":1,\"seq\":0,\"n_prompt\":18000,"), "answer 1: %s", l[6].c_str());
     CHECK(has(l[7], "\"cycle\":4,\"answer\":1,") && has(l[7], "\"stop\":\"error\"") && has(l[7], "\"kept\":1,") &&
           has(l[7], "\"cycle_us\":-1}"), "cycle 4 (destructor): %s", l[7].c_str());
+    CHECK(has(l[8], "{\"end\":\"spec-rate\",\"cycles\":5,\"trace_us\":"), "closing line: %s", l[8].c_str());
     std::remove(path.c_str());
 }
 
@@ -167,8 +177,8 @@ static void test_two_seqs() {
         t.draft_begin(7, 0, 1800); t.draft_step(-1, 0.5f); t.answer_begin(9, 1, 0, 0); // ignored
     }
     const auto l = read_lines(path);
-    CHECK(l.size() == 7, "header + 2 answers + 4 cycles, got %zu", l.size());
-    if (l.size() == 7) {
+    CHECK(l.size() == 8, "header + 2 answers + 4 cycles + the closing line, got %zu", l.size());
+    if (l.size() == 8) {
         CHECK(has(l[1], "{\"answer\":0,\"seq\":1,") && has(l[2], "{\"answer\":1,\"seq\":0,"), "answers numbered in order");
         CHECK(has(l[3], "\"cycle\":1,\"answer\":0,\"seq\":1,") && has(l[3], "\"kept\":2,") && has(l[3], "\"cycle_us\":500}"),
               "seq 1's first cycle ends at its own next draft: %s", l[3].c_str());
@@ -180,9 +190,85 @@ static void test_two_seqs() {
     std::remove(path.c_str());
 }
 
+// version 2's wrapper hooks, for a draft that reports (a DFlash draft): its stop passed in, the tail, the trim,
+// a second draft type's report replacing the first's, and the server's replay counting one word less
+static void test_reported_stops() {
+    const std::string path = tmp_path("reported");
+    std::remove(path.c_str());
+    FILE * f = std::fopen(path.c_str(), "a");
+    if (!f) { CHECK(false, "open"); return; }
+    CHECK(std::string(trace_t::stop_name(trace_t::STOP_CHAIN)) == "chain" &&
+          std::string(trace_t::stop_name(trace_t::STOP_TRIM)) == "trim", "the new stop names");
+    {
+        trace_t t(f, 1, 7, 0.3f, false, 0, 0, "draft-dflash", 8);
+        t.answer_begin(0, 100, 0, 0);
+        // cycle 0: p-min drops the fourth word; the trace walks three more into the tail
+        t.draft_begin(0, 100, 1000);
+        for (float p : {0.9f, 0.8f, 0.7f, 0.2f}) { t.draft_step(0, p); }
+        for (float p : {0.6f, 0.5f, 0.4f}) { t.draft_tail(0, p); }
+        t.draft_stop(0, trace_t::STOP_PMIN);
+        t.draft_close(0, 7, 3, 3, 1010);
+        t.accepted(0, 2, 1050);
+        // cycle 1: the chain stop drops the second word; the server's replay of it keeps nothing (n 0 stays 0)
+        t.draft_begin(0, 103, 2000);
+        t.draft_step(0, 0.9f); t.draft_step(0, 0.25f);
+        t.draft_stop(0, trace_t::STOP_CHAIN);
+        t.draft_close(0, 7, 1, 1, 2010);
+        t.accepted(0, 0, 2050, /*replay*/ true);
+        // cycle 2: seven drafted, the server's ceiling of 2 trims five; a replay accepts 3, so 2 were kept
+        t.draft_begin(0, 104, 3000);
+        for (int i = 0; i < 7; i++) { t.draft_step(0, 0.5f); }
+        t.draft_stop(0, trace_t::STOP_CAP);
+        t.draft_close(0, 2, 7, 2, 3010);
+        t.accepted(0, 3, 3050, /*replay*/ true);
+        // cycle 3: one draft type reports and fails, the next drafts four and reports nothing
+        t.draft_begin(0, 107, 4000);
+        t.draft_step(0, 0.1f); t.draft_stop(0, trace_t::STOP_PMIN);
+        t.draft_restart(0);
+        t.draft_close(0, 7, 4, 4, 4010);
+        t.accepted(0, 4, 4050);
+        // cycle 4: confidences reported, no stop, no words: the draft broke off
+        t.draft_begin(0, 112, 5000);
+        t.draft_step(0, 0.9f); t.draft_step(0, 0.9f);
+        t.draft_close(0, 7, 0, 0, 5010);
+        // cycle 5: n_min cleared a draft p-min stopped at two words
+        t.draft_begin(0, 112, 6000);
+        for (float p : {0.9f, 0.9f, 0.1f}) { t.draft_step(0, p); }
+        t.draft_stop(0, trace_t::STOP_PMIN);
+        t.draft_close(0, 7, 0, 0, 6010);
+        // cycle 6: nothing reported and nothing drafted
+        t.draft_begin(0, 112, 7000);
+        t.draft_close(0, 7, 0, 0, 7010);
+        t.add_self_us(5000);
+    }
+    const auto l = read_lines(path);
+    CHECK(l.size() == 10, "header + answer + 7 cycles + the closing line, got %zu", l.size());
+    if (l.size() != 10) { std::remove(path.c_str()); return; }
+    CHECK(l[2] == "{\"cycle\":0,\"answer\":0,\"seq\":0,\"pos\":100,\"cap\":7,\"steps\":4,\"drafted\":3,\"checked\":3,"
+                  "\"kept\":2,\"stop\":\"pmin\",\"conf\":[0.899999976,0.800000012,0.699999988,0.200000003],"
+                  "\"tail\":[0.600000024,0.5,0.400000006],\"replay\":0,\"draft_us\":10,\"accept_us\":50,\"cycle_us\":1000}",
+          "cycle 0 (p-min, tail): %s", l[2].c_str());
+    CHECK(has(l[3], "\"steps\":2,\"drafted\":1,\"checked\":1,\"kept\":0,\"stop\":\"chain\",\"conf\":[0.899999976,0.25],"
+                    "\"tail\":[],\"replay\":1,"), "cycle 1 (chain, a replay of nothing): %s", l[3].c_str());
+    CHECK(has(l[4], "\"cap\":2,\"steps\":7,\"drafted\":7,\"checked\":2,\"kept\":2,\"stop\":\"trim\",") &&
+          has(l[4], "\"replay\":1,"), "cycle 2 (trim, a replay of 3 keeps 2): %s", l[4].c_str());
+    CHECK(has(l[5], "\"steps\":0,\"drafted\":4,\"checked\":4,\"kept\":4,\"stop\":\"cap\",\"conf\":[],\"tail\":[],\"replay\":0,"),
+          "cycle 3 (the first type's report forgotten): %s", l[5].c_str());
+    CHECK(has(l[6], "\"steps\":2,\"drafted\":2,\"checked\":0,\"kept\":0,\"stop\":\"error\",") && has(l[6], "\"accept_us\":-1,"),
+          "cycle 4 (broke off): %s", l[6].c_str());
+    CHECK(has(l[7], "\"steps\":3,\"drafted\":2,\"checked\":0,\"kept\":0,\"stop\":\"pmin\","), "cycle 5 (n_min): %s", l[7].c_str());
+    CHECK(has(l[8], "\"steps\":0,\"drafted\":0,\"checked\":0,\"kept\":0,\"stop\":\"error\",") && has(l[8], "\"cycle_us\":-1}"),
+          "cycle 6 (nothing): %s", l[8].c_str());
+    long long cycles = -1, us = -1;
+    CHECK(std::sscanf(l[9].c_str(), "{\"end\":\"spec-rate\",\"cycles\":%lld,\"trace_us\":%lld}", &cycles, &us) == 2 &&
+          cycles == 7 && us >= 5000, "closing line counts 7 cycles and the time added: %s", l[9].c_str());
+    std::remove(path.c_str());
+}
+
 int main() {
     test_env();
     test_stop_of();
+    test_reported_stops();
     test_session();
     test_two_seqs();
     if (g_failures) {

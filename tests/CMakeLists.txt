@@ -750,6 +750,11 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-rate2-mtp test-speculative-rate2-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # CHAIN-PLAN step 1: with the rate trace on, today's apprentice keeps its own hooks and the wrapper writes none
+    # (one header, one closing line a file), and the apprentice's hook mirrors the server's replay
+    llama_test(test-speculative-trace-wrapper NAME test-speculative-trace-wrapper-mtp LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    set_tests_properties(test-speculative-trace-wrapper-mtp PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
     # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context
@@ -842,6 +847,8 @@ llama_build_and_test(test-arg-parser.cpp)
 llama_build_and_test(test-speculative-adaptive.cpp)
 llama_build_and_test(test-speculative-rate.cpp)
 llama_build_and_test(test-speculative-rate-trace.cpp)
+llama_build_and_test(test-speculative-dflash-walk.cpp)
+llama_build_and_test(test-speculative-trace-wrapper.cpp)
 llama_build_and_test(test-speculative-rate2.cpp)
 llama_build_and_test(test-speculative-rate2-sim.cpp)
 llama_build_and_test(test-model-resolution.cpp)

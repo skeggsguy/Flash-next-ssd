@@ -86,7 +86,9 @@ bool common_speculative_process(common_speculative * spec, const llama_batch & b
 void common_speculative_draft(common_speculative * spec);
 
 // informs the speculative context that n_accepted tokens were accepted by the target model
-void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted);
+// replay: the server re-checked a draft cut short by a checkpoint restore, and counts one word less
+// (its n_accepted--); the rate trace mirrors it (kept = n_accepted - 1, "replay":1)
+void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted, bool replay = false);
 
 // (optional) get/set internal state
 bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);
