@@ -2,9 +2,10 @@
 //
 // - LLAMA_SPEC_CHAIN_P unset is 0.5 for draft-dflash and off for every other draft (the MTP head, draft-simple,
 //   EAGLE3, DSpark); "" and "0" turn it off for DFlash too, and a value given always wins;
-// - `--flashnext` with --spec-type draft-dflash: depth 7 and p-min 0 in place of the MTP head's 5 and 0.3, each only
-//   where the user set nothing (the command line, LLAMA_ARG_*); the MTP head keeps 5 and 0.3; without the preset
-//   upstream's defaults stay (the engine leaves llama.cpp's own options alone);
+// - `--flashnext` with --spec-type draft-dflash (the user's here; from the draft file: test-flashnext-draft-type):
+//   depth 7 and p-min 0 in place of the MTP head's 5 and 0.3, each only where the user set nothing (the command
+//   line, LLAMA_ARG_*); the MTP head keeps 5 and 0.3; without the preset upstream's defaults stay (the engine
+//   leaves llama.cpp's own options alone);
 // - the start-up line: the chain's default in force for the draft type, the user's value marked "(yours)".
 // The chain's wiring on a real draft (the MTP head unset: off) is test-speculative-chain-mtp.
 
@@ -13,6 +14,7 @@
 #include "arg.h"
 #include "common.h"
 #include "flashnext.h"
+#include "flashnext-draft-gguf.h"
 #include "speculative.h" // common_speculative_type_to_str
 
 #include <algorithm>
@@ -114,8 +116,10 @@ void test_preset(testing & t) {
         t.assert_equal("LLAMA_ARG_SPEC_DRAFT_P_MIN wins", 0.3f, p.speculative.draft.p_min);
     }
     {
-        // the MTP head (the preset's own type) keeps its values
-        const common_params p = parse(t, { "--flashnext", "-md", "/m/draft.gguf" });
+        // the MTP head (the preset's own type, from its file) keeps its values
+        const std::string head = std::string(getenv("XDG_CONFIG_HOME")) + "/mtp-shared-Q4_K_M.gguf";
+        flashnext_write_draft_gguf(head, "qwen4exp");
+        const common_params p = parse(t, { "--flashnext", "-md", head });
         t.assert_equal("the MTP head: n-max 5", 5, p.speculative.draft.n_max);
         t.assert_equal("the MTP head: p-min 0.3", 0.3f, p.speculative.draft.p_min);
     }

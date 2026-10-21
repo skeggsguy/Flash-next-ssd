@@ -8,9 +8,12 @@
 # The model's first file. The other three files must sit beside it.
 MODEL=~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 
-# The MTP draft head, which guesses a few tokens ahead (faster on code and tool calls).
-# Leave it empty (DRAFT_HEAD=) to run without it: for mostly prose, and about 1 GiB more room.
-DRAFT_HEAD=~/models/flashnext/mtp-shared-Q4_K_M.gguf
+# The draft, which guesses a few tokens ahead for the model to check: Inco AI's DFlash 2 (652 MB),
+# up to 7 tokens at once, writing about 9-11% faster than with the MTP draft head. The MTP draft
+# head's file (mtp-shared-Q4_K_M.gguf, 1.9 GB) works here too: --flashnext reads from the file
+# which draft it is and picks its settings. Leave it empty (DRAFT_HEAD=) to run without a draft:
+# for mostly prose, and a little more room (about 1 GiB with the MTP draft head).
+DRAFT_HEAD=~/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf
 
 # The trained guesser (crystal-ball), which fetches experts two layers ahead: +4% writing on
 # coding work, +8% on chat, same words. Without the file the start notes it and runs without.
@@ -35,7 +38,7 @@ SECOND_COPY=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.
 # internal drive beside a 5.7 GB/s external one (settings.md, "Two drives").
 SECOND_SPLIT=53
 
-# The expert cache, in GiB: the biggest speed setting. 28 on a 64 GB Mac with the draft head
+# The expert cache, in GiB: the biggest speed setting. 28 on a 64 GB Mac with the draft
 # on; 24 if you keep heavy apps open (as fast as 28 was before the LRU rule); start at 16 on
 # 48 GB (memory-sizing.md).
 CACHE_GIB=28

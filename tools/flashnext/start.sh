@@ -102,7 +102,7 @@ if [ ! -f "$MODEL" ]; then
 fi
 
 if [ -n "$DRAFT_HEAD" ] && [ ! -f "$DRAFT_HEAD" ]; then
-    stop "Can't find the draft head at $DRAFT_HEAD." \
+    stop "Can't find the draft at $DRAFT_HEAD." \
          "Download it (README.md, \"Quick start\", step 2), set DRAFT_HEAD in $CONF to where" \
          "it is, or set DRAFT_HEAD= (empty) to run without it."
 fi
@@ -169,7 +169,7 @@ if [ "$DRIVES" = two-ssds ]; then
     ARGS+=(--moe-stream-alt-path "$SECOND_COPY" --moe-stream-alt-split "$SECOND_SPLIT")
 fi
 if [ -n "$DRAFT_HEAD" ]; then
-    ARGS+=(-md "$DRAFT_HEAD")   # --flashnext sets the draft settings once there is a draft head
+    ARGS+=(-md "$DRAFT_HEAD")   # --flashnext reads which draft it is from the file and sets its settings
 fi
 if [ -n "$VISION" ]; then
     ARGS+=(--mmproj "$VISION")

@@ -77,6 +77,11 @@ Wired limit 59,392 MiB (58 GiB) in every run.
 | 32 GiB | draft head off, 96K context | The ceiling without the draft head: +8.6% writing over 28 GiB. Long prompts at 32 took the memory level down to 16-22, so use 30 for long prompts. |
 | 36 GiB | draft head off | **Too big.** The early brake stopped one run (memory level 12 for 10 s), and another swapped as it opened. |
 
+Every number on this page was measured with the MTP draft head. The DFlash draft's file is smaller
+(652 MB against 1.9 GB), and in the study's DFlash run at 28 GiB the server peaked at 43.2 GiB against
+43.4-43.5 GiB with the MTP draft head, swap at 0 ([Results](results.md#dflash-draft-c37)); its part
+by part split was not measured.
+
 A bigger cache with the draft head on was tried at 200K context with 3 checkpoints (2026-10-04):
 30 GiB wired 43.9 GiB and 29 GiB wired 43.0 GiB, and both left the Mac only 0.5-0.7 GiB of free memory
 during a long prompt, under the study's 2 GiB bar. Swap stayed at 0, but neither was kept. 28 stays.

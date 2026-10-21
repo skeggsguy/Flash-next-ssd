@@ -30,7 +30,7 @@ fork adds, run `./build/bin/test-backend-ops -b MTL0`.
 ## 2. Download
 
 The model is Unsloth's **UD-Q4_K_XL** quant of Qwen3.8-Flash-Next: 4 files, 111.3 GB. The draft
-head for speculative decoding is npanj's shared MTP head (1.9 GB).
+for speculative decoding is Inco AI's DFlash 2, converted to GGUF at Q8_0 (652 MB).
 
 ```sh
 D=~/models/flashnext && mkdir -p $D
@@ -38,6 +38,16 @@ for i in 1 2 3 4; do
   curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-UD-Q4_K_XL-0000$i-of-00004.gguf \
     https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-0000$i-of-00004.gguf
 done
+curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf \
+  https://huggingface.co/skeggsguy/Qwen3.8-Flash-Next-DFlash2-GGUF/resolve/main/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf
+```
+
+The DFlash file is a Q8_0 conversion of [incoai's original](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2);
+to make it yourself, see the README's [quick start](../../README.md#build-and-run). Or use npanj's
+shared MTP draft head instead (1.9 GB, about 9-11% slower writing); `-md` takes either file, and
+`--flashnext` picks the settings from the file:
+
+```sh
 curl -fL --retry 5 -C - -o $D/mtp-shared-Q4_K_M.gguf \
   https://huggingface.co/nitinpanj/qwen38-flash-next-v3/resolve/main/MTP/mtp-shared-Q4_K_M.gguf
 ```
@@ -71,7 +81,8 @@ The sha256 of each file the study used (the same as Hugging Face's LFS hash):
 | `...-00002-of-00004.gguf` | 49,859,583,136 | `3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9` |
 | `...-00003-of-00004.gguf` | 49,376,141,504 | `56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3` |
 | `...-00004-of-00004.gguf` | 12,087,983,520 | `753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a` |
-| `mtp-shared-Q4_K_M.gguf` | 1,907,151,936 | `2b468e0a490c7a8e46c66e6e9feb8c02a9c5d8f2aed276a951ef10f8c227f12c` |
+| `Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf` | 652,100,992 | `65d12cda9c658a7cb6f63abf0bc73ade5c33b4f8511161a8a203dabfa5bf8f8c` |
+| `mtp-shared-Q4_K_M.gguf` (the alternative) | 1,907,151,936 | `2b468e0a490c7a8e46c66e6e9feb8c02a9c5d8f2aed276a951ef10f8c227f12c` |
 | `c1-guesser.gguf` | 120,686,368 | `c22af709d65b99bb2bc64aaa5b8b2d47c04c86367b0f9ba0fe452ab47ec053c7` |
 | `c1-guesser-gap1.gguf` | 123,309,952 | `2df6a3d9c63f787286a387965aa1c89da3ee86c6b75829e3c9a1e2ca24690d94` |
 | `mmproj-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
@@ -144,7 +155,7 @@ LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf \
 LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
 ./build/bin/llama-server --flashnext \
   -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
-  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf \
+  -md ~/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf \
   --moe-stream-cache 28
 ```
 
@@ -154,14 +165,14 @@ What each part is for, in one line each (details in [Settings](settings.md)):
 |---|---|
 | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=...` | the trained two-layer guesser ([crystal-ball](https://huggingface.co/skeggsguy/crystal-ball)); naming it also turns on its tuning and the keep rule |
 | `LLAMA_MOE_STREAM_GUESSER1=...` | the trained one-layer guesser, in place of the engine's own guess for the next layer |
-| `--flashnext` | llama.cpp's options at the everyday values, each only where you did not set it: `-ngl 99`, streaming past the file cache with 8 readers, a 200K context, big batches, 3 checkpoints, one conversation at a time, flash attention, no extra prompt store in RAM, the model's template, and with `-md` the draft head's options ([README](../../README.md#with---flashnext)) |
+| `--flashnext` | llama.cpp's options at the everyday values, each only where you did not set it: `-ngl 99`, streaming past the file cache with 8 readers, a 200K context, big batches, 3 checkpoints, one conversation at a time, flash attention, no extra prompt store in RAM, the model's template, and with `-md` the draft's options ([README](../../README.md#with---flashnext)) |
 | `-m ...` | the model's first file; the other three sit beside it |
-| `-md ...` | the MTP draft head, up to 5 tokens ahead at a depth it measures itself |
+| `-md ...` | the DFlash draft, up to 7 tokens ahead, cut short by the chain stop; `--flashnext` reads from the file that it is DFlash (`--spec-type draft-dflash`). With the MTP draft head's file it runs the head, up to 5 tokens ahead at a depth it measures itself |
 | `--moe-stream-cache 28` | a 28 GiB expert cache: the one size you must give, since the engine cannot know your Mac |
 
 The engine's own switches need nothing: unset, they run the study's values (the cache claimed in
 4 GiB steps, the model kept wired while idle, the LRU rule, the GPU starting on cached experts while
-the missing ones are read, fewer undo copies, the measured draft depth). [Settings](settings.md) lists each with its default and the value that restores the old way.
+the missing ones are read, fewer undo copies, the chain stop with DFlash, the measured depth with the MTP draft head). [Settings](settings.md) lists each with its default and the value that restores the old way.
 `--flashnext` also turns on the chat window (90 s) and chat's opening copy. To use the second drive
 or the image encoder, add the flags from the
 [README's quick start](../../README.md#quick-start).

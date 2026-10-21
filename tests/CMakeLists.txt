@@ -177,6 +177,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # C37's roll-out (2026-10-21): DFlash's defaults, the chain stop 0.5 unset with draft-dflash only and --flashnext's
     # depth 7 / p-min 0 with --spec-type draft-dflash, each value the user gives winning
     llama_build_and_test(test-flashnext-dflash.cpp)
+    # C37's roll-out step 4a (2026-10-21): --flashnext picks the draft type from the draft file's architecture (a
+    # DFlash file runs draft-dflash with DFlash's defaults), the user's --spec-type winning; tiny generated GGUFs
+    llama_build_and_test(test-flashnext-draft-type.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
     # the masked waves' parking slots (stage_wave_locked / emit_wave_slots) on a desk made by hand: a wave short of

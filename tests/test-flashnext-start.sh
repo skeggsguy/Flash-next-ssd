@@ -180,6 +180,15 @@ has "missing image encoder: a note" "no image encoder at $T/models/noeyes.gguf"
 lacks "missing image encoder: text only" "--mmproj"
 has "missing image encoder: the server runs" "FAKE-SERVER"
 
+# A settings file from before DFlash names the MTP draft head: still the same command, no --spec-type,
+# since --flashnext reads which draft it is from the file.
+touch "$T/models/mtp-shared-Q4_K_M.gguf"
+conf "DRAFT_HEAD=$T/models/mtp-shared-Q4_K_M.gguf"
+run internal --dry-run
+code "the MTP draft head's file" 0
+has "the MTP draft head's file: -md" " -md $T/models/mtp-shared-Q4_K_M.gguf --mmproj "
+lacks "the MTP draft head's file: no --spec" "--spec-"
+
 conf "DRAFT_HEAD="
 run internal --dry-run
 code "no draft head" 0
@@ -203,7 +212,7 @@ has "a quoted ~ is the home folder" " -m $T/home/tilde.gguf "
 printf 'PORT=%s\n' "$FREE_PORT" > "$T/test.conf"   # every other line from the example
 run internal --dry-run
 has "a missing line takes the example's value" " -m $HOME/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf "
-has "the example's draft head" " -md $HOME/models/flashnext/mtp-shared-Q4_K_M.gguf "
+has "the example's draft: DFlash" " -md $HOME/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf "
 has "the example's guesser, missing here" "no trained guesser at $HOME/models/flashnext/c1-guesser.gguf"
 has "the example's one-layer guesser, missing here" "no one-layer guesser at $HOME/models/flashnext/c1-guesser-gap1.gguf"
 has "the example's image encoder, missing here" "no image encoder at $HOME/models/flashnext/mmproj-BF16.gguf"
@@ -222,7 +231,7 @@ lacks "missing model: no server" "FAKE-SERVER"
 conf "DRAFT_HEAD=$T/models/nohead.gguf"
 run internal
 code "missing draft head" 1
-has "missing draft head" "Can't find the draft head at $T/models/nohead.gguf."
+has "missing draft head" "Can't find the draft at $T/models/nohead.gguf."
 has "missing draft head: how to go without" "set DRAFT_HEAD= (empty)"
 
 DRIVE=/Volumes/NoSuchDrive-flashnext-test-$$

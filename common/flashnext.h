@@ -9,7 +9,9 @@
 // - `--flashnext`: one preset flag that sets the everyday values of llama.cpp's general flags, each only where the
 //   user did not pass that flag (on the command line, as LLAMA_ARG_* or in a config file); upstream's defaults are
 //   untouched without it. The draft settings wait for a draft model (-md): without one there is nothing to draft.
-//   With --spec-type draft-dflash the user's, its depth and p-min are DFlash's own (7 and 0, C37), not the MTP head's.
+//   Without the user's --spec-type, the draft file says which type runs (C37 roll-out step 4a): a DFlash file is
+//   draft-dflash, anything else the MTP head's draft-mtp-adaptive. With draft-dflash, the user's or the file's, its
+//   depth and p-min are DFlash's own (7 and 0, C37), not the MTP head's.
 // - the start-up line: one line naming the defaults in force and whether the preset is on. Its first word is
 //   "flashnext:", which the study's log readers (runner/roomstats.py) never take for a desk line.
 
@@ -55,9 +57,16 @@ struct common_flashnext_setting {
 // the preset, in the order the help and the start-up line give it
 const std::vector<common_flashnext_setting> & common_flashnext_preset();
 
-// the draft rows whose value differs with --spec-type draft-dflash (the user's choice; the preset's own type is the
-// MTP head's): DFlash's depth and p-min, which replace the preset's rows of the same flag
+// the draft rows whose value differs with --spec-type draft-dflash (the user's, or the draft file's): DFlash's depth and
+// p-min, which replace the preset's rows of the same flag
 const std::vector<common_flashnext_setting> & common_flashnext_preset_dflash();
+
+// --flashnext's draft type for the draft file at `path`, read from its GGUF metadata alone (no model load):
+// DFlash's architecture ("dflash") is draft-dflash, or draft-dspark with DSpark's Markov head (markov_w1.weight, as
+// upstream's common_speculative_types_from_gguf tells the two apart); any other architecture (the MTP head's
+// qwen4exp among them) is the preset's own draft-mtp-adaptive. A file that is not a readable GGUF throws
+// std::invalid_argument naming it, so the start fails before the model loads, never on a guessed type.
+common_speculative_type common_flashnext_draft_type(const std::string & path);
 
 // "-ngl 99 --moe-stream ..." (draft settings after "with -md:", DFlash's after "with --spec-type draft-dflash:"), for
 // --flashnext's help
@@ -66,6 +75,9 @@ std::string common_flashnext_preset_str();
 // Applies the preset to `params` (call after every source of flags has been read). `find`: the option a flag names
 // in this program, or nullptr (a flag the program does not have is skipped). `given`: the `args[0]` of every option
 // the user passed. Records what it set in params.flashnext_set and what it left to the user in flashnext_yours.
+// With a local draft file (-md, not a download) and no --spec-type of the user's, the type comes from the file
+// (common_flashnext_draft_type), recorded as "--spec-type <type> (from the draft file)"; a draft still to be
+// downloaded (-mdu, -hfd) keeps the preset's draft-mtp-adaptive, as the file cannot be read yet.
 void common_flashnext_apply(common_params & params,
                             const std::function<const common_arg * (const std::string &)> & find,
                             const std::set<std::string> & given);

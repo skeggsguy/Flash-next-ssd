@@ -16,6 +16,7 @@
 #include "arg.h"
 #include "common.h"
 #include "flashnext.h"
+#include "flashnext-draft-gguf.h"
 
 #include "../src/llama-flashnext.h"
 
@@ -262,7 +263,10 @@ void test_preset(testing & t) {
         t.assert_true("not recorded as set", !has(p.flashnext_set, "-c 200000"));
     }
     {
-        const common_params p = parse(t, { "--flashnext", "-md", "/m/draft.gguf" });
+        // an MTP head's file: the preset's own type (the type from the file: test-flashnext-draft-type)
+        const std::string head = std::string(getenv("XDG_CONFIG_HOME")) + "/mtp-shared-Q4_K_M.gguf";
+        flashnext_write_draft_gguf(head, "qwen4exp");
+        const common_params p = parse(t, { "--flashnext", "-md", head });
         t.assert_true("--spec-type draft-mtp-adaptive",
             p.speculative.types == std::vector<common_speculative_type>{ COMMON_SPECULATIVE_TYPE_NONE,
                                                                          COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE });

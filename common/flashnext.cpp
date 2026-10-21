@@ -5,6 +5,9 @@
 
 #include "arg.h"
 #include "common.h"
+#include "ggml-cpp.h"   // gguf_context_ptr
+#include "gguf.h"
+#include "speculative.h" // common_speculative_type_to_str
 
 #include "../src/llama-flashnext.h" // the libllama side's parsers: what an unset switch means
 
@@ -82,6 +85,26 @@ const std::vector<common_flashnext_setting> & common_flashnext_preset_dflash() {
     return dflash;
 }
 
+common_speculative_type common_flashnext_draft_type(const std::string & path) {
+    gguf_init_params gguf_params = {
+        /* .no_alloc = */ true,
+        /* .ctx      = */ nullptr,
+    };
+    gguf_context_ptr gguf_ctx(gguf_init_from_file(path.c_str(), gguf_params));
+    if (!gguf_ctx) {
+        throw std::invalid_argument(string_format("--flashnext: cannot read the draft file '%s' to pick its --spec-type "
+                "(is it there, and a GGUF?)", path.c_str()));
+    }
+    const int64_t arch_id = gguf_find_key(gguf_ctx.get(), "general.architecture");
+    const bool dflash = arch_id >= 0 && gguf_get_kv_type(gguf_ctx.get(), arch_id) == GGUF_TYPE_STRING &&
+            strcmp(gguf_get_val_str(gguf_ctx.get(), arch_id), "dflash") == 0;
+    if (!dflash) {
+        return COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE;
+    }
+    return gguf_find_tensor(gguf_ctx.get(), "markov_w1.weight") >= 0 ? COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK
+                                                                      : COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+}
+
 // the row DFlash's table puts in place of `s`, or `s` itself
 static const common_flashnext_setting & flashnext_row(const common_flashnext_setting & s, bool dflash) {
     if (dflash) {
@@ -141,10 +164,24 @@ void common_flashnext_apply(common_params & params,
     params.flashnext_set.clear();
     params.flashnext_yours.clear();
     const bool has_draft = params.speculative.has_dft();
-    // the user's --spec-type is in place already; the preset's own (the MTP head's) is never draft-dflash
-    const bool dflash = flashnext_has_type(params, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+    // the preset's --spec-type: read from a local draft file the user left the type of to the preset; a draft still
+    // to be downloaded keeps the preset's own row
+    const common_arg * type_opt = find("--spec-type");
+    const auto & dft = params.speculative.draft.mparams;
+    const bool type_from_file = has_draft && type_opt != nullptr && given.count(type_opt->args[0]) == 0 &&
+            !dft.path.empty() && dft.url.empty() && dft.hf_repo.empty();
+    const common_speculative_type file_type = type_from_file ? common_flashnext_draft_type(dft.path) :
+            COMMON_SPECULATIVE_TYPE_NONE;
+    const std::string type_value = common_speculative_type_to_str(file_type);
+    // the user's --spec-type is in place already; the preset's own row (the MTP head's) is never draft-dflash
+    const bool dflash = flashnext_has_type(params, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
+            file_type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
     for (const auto & row : common_flashnext_preset()) {
-        const common_flashnext_setting & s = flashnext_row(row, dflash);
+        common_flashnext_setting s = flashnext_row(row, dflash);
+        const bool from_file = type_from_file && strcmp(s.arg, "--spec-type") == 0;
+        if (from_file) {
+            s.value = type_value.c_str();
+        }
         const common_arg * opt = find(s.arg);
         if (opt == nullptr) {
             continue; // not a flag of this program
@@ -157,7 +194,7 @@ void common_flashnext_apply(common_params & params,
             continue; // nothing to draft with: the line says the draft settings wait for -md
         }
         flashnext_set(params, *opt, s.value);
-        params.flashnext_set.push_back(flashnext_setting_str(s));
+        params.flashnext_set.push_back(flashnext_setting_str(s) + (from_file ? " (from the draft file)" : ""));
     }
 }
 
