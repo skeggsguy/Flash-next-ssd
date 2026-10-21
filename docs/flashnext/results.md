@@ -139,7 +139,7 @@ Over depth 3 it gained +4.4% chat and +3.5% coding, and the longest coding conve
 (+10.9%). The time to the first token, a mean over replies, was 17.1 s against the head's 19.6 on chat
 and 39.4 s against 38.4 on coding; the server's peak memory was 43.2 GiB against 43.4-43.5. No timing was
 voided and swap stayed at 0. At temperature 0, DFlash at depths 3 and 7 wrote the model's own words
-on the three fixed answers (DF2's checks); the chain stop only shortens drafts.
+on the three fixed answers (DF2's checks); those checks ran without the chain stop.
 
 From this release DFlash's values are the defaults whenever you choose it: with
 `--spec-type draft-dflash`, the chain stop is 0.5 unless you set `LLAMA_SPEC_CHAIN_P`, and
