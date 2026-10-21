@@ -268,7 +268,7 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
   at the model's tokenizer files) and `llama-quantize` to Q8_0; another converter version may write
   bytes that differ from the checksum above.
 
-With all three, you're running the study's everyday server. The only differences are where its
+With all four, the DFlash draft included, you're running the study's everyday server. The only differences are where its
 files sit and the statistics it records for the study.
 
 **Watch your memory.** Leave about 18 GiB free for macOS and your apps, more if you run heavy ones
