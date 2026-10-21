@@ -266,6 +266,9 @@ void test_prompt(const llama_tokens & prompt) {
     const run_out off = run(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, nullptr, nullptr, false, prompt, nullptr, "off");
     check(off.ok && off.cycles.size() > 10 && off.trace.size() == off.cycles.size() && off.trace[0].conf.size() >= 3,
           "the chain off ran, one trace line a cycle (" + std::to_string(off.cycles.size()) + " cycles)");
+    // the switch unset: the MTP head keeps the chain off (only draft-dflash defaults it on, flashnext.h)
+    check(std::none_of(off.trace.begin(), off.trace.end(), [](const traced & l) { return l.stop == "chain"; }),
+          "LLAMA_SPEC_CHAIN_P unset: no cycle stopped on the chain (the MTP head's default is off)");
     if (off.trace.empty() || off.trace[0].conf.size() < 3) {
         return;
     }

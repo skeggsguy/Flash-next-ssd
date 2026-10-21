@@ -1287,7 +1287,7 @@ private:
         // speculative set-up's catch below, which would otherwise run on with no draft at all
         if (has_spec) {
             try {
-                common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"));
+                common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"), COMMON_SPECULATIVE_TYPE_NONE);
             } catch (const std::exception & e) {
                 SRV_ERR("%s\n", e.what());
                 return false;

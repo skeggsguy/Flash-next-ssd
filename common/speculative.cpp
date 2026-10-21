@@ -243,15 +243,17 @@ struct common_speculative_impl {
 
     // The chain stop (common/speculative-chain.h, CHAIN-PLAN step 2): the threshold this draft's p-min cut takes, 0
     // when off. A draft with a cut reads it in its constructor (read_chain_p: a bad value throws, so the start
-    // fails) and names it at the default log level (chain_line); a draft without one never reads it.
+    // fails) and names it at the default log level (chain_line); a draft without one never reads it. Unset, the
+    // threshold is this draft type's default (flashnext.h: 0.5 for draft-dflash, off for the rest).
     double chain_p = 0.0;
 
-    static double read_chain_p() { return common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P")); }
+    double read_chain_p() const { return common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"), type); }
 
     void chain_line() const {
         if (chain_p > 0.0) {
             LOG_INF("%s: chain stop: on, %s stops a draft once the product of its words' confidences falls under %g "
-                    "(LLAMA_SPEC_CHAIN_P)\n", __func__, common_speculative_type_to_str(type).c_str(), chain_p);
+                    "(LLAMA_SPEC_CHAIN_P%s)\n", __func__, common_speculative_type_to_str(type).c_str(), chain_p,
+                    std::getenv("LLAMA_SPEC_CHAIN_P") == nullptr ? " unset: this draft's default" : "");
         }
     }
 };

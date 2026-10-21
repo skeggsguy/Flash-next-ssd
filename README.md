@@ -11,7 +11,7 @@ It was tuned for a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 
 measured on real chat and coding-agent conversations, and any timing that swap touched was thrown out.
 On a 48 GB Mac, see [Choose your size](#choose-your-size) for the speeds to expect.
 
-<p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs"></p>
+<p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs. Below, where the time goes for one written token: about 40 ms with the MTP draft head, split into guessing, GPU work, waiting for the SSDs and other idle time; with the optional DFlash draft 34 ms for chat and 38 ms for coding, measured as totals only"></p>
 
 ## Headline numbers
 
@@ -26,9 +26,15 @@ coding-agent conversations at high thinking effort, and chat conversations at me
 |---|---|
 | **Writing (decode), coding agent** | **24.3 tokens/s** |
 | **Writing (decode), chat** | **26.7 tokens/s** |
+| **With the optional DFlash draft, coding agent** | **26.5 tokens/s**, **+8.7%** over the MTP draft head |
+| **With the optional DFlash draft, chat** | **29.3 tokens/s**, **+10.8%** over the MTP draft head |
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
+
+The DFlash rows swap the MTP draft head for an optional extra download, the DFlash draft
+([Build and run](#build-and-run), optional extras). They come from one run on 12 conversations of
+each set, where the MTP draft head wrote 24.3 tokens/s coding and 26.4 chat.
 
 ## What it adds
 
@@ -232,6 +238,35 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
 - **Pictures:** add `--mmproj ~/models/flashnext/mmproj-BF16.gguf`.
 - **A coding agent sharing the server:** have it send the header `X-Lane: code`. `--flashnext`
   already turns on the 90-second [chat window](#the-chat-window), so your chats go first.
+- **A faster draft, DFlash (652 MB):** a small model that drafts several tokens at once, used
+  instead of the MTP draft head. It writes about 9-11% faster
+  ([what each extra is worth](#what-each-extra-is-worth)). Download it:
+
+  ```sh
+  D=~/models/flashnext
+  curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf \
+    https://huggingface.co/skeggsguy/Qwen3.8-Flash-Next-DFlash2-GGUF/resolve/main/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf
+  shasum -a 256 $D/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf   # 65d12cda9c658a7cb6f63abf0bc73ade5c33b4f8511161a8a203dabfa5bf8f8c
+  ```
+
+  Then run step 4 with it in place of the draft head:
+
+  ```sh
+  LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf \
+  LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
+  ./build/bin/llama-server --flashnext \
+    -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+    -md ~/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf --spec-type draft-dflash \
+    --moe-stream-cache 28
+  ```
+
+  `--flashnext` and the engine then use DFlash's own settings (7 tokens ahead, no confidence cut,
+  the chain stop at 0.5); the `flashnext:` line at start shows them. The one-click start files
+  below run the MTP draft head, so start DFlash with this command. This GGUF is a Q8_0
+  conversion of [incoai's original](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2). To make
+  it yourself, convert that with the engine's `convert_hf_to_gguf.py` (`--target-model-dir` pointing
+  at the model's tokenizer files) and `llama-quantize` to Q8_0; another converter version may write
+  bytes that differ from the checksum above.
 
 With all three, you're running the study's everyday server. The only differences are where its
 files sit and the statistics it records for the study.
@@ -340,6 +375,7 @@ environment variable. To go back to the old way, set it to the value in the last
 | `LLAMA_MOE_STREAM_DESK_FIRST` | While a layer's missing experts are read, the GPU already works on the ones in the cache (and the shared expert); the rest run as soon as they land ([above](#the-gpu-starts-on-the-experts-already-in-the-cache)). Same output. | `0`: each layer waits for every missing expert before it starts |
 | `LLAMA_RS_SKIP_SLOTS` | The draft head's check saves only the undo copies a rollback can reach. | `0`: every copy, every round |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | With `--spec-type draft-mtp-adaptive`, the draft head measures its own depth. | `0`: the older rule, a depth that climbs and falls with the guesses kept |
+| `LLAMA_SPEC_CHAIN_P` | With `--spec-type draft-dflash`, a draft stops once its own estimate that all its tokens are right falls under 0.5 (the chain stop). Off with the MTP draft head. | `0`: off |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | The expert cache is claimed in 4 GiB steps with short pauses, so macOS isn't rushed at load. | `0`: all at once |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | The model stays wired in RAM while the server is idle (10,000,000 s). | `0`: upstream's 180 s, after which the next request wires ~41 GiB back in one go |
 | `GGML_METAL_STAFF_MV` | The check's matrix work runs on the route the study measured. | `1`: the M5's matrix units (below the study's bar) |
@@ -374,6 +410,7 @@ upstream's defaults are untouched.
 | `--chat-window 90` | Chat goes first when a coding agent shares the server. Does nothing until a client sends `X-Lane: code`. |
 | `--jinja --reasoning-format deepseek` | The model's chat template, with its thinking returned apart from the answer. |
 | With a draft head (`-md`) only: `--spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | The draft head, up to 5 tokens ahead, on the GPU, for prompts of any length. |
+| With your `--spec-type draft-dflash`: `--spec-draft-n-max 7 --spec-draft-p-min 0` instead | The DFlash draft, up to 7 tokens ahead, cut by the chain stop rather than by each token's confidence. |
 
 The `flashnext:` line at start also says what the preset set and which of your own settings it kept.
 
@@ -386,6 +423,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | The model (download, 111.3 GB) | `-m` and its first file | [Quick start](#quick-start), step 2. |
 | The expert cache's size | `--moe-stream-cache 28` | Change the GiB to suit how much memory you want to keep spare; it's yours to adjust each time you start the server. 28 GiB on 64 GB with the draft head; 24 if you keep other apps open (about 6-8% slower, ~4 GiB back); start at 16 on 48 GB ([Memory sizing](docs/flashnext/memory-sizing.md)). |
 | The draft head (download, 1.9 GB) | `-md` and its file | `--flashnext` then sets the draft options. |
+| Or the DFlash draft (download, 652 MB) | `-md` and its file, with `--spec-type draft-dflash` | Instead of the draft head, about 9-11% faster ([optional extras](#build-and-run)). `--flashnext` and the engine then use its own settings. |
 | The two trained guessers (downloads, 121 and 123 MB) | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=` and `LLAMA_MOE_STREAM_GUESSER1=`, each with its file | Environment variables, not flags. Naming the two-layer guesser also turns on its tuning and the keep rule. |
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
 | A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
@@ -395,13 +433,15 @@ These are yours: the downloads, and the choices that depend on your Mac.
 
 > **The headline numbers are with all the extras on.** That means `--flashnext`, a 28 GiB expert cache,
 > the MTP draft head, both trained guessers and a second SSD. Leave an extra off and you'll be
-> slower. The table shows roughly how much each one is worth.
+> slower. The table shows roughly how much each one is worth. The DFlash rows of the headline swap
+> the draft head for the DFlash draft.
 
 | Extra | What it's worth | Without it |
 |---|---|---|
 | `--flashnext` | The whole setup: streaming, big batches, the right context and cache settings | Upstream's defaults don't stream, so the model won't run well on 64 GB |
 | A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Set the GiB to fit how much memory you want spare: 24 GiB gives about 4 GiB back and writes about 6-8% slower |
 | The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
+| The DFlash draft instead of the draft head (download, 652 MB) | **+8.7%** coding, **+10.8%** chat over the draft head | The MTP draft head |
 | The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
 | A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
 
@@ -435,6 +475,10 @@ This is a fork of a fork of a fork, and it stands on the work underneath it:
   ([nitinpanj/qwen38-flash-next-v3](https://huggingface.co/nitinpanj/qwen38-flash-next-v3)).
 - [Unsloth](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) for the UD-Q4_K_XL quant, and
   the Qwen team for the model.
+- Inco AI for the DFlash 2 draft
+  ([incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2),
+  Apache-2.0), and Chen, Liang and Liu for DFlash itself (ICML 2026). The DFlash GGUF here is our
+  conversion of it to Q8_0.
 
 This fork adds two-drive striping, the reading room, the measured-depth draft head, union
 attention, the n-gram shelf, the pinned checkpoint, the cheaper per-layer stops, the chat window,

@@ -115,6 +115,37 @@ the everyday values, the chat window (90 s) and chat's opening copy included
 the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
 cache, the draft head, both guessers and the second SSD.
 
+## DFlash draft (C37)
+
+An optional draft in place of the MTP head: incoai's DFlash 2, a 0.6B model that drafts a block of
+words at once, converted to GGUF at Q8_0 (652 MB). One run on 21 October on the 12-conversation
+lists of both October sets, chat first, five arms each: the MTP head, DFlash at depth 3 with p-min
+0.3 (the first DFlash run's best, DF2), DFlash at depth 7 with p-min 0 and the chain stop at 0.5,
+the MTP head with the chain stop at 0.5, and the MTP head again. The depth-7 setting was chosen
+beforehand by replaying a night's recorded drafts offline. Each change is against the mean of the two
+MTP-head arms, which agreed within 0.6% (chat) and 0.3% (coding); the bar was +3%.
+
+| Draft | Coding | Chat | Run |
+|---|---|---|---|
+| The MTP head (the base, mean of two arms) | 24.34 tokens/s | 26.44 | C37-code-lean, C37-chat-lean |
+| DFlash, depth 3, p-min 0.3 | **+5.0%** (25.57) | **+6.2%** (28.08) | C37-code-lean, C37-chat-lean |
+| DFlash, depth 7, p-min 0, chain stop 0.5 | **+8.7%** (26.47) | **+10.8%** (29.31) | C37-code-lean, C37-chat-lean |
+| The MTP head with the chain stop 0.5 | +2.8% (25.02), under the bar | +2.99% (27.23), under the bar | C37-code-lean, C37-chat-lean |
+
+The chain stop ends a draft once the product of its words' confidences falls under the threshold.
+Without it, DFlash at depth 7 checked 6.4 drafted words a round and kept 37% of them; with it, 72%
+(chat) and 69% (coding), the MTP head's own rate, while still keeping more words a round than depth 3.
+Over depth 3 it gained +4.4% chat and +3.5% coding, and the longest coding conversations gained most
+(+10.9%). The time to the first token, a mean over replies, was 17.1 s against the head's 19.6 on chat
+and 39.4 s against 38.4 on coding; the server's peak memory was 43.2 GiB against 43.4-43.5. No timing was
+voided and swap stayed at 0. At temperature 0, DFlash at depths 3 and 7 wrote the model's own words
+on the three fixed answers (DF2's checks); the chain stop only shortens drafts.
+
+From this release DFlash's values are the defaults whenever you choose it: with
+`--spec-type draft-dflash`, the chain stop is 0.5 unless you set `LLAMA_SPEC_CHAIN_P`, and
+`--flashnext` sets depth 7 and p-min 0 ([Settings](settings.md#a-dflash-draft-instead-of-the-head)).
+The MTP head keeps the chain stop off, since it stayed under the bar there.
+
 ## Expert cache size
 
 The numbers behind the README's [Choose your size](../../README.md#choose-your-size). Only the cache

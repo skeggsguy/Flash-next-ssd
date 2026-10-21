@@ -4,7 +4,8 @@
 // - the switches: each one unset is the everyday value, "0" (or the old value) the old way, and the guesser's tuning
 //   takes its everyday values only with the guesser's file named;
 // - LLAMA_SPEC_ADAPTIVE_RATE: unset is the measured depth, "" and "0" the acceptance controller, "2" the priced depth;
-// - LLAMA_SPEC_CHAIN_P: unset, "" and "0" off, a number in (0, 1] the threshold (as a double), anything else throws;
+// - LLAMA_SPEC_CHAIN_P for the MTP head: unset, "" and "0" off, a number in (0, 1] the threshold (as a double),
+//   anything else throws (draft-dflash's own default: test-flashnext-dflash);
 // - the start-up line: its first word, the defaults in force and the user's values marked, the preset on and off;
 // - `--flashnext` through common_params_parse, as llama-server parses: the everyday values where the user passed
 //   nothing; a flag passed on the command line (in any spelling, before or after it), as its LLAMA_ARG_* or in a
@@ -104,16 +105,17 @@ void test_adaptive_rate(testing & t) {
 }
 
 void test_chain_p(testing & t) {
-    t.assert_equal("unset: off", 0.0, common_flashnext_chain_p(nullptr));
-    t.assert_equal("\"\": off", 0.0, common_flashnext_chain_p(""));
-    t.assert_equal("\"0\": off", 0.0, common_flashnext_chain_p("0"));
-    t.assert_equal("\"0.3\": the double 0.3, not the float", 0.3, common_flashnext_chain_p("0.3"));
-    t.assert_equal("\"1\": the top of the range", 1.0, common_flashnext_chain_p("1"));
-    t.assert_equal("\"1e-3\"", 1e-3, common_flashnext_chain_p("1e-3"));
+    constexpr common_speculative_type MTP = COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE;
+    t.assert_equal("unset: off", 0.0, common_flashnext_chain_p(nullptr, MTP));
+    t.assert_equal("\"\": off", 0.0, common_flashnext_chain_p("", MTP));
+    t.assert_equal("\"0\": off", 0.0, common_flashnext_chain_p("0", MTP));
+    t.assert_equal("\"0.3\": the double 0.3, not the float", 0.3, common_flashnext_chain_p("0.3", MTP));
+    t.assert_equal("\"1\": the top of the range", 1.0, common_flashnext_chain_p("1", MTP));
+    t.assert_equal("\"1e-3\"", 1e-3, common_flashnext_chain_p("1e-3", MTP));
     for (const char * bad : { "abc", "1.5", "1.0000001", "-0.1", "0.2x", "0.0", "nan", "off", "on" }) {
         bool threw = false;
         try {
-            common_flashnext_chain_p(bad);
+            common_flashnext_chain_p(bad, MTP);
         } catch (const std::runtime_error & e) {
             threw = std::string(e.what()).find("LLAMA_SPEC_CHAIN_P") != std::string::npos;
         }

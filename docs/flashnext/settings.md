@@ -62,6 +62,7 @@ is one value away:
 | `LLAMA_MOE_STREAM_DESK_FIRST` | on: the GPU starts on the cached experts while the missing ones are read | `0`: each layer waits for every missing expert first |
 | `LLAMA_RS_SKIP_SLOTS` | on: only the undo copies a rollback can reach | `0`: every copy |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | `1`: the draft head's measured depth | `0`: the older climb-table rule |
+| `LLAMA_SPEC_CHAIN_P` | with `--spec-type draft-dflash`: `0.5`, the [chain stop](#the-chain-stop-and-the-draft-trace); with any other draft: off | `0`: off |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | `4096`: the cache claimed in 4 GiB steps | `0`: all at once |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | `10000000`: the model stays wired while idle | `0`: upstream's 180 s |
 | `GGML_METAL_STAFF_MV` | off: the check's matrix work on the measured route | `1`: the M5's matrix units |
@@ -89,6 +90,7 @@ variable or in a config file. Without it, upstream's defaults are untouched.
 | `--chat-window 90` | 0 (off) |
 | `--jinja --reasoning-format deepseek` | on, `deepseek` |
 | with a draft model (`-md`) only: `--spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | none, 3, 0.0, auto, 0 |
+| with your `--spec-type draft-dflash` and `-md`: `--spec-draft-n-max 7 --spec-draft-p-min 0` in place of the head's 5 and 0.3 ([DFlash](#a-dflash-draft-instead-of-the-head)) | 3, 0.0 |
 
 It never sets the expert cache (`--moe-stream-cache`), the files or the address. These are the
 study's everyday values: its own server runs exactly these. Give any of them
@@ -242,15 +244,19 @@ Environment-only, with the draft head:
 ### A DFlash draft instead of the head
 
 A DFlash draft is a small separate model that drafts a whole block of words in one go (the study
-runs incoai's DFlash 2, Q8_0). It takes the head's flags; give each one yourself, because with `-md`
-`--flashnext` otherwise sets the head's (`draft-mtp-adaptive`, n-max 5, p-min 0.3):
+runs incoai's DFlash 2, Q8_0). It takes the head's flags. Give `-md` and `--spec-type draft-dflash`
+yourself; `--flashnext` then sets DFlash's own depth and p-min (7 and 0) instead of the head's (5 and
+0.3), and the chain stop is on at 0.5 unless you set `LLAMA_SPEC_CHAIN_P`. That is the study's
+measured best: +10.8% chat and +8.7% coding over the head (C37, [Results](results.md#dflash-draft-c37)).
+Any of the three you set yourself is kept. Without `--flashnext`, n-max and p-min are upstream's (3
+and 0) and only the chain stop's default applies:
 
 | Option | What it does |
 |---|---|
 | `-md FILE` | The DFlash gguf. A file with a Markov head (`markov_w1.weight`) is DSpark, otherwise DFlash. |
 | `--spec-type draft-dflash` | The DFlash draft (`draft-dspark` for DSpark). |
-| `--spec-draft-n-max N` | The most words drafted per round, at most the draft's trained block less one (more is clamped, with a warning). Study: 7 (the whole block) and 3. |
-| `--spec-draft-p-min P` | Stop the draft at the first word whose confidence falls below P (`0`: no stop). DSpark needs its confidence head for any P above 0 and for the chain stop. Study: 0.3 at n-max 3, 0 at n-max 7. |
+| `--spec-draft-n-max N` | The most words drafted per round, at most the draft's trained block less one (more is clamped, with a warning). **`--flashnext`**: 7 (the whole block). Study: 7 with the chain stop, and 3. |
+| `--spec-draft-p-min P` | Stop the draft at the first word whose confidence falls below P (`0`: no stop). DSpark needs its confidence head for any P above 0 and for the chain stop. **`--flashnext`**: 0. Study: 0 at n-max 7, 0.3 at n-max 3. |
 
 ### The chain stop and the draft trace
 
@@ -258,7 +264,7 @@ Environment-only. The chain stop works for every draft that has a p-min (the hea
 
 | Variable | Default | What it does |
 |---|---|---|
-| `LLAMA_SPEC_CHAIN_P` | off | A threshold in (0, 1]. The draft goes on while the product of its words' confidences so far stays at or above it; the word that takes the product under it ends the draft and is not drafted. P-min is checked first, so a word under both is a p-min stop. Unset, `""` or `0`: off, and the words are the same as without it. Any other value outside (0, 1] (`1.5`, `0.0`, `abc`) stops the server at start. Under `LLAMA_SPEC_ADAPTIVE_RATE=2` it is ignored, with a warning (the price stops the draft there). The `flashnext:` line shows it (`LLAMA_SPEC_CHAIN_P=off`). |
+| `LLAMA_SPEC_CHAIN_P` | `0.5` with `draft-dflash`; off with every other draft | A threshold in (0, 1]. The draft goes on while the product of its words' confidences so far stays at or above it; the word that takes the product under it ends the draft and is not drafted. P-min is checked first, so a word under both is a p-min stop. Unset: 0.5 for `draft-dflash` (the study's measured best with depth 7), off for the head, `draft-simple`, EAGLE3 and DSpark (with the head it stayed under the study's bar, +3.0% chat, +2.8% coding). `""` or `0`: off for any draft. Off, the words are the same as without it. Any other value outside (0, 1] (`1.5`, `0.0`, `abc`) stops the server at start. Under `LLAMA_SPEC_ADAPTIVE_RATE=2` it is ignored, with a warning (the price stops the draft there). The `flashnext:` line shows the value in force (`LLAMA_SPEC_CHAIN_P=0.5 (draft-dflash)`, `=off`, or yours marked "(yours)"), and a draft with the stop on logs `chain stop: on, ...` once at start. |
 | `LLAMA_SPEC_RATE_TRACE` | off | A file path: one JSON line per round (`.srtr`, version 2), numbers only, never words: the depth in force, words drafted / checked / kept, each word's confidence and the ones past the stop, why the draft stopped (`cap`, `pmin`, `chain`, `trim`) and the round's times. A header line opens each session with the draft type, its block, n-max, p-min and `chain_p`. The file is appended to, so give each run its own. The head writes its own trace; any other draft is traced around its draft call (a draft model and EAGLE3 report no stops, so theirs read `cap`). Read by the study's `sim/spec_trace.py`. Off, it costs one check a round. |
 
 ## Images
