@@ -77,18 +77,23 @@ an efficiency fix, stay level within that noise).
 | The trained one-layer guess, on top of all the above (12 conversations each) | **+7.5%** (20.19 → 21.71) | **+7.3%** (21.16 → 22.70) | T43-code-lean, T43-chat-lean |
 | A full cache lets go the expert unused longest (LRU), not the lowest recent use count, on top of all the above (12 conversations each) | **+9.6%** (21.52 → 23.57) | **+9.7%** (22.75 → 24.96) | L44-code-lean, L44-chat-lean |
 | The same at a 24 GiB cache, against the old rule at 28 GiB: ~4.1 GiB of memory back | level, +0.4% (21.52 → 21.59) | level, +2.8% (22.75 → 23.38) | L44-code-lean, L44-chat-lean |
+| While a layer's missing experts are read, the GPU starts on the ones in the cache (desk first), on top of all the above (12 conversations each) | **+4.9%** (23.12 → 24.26) | **+9.1%** (24.48 → 26.70) | D39-code-lean, D39-chat-lean |
 | Chat's opening kept in RAM | | a new chat after coding work: first token in **4.1 s**, from 14.2 s | chat-return |
 | The pin knows chat from coding work | | with the agent first, a new chat read in 463 tokens instead of 5-7K: **3.5 s** to the first token, from 14-20 s | pin-lanes live check |
 
-The best measured arms: **23.6 tokens/s on code** and **25.0 on chat** with the LRU rule, on 12
-conversations each (L44); the L44 bases are the mean of the old rule's two runs, before and after.
-LRU cut the experts fetched from the SSD per written token by 28% (code) and 17% (chat), and gained
+The best measured arms: **24.3 tokens/s on code** and **26.7 on chat** with desk first, on 12
+conversations each (D39); each base is the mean of its two runs without the change, before and after.
+Desk first hid 66% (chat) and 62% (code) of the GPU's wait for missing experts (D39-probe), so that
+wait fell from about 4.6-5.7 ms to 1.6-1.8 ms a written token (one conversation each). D39's base
+arms (23.1 and 24.5) came in a little under L44's LRU arms (23.6 and 25.0), a day later on the same
+conversations, so compare a change only within its own run. LRU (L44) cut the
+experts fetched from the SSD per written token by 28% (code) and 17% (chat), and gained
 most on the longest conversations (+14-15%). Before it, the one-layer guess's arms wrote 21.7 and
 22.7 (T43). Over all 24, before the one-layer guess: **21.2** and **21.1**, against 17.5 and 17.6 for
 the same sets before the trained guessers, run in another week: about +21% and +20%. None of these
 changes alters an output token (the guessers change only what is fetched early, LRU only what the
-cache holds; the one-layer guess, the undo copies, the plumbing and LRU passed byte-identical word
-checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
+cache holds, desk first only when each expert is worked on; the one-layer guess, the undo copies, the
+plumbing, LRU and desk first passed byte-identical word checks), so the exam's 18/20 stands. With plumbing on, the GPU waits on the SSDs 14-15% of writing time,
 from 20%. The one-layer guess wastes less drive time: 65-71% of its early fetches are used,
 against 30-32% for the borrowed guess, and the fetches per token that are never used fall from about
 42 to 7-8.
@@ -99,7 +104,9 @@ ceiling from 5 to 8 guesses (+1.1%, below the bar). Both runs: C-tax. Later in O
 missing expert from both drives at once (`LLAMA_MOE_STREAM_SPLIT`; the GPU's wait for experts did not
 move, T11b-probe), and a lookup draft that copies the words that followed the same words earlier in
 the conversation (best setting −0.06% on code in a replay of recorded rounds, under the +3% bar;
-lookup replay).
+lookup replay). On top of desk first: sending the next layers' guesses to the SSDs as soon as a
+layer's own reads are queued, not after they land (−0.5% on chat against a +1% bar, G47-chat-lean;
+the probe found 16% more reads a token on code, G47-probe; not in this release).
 
 From this release the switches behind these changes are the engine's defaults (the trained
 guessers' tuning as soon as their files are named), and `--flashnext` sets llama.cpp's options to
@@ -108,7 +115,43 @@ the everyday values, the chat window (90 s) and chat's opening copy included
 the downloads, so the headline numbers are with `--flashnext` and all the extras: the 28 GiB
 cache, the draft head, both guessers and the second SSD.
 
+## Expert cache size
+
+The numbers behind the README's [Choose your size](../../README.md#choose-your-size). Only the cache
+size changed, from 8 to 28 GiB in 2 GiB steps, one fresh server per size. Everything else is the
+everyday `--flashnext` setup with the draft head, both trained guessers, two SSDs and a 200K-token
+context (no image encoder). Each server read the same public prompts, so anyone can rerun them:
+3 chat prompts (smoltalk), 3 coding-agent prompts (SWE-agent), then one cold 150K-token prompt.
+Total memory is the server's own memory at its peak, wired memory included
+([Memory sizing](memory-sizing.md#measure-wired-memory-not-the-memory-column)). These are public
+prompts, not the author's conversations, so the speeds differ from the headline numbers.
+
+| Expert cache | Writing, chat | Writing, coding | Reading a 150K prompt | Total memory (peak) | Run |
+|---|---|---|---|---|---|
+| 8 GiB | 12.7 tokens/s | 10.9 | 376 tokens/s | 24.4 GiB | DS-sweep |
+| 10 GiB | 14.4 tokens/s | 12.6 | 377 tokens/s | 26.3 GiB | DS-sweep |
+| 12 GiB | 16.4 tokens/s | 13.9 | 377 tokens/s | 28.4 GiB | DS-sweep |
+| 14 GiB | 17.8 tokens/s | 15.1 | 379 tokens/s | 30.4 GiB | DS-sweep |
+| 16 GiB | 19.8 tokens/s | 17.4 | 379 tokens/s | 32.3 GiB | DS-sweep |
+| 18 GiB | 21.6 tokens/s | 19.1 | 381 tokens/s | 34.4 GiB | DS-sweep |
+| 20 GiB | 23.3 tokens/s | 20.9 | 382 tokens/s | 36.3 GiB | DS-sweep |
+| 22 GiB | 25.3 tokens/s | 22.2 | 385 tokens/s | 38.2 GiB | DS-sweep |
+| 24 GiB | 26.5 tokens/s | 24.2 | 386 tokens/s | 40.4 GiB | DS-sweep |
+| 26 GiB | 27.9 tokens/s | 25.6 | 387 tokens/s | 42.4 GiB | DS-sweep |
+| 28 GiB | 29.3 tokens/s | 27.1 | 387 tokens/s | 44.5 GiB | DS-sweep |
+
+- 28 GiB ran first and last, and the table gives their mean. The two agreed within the 3% bar
+  (2.5% on chat, 1.4% on coding).
+- 30 GiB swapped as it opened on the 64 GB Mac, so it has no timings; 32 GiB was not tried.
+- 6 GiB is left out. It is too small for the reading room (the prompt carousel), so it reads
+  prompts the older way and holds the same experts as 8 GiB. 2 and 4 GiB don't open.
+- Each Mac's biggest cache in the README is the biggest size here whose peak leaves about 18 GiB of
+  the Mac's memory free: 28 GiB on 64 GB, and 12 GiB on 48 GB (worked out from this table, not yet
+  tried on a 48 GB Mac).
+
 ## Expert cache size (draft head off)
+
+An older, separate test: the draft head off, and a different prompt set, so its speeds don't compare with the table above.
 
 | Expert cache | Writing | Run |
 |---|---|---|
