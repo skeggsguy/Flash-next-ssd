@@ -174,8 +174,21 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # "0", the guesser's tuning with and without the guesser, the start-up line, and --flashnext's "only where the
     # user set nothing" through the server's argument parse
     llama_build_and_test(test-flashnext-defaults.cpp)
+    # C37's roll-out (2026-10-21): DFlash's defaults, the chain stop 0.5 unset with draft-dflash only and --flashnext's
+    # depth 7 / p-min 0 with --spec-type draft-dflash, each value the user gives winning
+    llama_build_and_test(test-flashnext-dflash.cpp)
+    # C37's roll-out step 4a (2026-10-21): --flashnext picks the draft type from the draft file's architecture (a
+    # DFlash file runs draft-dflash with DFlash's defaults), the user's --spec-type winning; tiny generated GGUFs
+    llama_build_and_test(test-flashnext-draft-type.cpp)
     # #30 step 5: the keep rule's victim choices (LLAMA_MOE_STREAM_LOOKAHEAD_KEEP) on a desk made by hand
     llama_build_and_test(test-moe-stream-keep.cpp)
+    # the masked waves' parking slots (stage_wave_locked / emit_wave_slots) on a desk made by hand: a wave short of
+    # n_ids books borrows distinct resident slots, never its own books' slots, even from a stale pool (desk 8's abort)
+    llama_build_and_test(test-moe-stream-wave-parking.cpp)
+    # the partitioned waves' plan (plan_waves_locked / plan_pairs_locked) against the graph's own wave count and chunk:
+    # a batch touching fewer books than the graph has waves still gets every wave, so no wave overflows its chunk
+    # (desk 6's 150K abort) and no floor goes unplanned
+    llama_build_and_test(test-moe-stream-wave-plan.cpp)
     # #30 step 5: the trained two-floor guesser (LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER, _CONF): the confidence pick against
     # hand-worked scores, the switch, the file's load and refusals, and how it is given to the floors
     llama_build_and_test(test-moe-stream-guesser.cpp)
@@ -382,8 +395,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # A desk of 40 slots of 64, i.e. waves of 16 books: -ub 256 reads in through 4 masked waves (2048
     # pairs, too few for 600 a wave), -ub 1024 through 5 partitioned ones; writing takes one wave.
     # Not 24 slots (3*n_expert_used): the partition path's spare-wave sizing then makes 10 waves of
-    # 6-7 books, fewer than n_expert_used, and stage_wave_locked has no parking slots to borrow on
-    # wave 0 - an abort a real desk (~100 books a wave) cannot reach. The reading room is on by default
+    # 6-7 books, fewer than n_expert_used, a shape these runs were not written for (wave 0's parking
+    # from a short or stale pool: test-moe-stream-wave-parking.cpp, since desk 8 reached it on
+    # 2026-10-16 with 41 slots). The reading room is on by default
     # and would take these read-ins, so the wave paths ask for it off.
     llama_build(test-moe-stream-waves.cpp)
     foreach (E64_ARCH qwen4exp qwen3moe)
@@ -726,6 +740,14 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-qwen4exp-mtp-record NAME test-qwen4exp-mtp-record-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-qwen4exp-mtp-record test-qwen4exp-mtp-record-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # DFLASH-PLAN step 2: a floor's input for a draft (DFlash, EAGLE3) is the plain mean of the four hc streams, n_embd
+    # wide, built only for the floors asked for: the mean byte for byte against the streams captured by name, the
+    # logits and the apprentice's notes unchanged, a floor not asked for builds nothing, and asking mid-context works
+    llama_build(test-qwen4exp-layer-inp.cpp)
+    llama_test(test-qwen4exp-layer-inp NAME test-qwen4exp-layer-inp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-qwen4exp-layer-inp NAME test-qwen4exp-layer-inp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-qwen4exp-layer-inp test-qwen4exp-layer-inp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # WRITING-PLAN step 3e: LLAMA_SPEC_ADAPTIVE_RATE=2 (the priced depth) through common_speculative on the MTP
     # fixture: forced to check every step it is fixed 8 at p-min 0 byte for byte; priced, its guesses are fixed 8's
     # first ones from the same place and every cycle checks one
@@ -733,6 +755,19 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-speculative-rate2-mtp NAME test-speculative-rate2-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-rate2-mtp test-speculative-rate2-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # CHAIN-PLAN step 1: with the rate trace on, today's apprentice keeps its own hooks and the wrapper writes none
+    # (one header, one closing line a file), and the apprentice's hook mirrors the server's replay
+    llama_test(test-speculative-trace-wrapper NAME test-speculative-trace-wrapper-mtp LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    set_tests_properties(test-speculative-trace-wrapper-mtp PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # CHAIN-PLAN step 2: the chain stop (LLAMA_SPEC_CHAIN_P) on the MTP fixture: every checked draft's product holds the
+    # threshold and a chain stop's next word falls under it, the drafts are fixed 8's first words, the text is the same
+    # with it on or off, an exact edge is kept, and RATE=2 ignores it
+    llama_build(test-speculative-chain-mtp.cpp)
+    llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-chain-mtp test-speculative-chain-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
@@ -826,6 +861,9 @@ llama_build_and_test(test-arg-parser.cpp)
 llama_build_and_test(test-speculative-adaptive.cpp)
 llama_build_and_test(test-speculative-rate.cpp)
 llama_build_and_test(test-speculative-rate-trace.cpp)
+llama_build_and_test(test-speculative-dflash-walk.cpp)
+llama_build_and_test(test-speculative-chain.cpp)
+llama_build_and_test(test-speculative-trace-wrapper.cpp)
 llama_build_and_test(test-speculative-rate2.cpp)
 llama_build_and_test(test-speculative-rate2-sim.cpp)
 llama_build_and_test(test-model-resolution.cpp)

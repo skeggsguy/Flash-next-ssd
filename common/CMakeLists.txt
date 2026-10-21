@@ -111,6 +111,8 @@ add_library(${TARGET}
     speculative.h
     speculative-rate-trace.cpp
     speculative-rate-trace.h
+    speculative-dflash-walk.h
+    speculative-chain.h
     spec-phase-log.cpp
     spec-phase-log.h
     subproc.cpp

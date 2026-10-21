@@ -1,15 +1,21 @@
-// The fork's proven defaults, common's side: LLAMA_SPEC_ADAPTIVE_RATE's parse, the --flashnext preset and the
-// start-up line. The rules are in flashnext.h.
+// The fork's proven defaults, common's side: LLAMA_SPEC_ADAPTIVE_RATE's and LLAMA_SPEC_CHAIN_P's parses, the
+// --flashnext preset and the start-up line. The rules are in flashnext.h.
 
 #include "flashnext.h"
 
 #include "arg.h"
 #include "common.h"
+#include "ggml-cpp.h"   // gguf_context_ptr
+#include "gguf.h"
+#include "speculative.h" // common_speculative_type_to_str
 
 #include "../src/llama-flashnext.h" // the libllama side's parsers: what an unset switch means
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 
 int common_flashnext_adaptive_rate(const char * value) {
@@ -20,6 +26,23 @@ int common_flashnext_adaptive_rate(const char * value) {
         return 0;
     }
     return strcmp(value, "2") == 0 ? 2 : 1;
+}
+
+double common_flashnext_chain_p(const char * value, common_speculative_type type) {
+    if (value == nullptr) {
+        return type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH ? COMMON_FLASHNEXT_CHAIN_P_DFLASH : 0.0;
+    }
+    if (*value == '\0' || strcmp(value, "0") == 0) {
+        return 0.0;
+    }
+    char * end = nullptr;
+    errno = 0;
+    const double t = std::strtod(value, &end);
+    if (errno != 0 || end == value || *end != '\0' || !(t > 0.0 && t <= 1.0)) {
+        throw std::runtime_error(string_format("LLAMA_SPEC_CHAIN_P=%s is not a chain stop threshold in (0, 1] "
+                "(unset, \"\" or \"0\": off)", value));
+    }
+    return t;
 }
 
 // the everyday values: the study's daily library (serve.py) runs exactly these (Tom, 2026-10-15: "daily and default
@@ -54,6 +77,51 @@ const std::vector<common_flashnext_setting> & common_flashnext_preset() {
     return preset;
 }
 
+const std::vector<common_flashnext_setting> & common_flashnext_preset_dflash() {
+    static const std::vector<common_flashnext_setting> dflash = {
+        { "--spec-draft-n-max",     "7",                  true  },
+        { "--spec-draft-p-min",     "0",                  true  },
+    };
+    return dflash;
+}
+
+common_speculative_type common_flashnext_draft_type(const std::string & path) {
+    gguf_init_params gguf_params = {
+        /* .no_alloc = */ true,
+        /* .ctx      = */ nullptr,
+    };
+    gguf_context_ptr gguf_ctx(gguf_init_from_file(path.c_str(), gguf_params));
+    if (!gguf_ctx) {
+        throw std::invalid_argument(string_format("--flashnext: cannot read the draft file '%s' to pick its --spec-type "
+                "(is it there, and a GGUF?)", path.c_str()));
+    }
+    const int64_t arch_id = gguf_find_key(gguf_ctx.get(), "general.architecture");
+    const bool dflash = arch_id >= 0 && gguf_get_kv_type(gguf_ctx.get(), arch_id) == GGUF_TYPE_STRING &&
+            strcmp(gguf_get_val_str(gguf_ctx.get(), arch_id), "dflash") == 0;
+    if (!dflash) {
+        return COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE;
+    }
+    return gguf_find_tensor(gguf_ctx.get(), "markov_w1.weight") >= 0 ? COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK
+                                                                      : COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+}
+
+// the row DFlash's table puts in place of `s`, or `s` itself
+static const common_flashnext_setting & flashnext_row(const common_flashnext_setting & s, bool dflash) {
+    if (dflash) {
+        for (const auto & d : common_flashnext_preset_dflash()) {
+            if (strcmp(d.arg, s.arg) == 0) {
+                return d;
+            }
+        }
+    }
+    return s;
+}
+
+static bool flashnext_has_type(const common_params & params, common_speculative_type type) {
+    const auto & types = params.speculative.types;
+    return std::find(types.begin(), types.end(), type) != types.end();
+}
+
 static std::string flashnext_setting_str(const common_flashnext_setting & s) {
     return *s.value == '\0' ? std::string(s.arg) : std::string(s.arg) + " " + s.value;
 }
@@ -67,6 +135,10 @@ std::string common_flashnext_preset_str() {
             draft = true;
         }
         res += (res.empty() ? "" : " ") + flashnext_setting_str(s);
+    }
+    res += "; with --spec-type draft-dflash:";
+    for (const auto & s : common_flashnext_preset_dflash()) {
+        res += " " + flashnext_setting_str(s);
     }
     return res;
 }
@@ -92,7 +164,24 @@ void common_flashnext_apply(common_params & params,
     params.flashnext_set.clear();
     params.flashnext_yours.clear();
     const bool has_draft = params.speculative.has_dft();
-    for (const auto & s : common_flashnext_preset()) {
+    // the preset's --spec-type: read from a local draft file the user left the type of to the preset; a draft still
+    // to be downloaded keeps the preset's own row
+    const common_arg * type_opt = find("--spec-type");
+    const auto & dft = params.speculative.draft.mparams;
+    const bool type_from_file = has_draft && type_opt != nullptr && given.count(type_opt->args[0]) == 0 &&
+            !dft.path.empty() && dft.url.empty() && dft.hf_repo.empty();
+    const common_speculative_type file_type = type_from_file ? common_flashnext_draft_type(dft.path) :
+            COMMON_SPECULATIVE_TYPE_NONE;
+    const std::string type_value = common_speculative_type_to_str(file_type);
+    // the user's --spec-type is in place already; the preset's own row (the MTP head's) is never draft-dflash
+    const bool dflash = flashnext_has_type(params, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
+            file_type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+    for (const auto & row : common_flashnext_preset()) {
+        common_flashnext_setting s = flashnext_row(row, dflash);
+        const bool from_file = type_from_file && strcmp(s.arg, "--spec-type") == 0;
+        if (from_file) {
+            s.value = type_value.c_str();
+        }
         const common_arg * opt = find(s.arg);
         if (opt == nullptr) {
             continue; // not a flag of this program
@@ -105,7 +194,7 @@ void common_flashnext_apply(common_params & params,
             continue; // nothing to draft with: the line says the draft settings wait for -md
         }
         flashnext_set(params, *opt, s.value);
-        params.flashnext_set.push_back(flashnext_setting_str(s));
+        params.flashnext_set.push_back(flashnext_setting_str(s) + (from_file ? " (from the draft file)" : ""));
     }
 }
 
@@ -140,6 +229,10 @@ std::string common_flashnext_load_line(const common_params & params,
                 llama_flashnext_desk_first(nullptr) ? "1" : "0"),
         flashnext_switch("LLAMA_SPEC_ADAPTIVE_RATE", env("LLAMA_SPEC_ADAPTIVE_RATE"),
                 std::to_string(common_flashnext_adaptive_rate(nullptr))),
+        flashnext_switch("LLAMA_SPEC_CHAIN_P", env("LLAMA_SPEC_CHAIN_P"),
+                flashnext_has_type(params, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ?
+                string_format("%g (draft-dflash)", common_flashnext_chain_p(nullptr,
+                        COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) : std::string("off")),
         flashnext_switch("GGML_METAL_STAFF_MV", env("GGML_METAL_STAFF_MV"),
                 std::to_string(COMMON_FLASHNEXT_STAFF_MV)),
         flashnext_switch("GGML_METAL_RESIDENCY_KEEP_ALIVE_S", env("GGML_METAL_RESIDENCY_KEEP_ALIVE_S"),

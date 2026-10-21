@@ -11,6 +11,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
+#include "flashnext.h"
 #include "llama.h"
 #include "log.h"
 #include "sampling.h"
@@ -1281,6 +1282,17 @@ private:
                                         params_base.speculative.types.end(),
                                         COMMON_SPECULATIVE_TYPE_DRAFT_MTP_ADAPTIVE) != params_base.speculative.types.end();
         const bool has_spec = has_draft || spec_mtp;
+
+        // the chain stop's switch fails the start on a bad value: the drafts read it as they open, inside the
+        // speculative set-up's catch below, which would otherwise run on with no draft at all
+        if (has_spec) {
+            try {
+                common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"), COMMON_SPECULATIVE_TYPE_NONE);
+            } catch (const std::exception & e) {
+                SRV_ERR("%s\n", e.what());
+                return false;
+            }
+        }
 
         if (callback_state) {
             std::vector<std::string> stages = {"text_model"};
@@ -4565,7 +4577,7 @@ private:
                     SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
                 }
 
-                common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
+                common_speculative_accept(spec.get(), slot.id, accepted.size() - 1, slot.spec_is_replay);
 
                 slot.spec_draft = std::move(accepted);
             }

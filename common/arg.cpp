@@ -2824,8 +2824,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--flashnext"},
         "the Flash-Next everyday settings, each only where you did not set that flag yourself (on the command "
-        "line, as its LLAMA_ARG_* or in a config file): " + common_flashnext_preset_str() + "; the desk "
-        "(--moe-stream-cache), the model files and the draft head (-md) stay yours",
+        "line, as its LLAMA_ARG_* or in a config file): " + common_flashnext_preset_str() + "; without your "
+        "--spec-type the draft file (-md) picks it: a DFlash file runs draft-dflash, any other draft-mtp-adaptive; "
+        "the desk (--moe-stream-cache), the model files and the draft (-md) stay yours",
         [](common_params & params) {
             params.flashnext = true;
         }

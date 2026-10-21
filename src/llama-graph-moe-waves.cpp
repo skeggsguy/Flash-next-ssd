@@ -10,6 +10,48 @@
 #include <algorithm>
 #include <cstdlib>
 
+// The static bound on one partitioned wave's pairs, for a ubatch of n_tokens (n_pairs = n_tokens*n_expert_used)
+// in n_waves waves: the chunk build_moe_stream_partition sizes each wave's GEMM to, and plan_pairs_locked fills.
+int64_t llm_moe_stream_pair_chunk(int64_t n_pairs, int64_t n_tokens, uint32_t n_waves) {
+    // Static bound on one wave's pair count. ggml shapes are fixed before the router has run, so
+    // this cannot depend on the routing - and it must be a PROOF, not a tuned slack.
+    //
+    // Percentage slacks over the mean were tried and are unsound at every value, because the unit
+    // being balanced is indivisible: all of an expert's pairs go to the wave that stages it. A
+    // repetitive prompt can route one expert on EVERY token, and 1025 such pairs overflowed a
+    // chunk of 922 on their own - no assignment could have helped.
+    //
+    // What made the chunk overflow was never the slack: the planner was splitting into a DIFFERENT
+    // number of waves than the graph built, so each wave held n_pairs/plan_n_waves pairs against a
+    // chunk sized for n_pairs/n_stream_waves. plan_waves_want (build_moe_stream_partition) makes the two agree, and the
+    // slack only has to cover ordinary routing imbalance again, which measures at +11-23%.
+    //
+    // A provable bound is available - no expert exceeds n_tokens pairs, so mean + n_tokens can
+    // never be overflowed by one expert - but it costs n_waves*n_tokens of extra GEMM, which at
+    // cap 27 is 2.67x the pairs against 1.5x here and measured 18.9 t/s against 73. Not worth it
+    // for a bound whose failure mode was a different bug.
+    int64_t slack_pct = 50;
+    if (const char * s = getenv("LLAMA_MOE_STREAM_PAIR_SLACK")) {
+        slack_pct = std::clamp((int64_t) atoi(s), (int64_t) 0, (int64_t) 400);
+    }
+    const int64_t mean  = (n_pairs + n_waves - 1)/n_waves;
+
+    // A slack over the mean is not enough on its own, because the unit being balanced is
+    // INDIVISIBLE: every pair of an expert goes to the wave that stages it. A single expert is
+    // picked at most once per token, so it can hold up to n_tokens pairs - and a hot one really
+    // does. Real usage aborted here with 2707 pairs in one wave against a 2679 chunk, on a
+    // 2976-token prompt: ~91% of tokens routing to one expert, which no balancing can split.
+    //
+    // Taking n_tokens as a floor covers that case, and is nearly free because it only binds when
+    // there are many waves: mean*(1+slack) = 9*n_tokens/n_waves at slack 50 and n_expert_used 6,
+    // which already exceeds n_tokens for n_waves <= 9. At 10 waves it costs ~11% more expert GEMM;
+    // below that, nothing at all.
+    //
+    // Not a proof - two experts each over half the tokens in one wave would still overflow - but
+    // snake ordering puts the two heaviest in different waves, so the residual case is remote.
+    return std::min(n_pairs, std::max(mean + mean*slack_pct/100, n_tokens));
+}
+
 ggml_tensor * llm_graph_context::build_moe_stream_experts(llama_moe_stream_layer * msl,
         const llm_moe_stream_shape & shape, const llm_moe_gemms & gemms, ggml_tensor * cur,
         ggml_tensor * ids_gemm, ggml_tensor * selected_experts, int64_t n_expert_used, bool weight_before_ffn) const {
@@ -55,43 +97,7 @@ ggml_tensor * llm_graph_context::build_moe_stream_partition(llama_moe_stream_lay
     // runs every wave over every pair, which is what makes its cost scale with the wave count.
     const int64_t n_pairs = (int64_t) n_expert_used*n_tokens;
 
-    // Static bound on one wave's pair count. ggml shapes are fixed before the router has run, so
-    // this cannot depend on the routing - and it must be a PROOF, not a tuned slack.
-    //
-    // Percentage slacks over the mean were tried and are unsound at every value, because the unit
-    // being balanced is indivisible: all of an expert's pairs go to the wave that stages it. A
-    // repetitive prompt can route one expert on EVERY token, and 1025 such pairs overflowed a
-    // chunk of 922 on their own - no assignment could have helped.
-    //
-    // What made the chunk overflow was never the slack: the planner was splitting into a DIFFERENT
-    // number of waves than the graph built, so each wave held n_pairs/plan_n_waves pairs against a
-    // chunk sized for n_pairs/n_stream_waves. plan_waves_want (below) makes the two agree, and the
-    // slack only has to cover ordinary routing imbalance again, which measures at +11-23%.
-    //
-    // A provable bound is available - no expert exceeds n_tokens pairs, so mean + n_tokens can
-    // never be overflowed by one expert - but it costs n_waves*n_tokens of extra GEMM, which at
-    // cap 27 is 2.67x the pairs against 1.5x here and measured 18.9 t/s against 73. Not worth it
-    // for a bound whose failure mode was a different bug.
-    int64_t slack_pct = 50;
-    if (const char * s = getenv("LLAMA_MOE_STREAM_PAIR_SLACK")) {
-        slack_pct = std::clamp((int64_t) atoi(s), (int64_t) 0, (int64_t) 400);
-    }
-    const int64_t mean  = (n_pairs + n_stream_waves - 1)/n_stream_waves;
-
-    // A slack over the mean is not enough on its own, because the unit being balanced is
-    // INDIVISIBLE: every pair of an expert goes to the wave that stages it. A single expert is
-    // picked at most once per token, so it can hold up to n_tokens pairs - and a hot one really
-    // does. Real usage aborted here with 2707 pairs in one wave against a 2679 chunk, on a
-    // 2976-token prompt: ~91% of tokens routing to one expert, which no balancing can split.
-    //
-    // Taking n_tokens as a floor covers that case, and is nearly free because it only binds when
-    // there are many waves: mean*(1+slack) = 9*n_tokens/n_waves at slack 50 and n_expert_used 6,
-    // which already exceeds n_tokens for n_waves <= 9. At 10 waves it costs ~11% more expert GEMM;
-    // below that, nothing at all.
-    //
-    // Not a proof - two experts each over half the tokens in one wave would still overflow - but
-    // snake ordering puts the two heaviest in different waves, so the residual case is remote.
-    const int64_t chunk = std::min(n_pairs, std::max(mean + mean*slack_pct/100, (int64_t) n_tokens));
+    const int64_t chunk = llm_moe_stream_pair_chunk(n_pairs, n_tokens, n_stream_waves);
     msl->plan_pair_chunk = (uint32_t) chunk;
     msl->plan_waves_want = n_stream_waves; // the planner must produce exactly this many
 

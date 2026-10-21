@@ -62,12 +62,13 @@ is one value away:
 | `LLAMA_MOE_STREAM_DESK_FIRST` | on: the GPU starts on the cached experts while the missing ones are read | `0`: each layer waits for every missing expert first |
 | `LLAMA_RS_SKIP_SLOTS` | on: only the undo copies a rollback can reach | `0`: every copy |
 | `LLAMA_SPEC_ADAPTIVE_RATE` | `1`: the draft head's measured depth | `0`: the older climb-table rule |
+| `LLAMA_SPEC_CHAIN_P` | with `--spec-type draft-dflash`: `0.5`, the [chain stop](#the-chain-stop-and-the-draft-trace); with any other draft: off | `0`: off |
 | `LLAMA_MOE_STREAM_ALLOC_CHUNK_MIB` | `4096`: the cache claimed in 4 GiB steps | `0`: all at once |
 | `GGML_METAL_RESIDENCY_KEEP_ALIVE_S` | `10000000`: the model stays wired while idle | `0`: upstream's 180 s |
 | `GGML_METAL_STAFF_MV` | off: the check's matrix work on the measured route | `1`: the M5's matrix units |
 | `LLAMA_MOE_STREAM_LOOKAHEAD_ALL`, `_DEPTH2`, `_KEEP`, `_CONF` | with the two-layer guesser named (`LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER`): `1`, `4`, `1`, `0.2`; without it: off | set each by hand |
 
-The downloads stay yours to add: the draft head (`-md`), the two trained guessers (by their
+The downloads stay yours to add: the draft (`-md`), the two trained guessers (by their
 variables) and the image encoder (`--mmproj`). So do the choices that depend on your Mac: the
 expert cache, the second drive, the context, the chat window and the opening copy.
 
@@ -88,7 +89,8 @@ variable or in a config file. Without it, upstream's defaults are untouched.
 | `--cache-ram 400 --cache-ram-opening` | 8192 MiB, off |
 | `--chat-window 90` | 0 (off) |
 | `--jinja --reasoning-format deepseek` | on, `deepseek` |
-| with a draft model (`-md`) only: `--spec-type draft-mtp-adaptive --spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | none, 3, 0.0, auto, 0 |
+| with a draft model (`-md`) only: `--spec-type` from the draft file (`draft-dflash` for a DFlash file, `draft-mtp-adaptive` for any other) `--spec-draft-n-max 5 --spec-draft-p-min 0.3 --spec-draft-ngl 99 --spec-max-prompt 0` | none, 3, 0.0, auto, 0 |
+| with `draft-dflash`, the file's or yours: `--spec-draft-n-max 7 --spec-draft-p-min 0` in place of the head's 5 and 0.3 ([DFlash](#a-dflash-draft-instead-of-the-head)) | 3, 0.0 |
 
 It never sets the expert cache (`--moe-stream-cache`), the files or the address. These are the
 study's everyday values: its own server runs exactly these. Give any of them
@@ -208,8 +210,8 @@ loaded from npanj's shared head file.
 
 | Option | Env var | Default | What it does |
 |---|---|---|---|
-| `-md FILE` (`--spec-draft-model`) | `LLAMA_ARG_SPEC_DRAFT_MODEL` | none | The draft head, `mtp-shared-Q4_K_M.gguf`. |
-| `--spec-type TYPE` | `LLAMA_ARG_SPEC_TYPE` | none; **`--flashnext`** with `-md`: `draft-mtp-adaptive` | `draft-mtp-adaptive`: the head with a depth that adapts. (`draft-mtp` is a fixed depth.) |
+| `-md FILE` (`--spec-draft-model`) | `LLAMA_ARG_SPEC_DRAFT_MODEL` | none | The draft: the DFlash file ([below](#a-dflash-draft-instead-of-the-head)), or the head, `mtp-shared-Q4_K_M.gguf`. |
+| `--spec-type TYPE` | `LLAMA_ARG_SPEC_TYPE` | none; **`--flashnext`** with `-md`: from the draft file, `draft-dflash` for a DFlash file (`draft-dspark` for DSpark) and `draft-mtp-adaptive` for any other (the `flashnext:` line says `(from the draft file)`); yours always wins | `draft-mtp-adaptive`: the head with a depth that adapts. (`draft-mtp` is a fixed depth.) `draft-dflash`: [DFlash](#a-dflash-draft-instead-of-the-head). |
 | `--spec-draft-n-max N` | `LLAMA_ARG_SPEC_DRAFT_N_MAX` | 3; **`--flashnext`** with `-md`: 5 | The most tokens guessed per step. Study: **5**. 30 was far slower. |
 | `--spec-draft-n-min-adaptive N` | `LLAMA_ARG_SPEC_DRAFT_N_MIN_ADAPTIVE` | 3 | The climb table's starting and lowest depth (used with `LLAMA_SPEC_ADAPTIVE_RATE=0`); must be 1 to n-max. |
 | `--spec-draft-p-min P` | `LLAMA_ARG_SPEC_DRAFT_P_MIN` | 0.0; **`--flashnext`** with `-md`: 0.3 | Stop guessing when the head's confidence in a token falls below P. Study: **0.3**. |
@@ -238,6 +240,34 @@ Environment-only, with the draft head:
 |---|---|---|
 | `LLAMA_RS_SKIP_SLOTS` | on | Before each check the model saves copies of its recurrent state so it can undo rejected guesses. On, it saves only the copies a rollback can reach, and refuses a rollback past them. Byte-identical output; +4.3% writing on code, chat level. `0` saves every copy (the old way). |
 | `GGML_METAL_STAFF_MV` | off | `1` puts the check's Q8_0 matrix-vector work for 2-16 tokens on the GPU's matrix units (with Metal 4, M5 on). It did not clear the study's +3% bar (−0.8% and +1.1% on code), so the default is the older route the study's numbers were measured on. |
+
+### A DFlash draft instead of the head
+
+A DFlash draft is a small separate model that drafts a whole block of words in one go (the study
+runs incoai's DFlash 2, Q8_0). It takes the head's flags. Give its file to `-md`: `--flashnext`
+reads the file's architecture (its metadata only, before anything loads) and runs
+`--spec-type draft-dflash`. A `--spec-type` you give wins, and the file is then not read; a file it
+cannot read stops the start, naming it. `--flashnext` then sets DFlash's own depth and p-min (7 and
+0) instead of the head's (5 and 0.3), and the chain stop is on at 0.5 unless you set
+`LLAMA_SPEC_CHAIN_P`. That is the study's measured best: +10.8% chat and +8.7% coding over the head
+(C37, [Results](results.md#dflash-draft-c37)). Any of the three you set yourself is kept. Without
+`--flashnext`, n-max and p-min are upstream's (3 and 0) and only the chain stop's default applies:
+
+| Option | What it does |
+|---|---|
+| `-md FILE` | The DFlash gguf. A file with a Markov head (`markov_w1.weight`) is DSpark, otherwise DFlash. |
+| `--spec-type draft-dflash` | The DFlash draft (`draft-dspark` for DSpark). **`--flashnext`** with `-md`: from the file. |
+| `--spec-draft-n-max N` | The most words drafted per round, at most the draft's trained block less one (more is clamped, with a warning). **`--flashnext`**: 7 (the whole block). Study: 7 with the chain stop, and 3. |
+| `--spec-draft-p-min P` | Stop the draft at the first word whose confidence falls below P (`0`: no stop). DSpark needs its confidence head for any P above 0 and for the chain stop. **`--flashnext`**: 0. Study: 0 at n-max 7, 0.3 at n-max 3. |
+
+### The chain stop and the draft trace
+
+Environment-only. The chain stop works for every draft that has a p-min (the head, DFlash, DSpark, EAGLE3).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LLAMA_SPEC_CHAIN_P` | `0.5` with `draft-dflash`; off with every other draft | A threshold in (0, 1]. The draft goes on while the product of its words' confidences so far stays at or above it; the word that takes the product under it ends the draft and is not drafted. P-min is checked first, so a word under both is a p-min stop. Unset: 0.5 for `draft-dflash` (the study's measured best with depth 7), off for the head, `draft-simple`, EAGLE3 and DSpark (with the head it stayed under the study's bar, +3.0% chat, +2.8% coding). `""` or `0`: off for any draft. Off, the words are the same as without it. Any other value outside (0, 1] (`1.5`, `0.0`, `abc`) stops the server at start. Under `LLAMA_SPEC_ADAPTIVE_RATE=2` it is ignored, with a warning (the price stops the draft there). The `flashnext:` line shows the value in force (`LLAMA_SPEC_CHAIN_P=0.5 (draft-dflash)`, `=off`, or yours marked "(yours)"), and a draft with the stop on logs `chain stop: on, ...` once at start. |
+| `LLAMA_SPEC_RATE_TRACE` | off | A file path: one JSON line per round (`.srtr`, version 2), numbers only, never words: the depth in force, words drafted / checked / kept, each word's confidence and the ones past the stop, why the draft stopped (`cap`, `pmin`, `chain`, `trim`) and the round's times. A header line opens each session with the draft type, its block, n-max, p-min and `chain_p`. The file is appended to, so give each run its own. The head writes its own trace; any other draft is traced around its draft call (a draft model and EAGLE3 report no stops, so theirs read `cap`). Read by the study's `sim/spec_trace.py`. Off, it costs one check a round. |
 
 ## Images
 
@@ -331,7 +361,7 @@ LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=$HOME/models/flashnext/c1-guesser.gguf \
 LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
 ./build/bin/llama-server --flashnext \
   -m ~/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
-  -md ~/models/flashnext/mtp-shared-Q4_K_M.gguf \
+  -md ~/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf \
   --moe-stream-cache 28 \
   --moe-stream-alt-path /Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
   --moe-stream-alt-split 53
@@ -345,7 +375,7 @@ export LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=/Users/you/models/flashnext/c1-guesser
 export LLAMA_MOE_STREAM_GUESSER1=/Users/you/models/flashnext/c1-guesser-gap1.gguf
 export LLAMA_ARG_FLASHNEXT=1
 export LLAMA_ARG_MODEL=/Users/you/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
-export LLAMA_ARG_SPEC_DRAFT_MODEL=/Users/you/models/flashnext/mtp-shared-Q4_K_M.gguf
+export LLAMA_ARG_SPEC_DRAFT_MODEL=/Users/you/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf
 export LLAMA_ARG_MOE_STREAM_CACHE=28
 export LLAMA_ARG_MOE_STREAM_ALT_PATH=/Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 export LLAMA_ARG_MOE_STREAM_ALT_SPLIT=53
@@ -363,7 +393,7 @@ version = 1
 [flashnext]
 flashnext = true
 model = /Users/you/models/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
-model-draft = /Users/you/models/flashnext/mtp-shared-Q4_K_M.gguf
+model-draft = /Users/you/models/flashnext/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf
 moe-stream-cache = 28
 moe-stream-alt-path = /Volumes/ssd/flashnext/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
 moe-stream-alt-split = 53

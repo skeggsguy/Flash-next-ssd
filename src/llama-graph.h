@@ -1058,6 +1058,9 @@ struct llama_moe_stream_layer;
 llm_moe_stream_shape llm_moe_stream_graph_shape(const llama_moe_stream_layer * msl,
         int64_t n_expert, int64_t n_expert_used, int64_t n_tokens, bool room_allowed, bool desk_first_allowed = false);
 
+// the static bound on one partitioned wave's pairs, n_pairs = n_tokens*n_expert_used over n_waves (llama-graph-moe-waves.cpp)
+int64_t llm_moe_stream_pair_chunk(int64_t n_pairs, int64_t n_tokens, uint32_t n_waves);
+
 // graph nodes the waves may add to a ubatch of n_tokens, for llama_context::graph_max_nodes
 uint32_t llama_moe_stream_graph_nodes_max(const llama_model & model, uint32_t n_tokens);
 

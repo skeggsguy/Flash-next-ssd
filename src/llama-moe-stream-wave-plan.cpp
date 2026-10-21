@@ -54,14 +54,25 @@ void llama_moe_stream::plan_waves_locked(llama_moe_stream_layer & sl, const int3
     sl.plan_n_waves   = (uint32_t) ((sl.uniq.size() + sl.plan_capacity - 1)/sl.plan_capacity);
     sl.plan_next_wave = 0;
 
-    // Wave slices. The masked path packs uniq into full groups of plan_capacity, which is what it has
-    // always done. The partition path CANNOT: the graph sized its pair chunk from the wave count it
-    // built, so the planner has to produce exactly that many waves. A ubatch touching few experts
-    // otherwise plans fewer, fatter waves than the graph expects, and each then holds more pairs than
-    // the chunk allows - a repetitive prompt planned 2 waves against a graph built for 5, putting
-    // n_pairs/2 = 1536 pairs into a chunk of 1127. No balancing can fix a wave-count disagreement.
+    // Wave slices, spread evenly on both paths: so any wave, wave 0 included, can hold fewer books
+    // than a token picks, and stage_wave_locked then borrows its parking slots. The partition path
+    // NEEDS the spread: the graph sized its pair chunk from the wave count it built, so the planner
+    // has to produce exactly that many waves. A ubatch touching few experts otherwise plans fewer,
+    // fatter waves than the graph expects, and each then holds more pairs than the chunk allows - a
+    // repetitive prompt planned 2 waves against a graph built for 5, putting n_pairs/2 = 1536 pairs
+    // into a chunk of 1127. No balancing can fix a wave-count disagreement.
+    //
+    // Exactly that many even when the ubatch touches FEWER experts than the graph has waves: the late
+    // waves then hold none and emit only the scratch row (emit_wave_pairs). Falling back to
+    // ceil(n_uniq/cap) waves there was the same disagreement again: desk 6's 150K read-in routed 4096
+    // tokens to 34 experts against 35 waves of cap 16, planned 3 waves for 40960 pairs in chunks of
+    // 4096, and aborted below; at n_uniq <= cap the fallback planned ONE wave, which plan_pairs_locked
+    // leaves without a pair list, so every wave wrote the scratch row and the floor's experts were
+    // never added in. A wave of one expert always fits its chunk (the graph floors it at n_tokens and
+    // an expert is picked at most once a token). The masked path sets no plan_waves_want: unchanged.
     const size_t n_uniq = sl.uniq.size();
-    if (sl.plan_waves_want > 1 && n_uniq >= sl.plan_waves_want) {
+    if (sl.plan_waves_want > 1) {
+        GGML_ASSERT(sl.plan_waves_want < 0xff); // expert_wave holds a wave in a byte, 0xff = untouched
         sl.plan_n_waves = sl.plan_waves_want;
     }
     sl.wave_first.assign(sl.plan_n_waves, 0);

@@ -46,7 +46,7 @@
 <text x="222" y="296" font-size="11.5" fill="#5a6670">(decode: a few tokens at a time)</text>
 <g font-size="11.5" fill="#1b2228" text-anchor="middle">
 <rect x="20" y="318" width="140" height="62" rx="6" fill="#ffffff" stroke="#c4ccd2"/>
-<text x="90" y="340" font-weight="600">A helper guesses</text><text x="90" y="356">a small draft model</text><text x="90" y="370">guesses up to 5 tokens</text>
+<text x="90" y="340" font-weight="600">A helper guesses</text><text x="90" y="356">the DFlash draft, up to</text><text x="90" y="370">7 tokens at once</text>
 <rect x="185" y="318" width="165" height="62" rx="6" fill="#ffffff" stroke="#c4ccd2"/>
 <text x="267" y="340" font-weight="600">Pick the experts</text><text x="267" y="356">on each of 48 layers,</text><text x="267" y="370">10 of 512 per token</text>
 <rect x="375" y="318" width="190" height="62" rx="6" fill="#e2f0f0" stroke="#0f6e72"/>
@@ -59,28 +59,28 @@
 <line x1="565" y1="349" x2="587" y2="349" stroke="#5a6670" stroke-width="1.5" marker-end="url(#f1a)"/>
 <path d="M665 382 C 665 400, 90 400, 90 384" fill="none" stroke="#5a6670" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#f1a)"/>
 <text x="378" y="410" font-size="10.5" fill="#5a6670" text-anchor="middle">repeat until the answer is done</text>
-<text x="22" y="428" font-size="11.5" fill="#1b2228"><tspan font-weight="700">Speed limit:</tspan> mostly the GPU's own maths now, as most experts arrive in time → about 24–27 tokens written per second</text>
+<text x="22" y="428" font-size="11.5" fill="#1b2228"><tspan font-weight="700">Speed limit:</tspan> mostly the GPU's own maths now, as most experts arrive in time → about 26–29 tokens written per second</text>
 
 <text x="20" y="462" font-size="14" font-weight="700" fill="#1b2228">Where the time goes for one written token</text>
-<text x="20" y="480" font-size="11" fill="#5a6670">Milliseconds per token, everyday settings (October). The orange and grey parts are the GPU standing idle.</text>
+<text x="20" y="480" font-size="11" fill="#5a6670">Milliseconds per token, with the DFlash draft. The orange and grey parts are the GPU standing idle.</text>
 <g font-size="11.5">
 <text x="20" y="512" fill="#1b2228" font-weight="600">Chat</text>
-<rect x="110.0" y="498" width="67.5" height="22" fill="#7a8a96"/>
-<rect x="177.5" y="498" width="208.3" height="22" fill="#1b2228"/>
-<rect x="385.7" y="498" width="14.3" height="22" fill="#d98a1c"/>
-<rect x="400.0" y="498" width="68.7" height="22" fill="#c4ccd2"/>
-<text x="476" y="514" fill="#1b2228">40 ms · 23K tokens of context</text>
+<rect x="110.0" y="498" width="30.2" height="22" fill="#7a8a96"/>
+<rect x="140.2" y="498" width="199.2" height="22" fill="#1b2228"/>
+<rect x="339.4" y="498" width="14.8" height="22" fill="#d98a1c"/>
+<rect x="354.2" y="498" width="75.1" height="22" fill="#c4ccd2"/>
+<text x="437" y="514" fill="#1b2228">36 ms · 23K tokens of context</text>
 <text x="20" y="550" fill="#1b2228" font-weight="600">Coding agent</text>
-<rect x="110.0" y="536" width="74.4" height="22" fill="#7a8a96"/>
-<rect x="184.4" y="536" width="193.9" height="22" fill="#1b2228"/>
-<rect x="378.3" y="536" width="16.5" height="22" fill="#d98a1c"/>
-<rect x="394.8" y="536" width="70.5" height="22" fill="#c4ccd2"/>
-<text x="472" y="552" fill="#1b2228">40 ms · 121K tokens of context</text>
+<rect x="110.0" y="536" width="29.6" height="22" fill="#7a8a96"/>
+<rect x="139.6" y="536" width="208.1" height="22" fill="#1b2228"/>
+<rect x="347.7" y="536" width="15.4" height="22" fill="#d98a1c"/>
+<rect x="363.1" y="536" width="79.6" height="22" fill="#c4ccd2"/>
+<text x="451" y="552" fill="#1b2228">37 ms · 121K tokens of context</text>
 <rect x="110" y="578" width="12" height="12" fill="#7a8a96"/><text x="128" y="588" fill="#1b2228">helper guessing</text>
 <rect x="238" y="578" width="12" height="12" fill="#1b2228"/><text x="256" y="588" fill="#1b2228">GPU working</text>
 <rect x="350" y="578" width="12" height="12" fill="#d98a1c"/><text x="368" y="588" fill="#1b2228">waiting for the SSDs</text>
 <rect x="508" y="578" width="12" height="12" fill="#c4ccd2"/><text x="526" y="588" fill="#1b2228">other idle (handovers, launches)</text>
 </g>
 <text x="20" y="614" font-size="10.5" fill="#5a6670">The SSD wait is now about a twentieth: experts are fetched two layers early, and the GPU starts on the cached ones first.</text>
-<text x="20" y="630" font-size="10.5" fill="#5a6670">Source: study probe D39-probe (2026-10-16), one conversation each. Full runs: about 24 tokens/s coding, 27 chat.</text>
+<text x="20" y="630" font-size="10.5" fill="#5a6670">Source: study probe C37-probe (2026-10-21), one conversation each. Full runs: 26.5 tokens/s coding, 29.3 chat.</text>
 </svg>

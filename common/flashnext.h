@@ -4,11 +4,18 @@
 // is src/llama-flashnext.h).
 //
 // - LLAMA_SPEC_ADAPTIVE_RATE: the draft depth that seeks the most words a second, the everyday value, now the default.
+// - LLAMA_SPEC_CHAIN_P: the chain stop (CHAIN-PLAN step 2). Unset it is 0.5 with --spec-type draft-dflash (C37:
+//   +10.8% chat, +8.7% code at depth 7) and off for every other draft (the apprentice + chain missed the bar).
 // - `--flashnext`: one preset flag that sets the everyday values of llama.cpp's general flags, each only where the
 //   user did not pass that flag (on the command line, as LLAMA_ARG_* or in a config file); upstream's defaults are
 //   untouched without it. The draft settings wait for a draft model (-md): without one there is nothing to draft.
+//   Without the user's --spec-type, the draft file says which type runs (C37 roll-out step 4a): a DFlash file is
+//   draft-dflash, anything else the MTP head's draft-mtp-adaptive. With draft-dflash, the user's or the file's, its
+//   depth and p-min are DFlash's own (7 and 0, C37), not the MTP head's.
 // - the start-up line: one line naming the defaults in force and whether the preset is on. Its first word is
 //   "flashnext:", which the study's log readers (runner/roomstats.py) never take for a desk line.
+
+#include "common.h" // common_speculative_type
 
 #include <cstdint>
 #include <functional>
@@ -23,6 +30,16 @@ struct common_arg;
 // priced depth (speculative-rate2.h), 0 the acceptance controller (the old way). Unset: 1. "" or "0": 0. "2": 2.
 // Anything else: 1 (the switch has always read this way).
 int common_flashnext_adaptive_rate(const char * value);
+
+// LLAMA_SPEC_CHAIN_P, the chain stop's threshold (common/speculative-chain.h) for a draft of `type`: unset is
+// COMMON_FLASHNEXT_CHAIN_P_DFLASH for draft-dflash and off (0) for every other type (draft-dspark included); "" or "0"
+// is off for any type; a number in (0, 1] is the threshold, read as a double so the study's replay cuts where the
+// engine does; anything else throws, so a typo fails the start instead of running with the stop off.
+// LLAMA_SPEC_ADAPTIVE_RATE=2 ignores it (the price stops that draft), with a warning.
+double common_flashnext_chain_p(const char * value, common_speculative_type type);
+
+// the chain stop's threshold with draft-dflash when LLAMA_SPEC_CHAIN_P is unset (C37's winner, 2026-10-21)
+constexpr double COMMON_FLASHNEXT_CHAIN_P_DFLASH = 0.5;
 
 // ggml-metal's two, as its parsers read them unset (ggml-metal-staff-mv.h, ggml-metal-keep-alive.h); kept equal by
 // test-flashnext-metal, so the start-up line cannot name a default the device does not run
@@ -40,12 +57,27 @@ struct common_flashnext_setting {
 // the preset, in the order the help and the start-up line give it
 const std::vector<common_flashnext_setting> & common_flashnext_preset();
 
-// "-ngl 99 --moe-stream ..." (draft settings after "with -md:"), for --flashnext's help
+// the draft rows whose value differs with --spec-type draft-dflash (the user's, or the draft file's): DFlash's depth and
+// p-min, which replace the preset's rows of the same flag
+const std::vector<common_flashnext_setting> & common_flashnext_preset_dflash();
+
+// --flashnext's draft type for the draft file at `path`, read from its GGUF metadata alone (no model load):
+// DFlash's architecture ("dflash") is draft-dflash, or draft-dspark with DSpark's Markov head (markov_w1.weight, as
+// upstream's common_speculative_types_from_gguf tells the two apart); any other architecture (the MTP head's
+// qwen4exp among them) is the preset's own draft-mtp-adaptive. A file that is not a readable GGUF throws
+// std::invalid_argument naming it, so the start fails before the model loads, never on a guessed type.
+common_speculative_type common_flashnext_draft_type(const std::string & path);
+
+// "-ngl 99 --moe-stream ..." (draft settings after "with -md:", DFlash's after "with --spec-type draft-dflash:"), for
+// --flashnext's help
 std::string common_flashnext_preset_str();
 
 // Applies the preset to `params` (call after every source of flags has been read). `find`: the option a flag names
 // in this program, or nullptr (a flag the program does not have is skipped). `given`: the `args[0]` of every option
 // the user passed. Records what it set in params.flashnext_set and what it left to the user in flashnext_yours.
+// With a local draft file (-md, not a download) and no --spec-type of the user's, the type comes from the file
+// (common_flashnext_draft_type), recorded as "--spec-type <type> (from the draft file)"; a draft still to be
+// downloaded (-mdu, -hfd) keeps the preset's draft-mtp-adaptive, as the file cannot be read yet.
 void common_flashnext_apply(common_params & params,
                             const std::function<const common_arg * (const std::string &)> & find,
                             const std::set<std::string> & given);
