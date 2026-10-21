@@ -11,12 +11,12 @@ It was tuned for a Mac mini M5 Pro with 64 GB and a second SSD over Thunderbolt 
 measured on real chat and coding-agent conversations, and any timing that swap touched was thrown out.
 On a 48 GB Mac, see [Choose your size](#choose-your-size) for the speeds to expect.
 
-<p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs. Below, where the time goes for one written token: about 40 ms with the MTP draft head, split into guessing, GPU work, waiting for the SSDs and other idle time; with the optional DFlash draft 34 ms for chat and 38 ms for coding, measured as totals only"></p>
+<p align="center"><img src="media/flashnext/how-it-works.svg" width="760" alt="How a 111 GB model runs on a 64 GB Mac: prompts stream through the reading room, answers come from the expert cache, and missing experts are fetched from two SSDs. Below, where the time goes for one written token with the DFlash draft: about 36 ms, mostly GPU work, then other idle time, the draft's guessing and a little waiting for the SSDs"></p>
 
 ## Headline numbers
 
 Measured on a Mac mini M5 Pro (64 GB) with Unsloth's UD-Q4_K_XL quant, a 28 GiB expert cache, two
-SSDs, the MTP draft head and both trained guessers on ([what each extra is worth](#what-each-extra-is-worth)).
+SSDs, the DFlash draft and both trained guessers on ([what each extra is worth](#what-each-extra-is-worth)).
 Sources and method are in [Results](docs/flashnext/results.md).
 
 The writing speeds come from two sets of the author's own work, each replayed turn by turn:
@@ -24,17 +24,11 @@ coding-agent conversations at high thinking effort, and chat conversations at me
 
 | | |
 |---|---|
-| **Writing (decode), coding agent** | **24.3 tokens/s** |
-| **Writing (decode), chat** | **26.7 tokens/s** |
-| **With the optional DFlash draft, coding agent** | **26.5 tokens/s**, **+8.7%** over the MTP draft head |
-| **With the optional DFlash draft, chat** | **29.3 tokens/s**, **+10.8%** over the MTP draft head |
+| **Writing (decode), coding agent** | **26.5 tokens/s** |
+| **Writing (decode), chat** | **29.3 tokens/s** |
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
-| **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup |
-
-The DFlash rows swap the MTP draft head for an optional extra download, the DFlash draft
-([Build and run](#build-and-run), optional extras). They come from one run on 12 conversations of
-each set, where the MTP draft head wrote 24.3 tokens/s coding and 26.4 chat.
+| **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup (sat with the MTP draft head: a draft only suggests tokens, and the model checks every one) |
 
 ## What it adds
 
@@ -432,16 +426,15 @@ These are yours: the downloads, and the choices that depend on your Mac.
 ## What each extra is worth
 
 > **The headline numbers are with all the extras on.** That means `--flashnext`, a 28 GiB expert cache,
-> the MTP draft head, both trained guessers and a second SSD. Leave an extra off and you'll be
-> slower. The table shows roughly how much each one is worth. The DFlash rows of the headline swap
-> the draft head for the DFlash draft.
+> the DFlash draft, both trained guessers and a second SSD. Leave an extra off and you'll be
+> slower. The table shows roughly how much each one is worth.
 
 | Extra | What it's worth | Without it |
 |---|---|---|
 | `--flashnext` | The whole setup: streaming, big batches, the right context and cache settings | Upstream's defaults don't stream, so the model won't run well on 64 GB |
 | A 28 GiB expert cache (`--moe-stream-cache 28`) | The biggest single speed setting | Set the GiB to fit how much memory you want spare: 24 GiB gives about 4 GiB back and writes about 6-8% slower |
 | The MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code); about even on plain prose | Plain one-token-at-a-time writing |
-| The DFlash draft instead of the draft head (download, 652 MB) | **+8.7%** coding, **+10.8%** chat over the draft head | The MTP draft head |
+| The DFlash draft instead of the draft head (download, 652 MB) | **+8.7%** coding, **+10.8%** chat over the draft head | The MTP draft head: 24.3 tokens/s coding, 26.4 chat |
 | The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
 | A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
 
