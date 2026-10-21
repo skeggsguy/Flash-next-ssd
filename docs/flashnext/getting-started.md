@@ -44,7 +44,7 @@ curl -fL --retry 5 -C - -o $D/Qwen3.8-Flash-Next-DFlash2-Q8_0.gguf \
 
 The DFlash file is a Q8_0 conversion of [incoai's original](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2);
 to make it yourself, see the README's [quick start](../../README.md#build-and-run). Or use npanj's
-shared MTP draft head instead (1.9 GB, about 9-11% slower writing); `-md` takes either file, and
+shared MTP draft head instead (1.9 GB, about 8-10% slower writing); `-md` takes either file, and
 `--flashnext` picks the settings from the file:
 
 ```sh
