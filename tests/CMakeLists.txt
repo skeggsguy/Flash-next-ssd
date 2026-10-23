@@ -788,6 +788,17 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build(test-speculative-pq-record-grammar.cpp)
     llama_test(test-speculative-pq-record-grammar ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
 
+    # FAIR-CHECK-PLAN L3: the lenient check (LLAMA_SPEC_LENIENT, the gamma dial). Its rule on hand-set chances over a real
+    # vocabulary (parse, the extra chance, the request test, the written words' law by chi-square, the fall-backs: a
+    # grammar, a redraw, the reasoning budget forcing); then on the MTP fixture with the library's own draws (the law,
+    # the sampler told the word written, gamma 1 and temperature 0 writing today's words, the record naming the dial's)
+    llama_build(test-speculative-lenient.cpp)
+    llama_test(test-speculative-lenient ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
+    llama_build(test-speculative-lenient-mtp.cpp)
+    llama_test(test-speculative-lenient-mtp NAME test-speculative-lenient-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-lenient-mtp NAME test-speculative-lenient-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-lenient-mtp test-speculative-lenient-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
     # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context

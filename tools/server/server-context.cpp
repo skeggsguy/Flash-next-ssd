@@ -17,6 +17,7 @@
 #include "sampling.h"
 #include "speculative.h"
 #include "speculative-pq-record.h"
+#include "speculative-lenient.h"
 #include "spec-phase-log.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -27,6 +28,7 @@
 #include <exception>
 #include <memory>
 #include <filesystem>
+#include <optional>
 #include <list>
 #include <random>
 #include <utility>
@@ -486,6 +488,9 @@ struct server_slot {
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
+    bool spec_lenient = false;        // the lenient check runs for this request (LLAMA_SPEC_LENIENT)
+    std::mt19937 spec_lenient_rng;    // its own stream, seeded from the request's (never the sampler's)
+    std::optional<std::mt19937> spec_lenient_after; // where a restored check left the stream, for after its replay
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -616,6 +621,7 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+        spec_lenient_after.reset();
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -1148,6 +1154,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    common_spec_lenient spec_lenient; // LLAMA_SPEC_LENIENT (speculative-lenient.h), read at load
 
     bool add_bos_token = true;
 
@@ -1289,9 +1296,13 @@ private:
         if (has_spec) {
             try {
                 common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"), COMMON_SPECULATIVE_TYPE_NONE);
+                spec_lenient = common_spec_lenient_from_env(); // a bad dial fails the start too
             } catch (const std::exception & e) {
                 SRV_ERR("%s\n", e.what());
                 return false;
+            }
+            if (spec_lenient.on) {
+                fprintf(stderr, "%s\n", common_spec_lenient_load_line(spec_lenient).c_str());
             }
         }
 
@@ -2161,6 +2172,10 @@ private:
 
             if (common_spec_pq_record * pq = common_speculative_pq_record(spec.get())) {
                 pq->sampling(slot.id, task.params.sampling); // written on the answer's line
+            }
+            slot.spec_lenient = spec && common_spec_lenient_request(spec_lenient, task.params.sampling, use_backend_sampling);
+            if (slot.spec_lenient) {
+                common_spec_lenient_seed(slot.spec_lenient_rng, common_sampler_get_seed(slot.smpl.get()));
             }
             if (spec && !common_speculative_get_synth_probs(spec.get()).empty()) {
                 const uint32_t seed = task.params.sampling.seed == LLAMA_DEFAULT_SEED
@@ -4533,9 +4548,14 @@ private:
                 // the p/q record (LLAMA_SPEC_PQ_RECORD) checks with the library's own loop, recorded
                 common_spec_pq_record * pq = common_speculative_pq_record(spec.get());
                 const int pos_anchor = slot.prompt.tokens.pos_next() - (int) n_draft - 1;
+                // the lenient check (LLAMA_SPEC_LENIENT): its stream is put back with the sampler on a restore
+                const common_spec_lenient_draw len_draw = { &spec_lenient, &slot.spec_lenient_rng };
+                const common_spec_lenient_draw * len = slot.spec_lenient ? &len_draw : nullptr;
+                const std::optional<std::mt19937> lenient_save = len ? std::optional<std::mt19937>(slot.spec_lenient_rng) : std::nullopt;
                 auto accepted = synth_probs.empty()
                     ? (pq ? pq->accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, slot.id,
-                                         pos_anchor, slot.spec_is_replay)
+                                         pos_anchor, slot.spec_is_replay, len)
+                          : len ? common_spec_lenient_accept_n(*len, slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
                           : common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft))
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
@@ -4582,6 +4602,9 @@ private:
 
                         slot.prompt.tokens.keep_first(ckpt.n_tokens);
                         common_sampler_copy(smpl_save.get(), slot.smpl.get());
+                        if (lenient_save) {
+                            common_spec_lenient_restore(slot.spec_lenient_rng, *lenient_save, slot.spec_lenient_after);
+                        }
 
                         return;
                     }
@@ -4589,6 +4612,10 @@ private:
 
                 if (trace > 0) {
                     SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
+                }
+
+                if (slot.spec_is_replay) {
+                    common_spec_lenient_replayed(slot.spec_lenient_rng, slot.spec_lenient_after);
                 }
 
                 if (pq) { pq->check_end(slot.id, /* restore */ false); }

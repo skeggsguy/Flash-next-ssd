@@ -9,9 +9,11 @@
 #include "speculative.h"
 #include "speculative-dflash-walk.h"
 #include "speculative-pq-record.h"
+#include "speculative-lenient.h"
 
 #include <algorithm>
 #include <clocale>
+#include <optional>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -105,6 +107,8 @@ struct run_out {
     std::vector<std::vector<float>> lat; // the made-up lattice handed over before each check
     std::vector<llama_tokens> tail;      // the replay's and the restoring check's words, after the rounds
     int                      replaced = 0; // MTP drafts the made-up lattice took the place of (each an orphan)
+    int                      dial = 0;     // drafted words the lenient check wrote over the library's draw
+    bool                     len_resumed = true; // the dial's stream ended the restore and replay where the restored check ended it
     // the whole-vocabulary logits handed with each made-up lattice (FAIR-CHECK-PLAN step 3d): the library's own from
     // the round before's check (a round whose check before decoded fewer than N_POS words hands none, `wide` 0), and
     // what the record should write for them, worked out here the plain way (a full sort, a double log-sum-exp)
@@ -158,9 +162,11 @@ inline void set_env(const char * name, const char * value) {
 // 3's from the wrong position) and, after the rounds, checks the last position twice: a check that restores, then
 // its replay. `oracle` (a text the same seed wrote) replaces the fixture's drafts, which the library almost never
 // keeps, with that text's next words: all of them every other round, one of them wrong (the third, or the last)
-// the rounds between, so checks keep words, miss after keeping some, and draw the library's own word after a full draft
+// the rounds between, so checks keep words, miss after keeping some, and draw the library's own word after a full draft.
+// `len` (the lenient check, speculative-lenient.h) runs as the server runs it: only where `request` allows, its stream
+// seeded from `seed`, put back with the sampler on the tail's restore
 inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const std::string & tag, bool lattice,
-        const llama_tokens * oracle = nullptr) {
+        const llama_tokens * oracle = nullptr, const common_spec_lenient * len = nullptr, bool force_len = false) {
     run_out out;
     const std::string path = tag.empty() ? "" : tmp_path(tag) + ".pqr";
     const std::string tpath = tag.empty() ? "" : tmp_path(tag) + ".srtr";
@@ -220,6 +226,11 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
     if (pq) {
         pq->sampling(0, params.sampling);
     }
+    std::mt19937 len_rng;
+    common_spec_lenient_seed(len_rng, seed);
+    const common_spec_lenient_draw len_draw = { len, &len_rng };
+    const common_spec_lenient_draw * dial = len && (force_len || common_spec_lenient_request(*len, params.sampling, false))
+        ? &len_draw : nullptr;
 
     const llama_seq_id seq = 0;
     llama_batch batch = llama_batch_init(llama_n_batch(ctx), 0, 1);
@@ -293,8 +304,11 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
             }
             common_sampler_accept(smpl.get(), ids[0], true);
         } else {
-            ids = pq ? pq->accept_n(smpl.get(), ctx, idxs, draft, seq, anchor, false)
+            std::vector<int> by_dial;
+            ids = pq ? pq->accept_n(smpl.get(), ctx, idxs, draft, seq, anchor, false, dial)
+                     : dial ? common_spec_lenient_accept_n(*dial, smpl.get(), ctx, idxs, draft, &by_dial)
                      : common_sampler_sample_and_accept_n(smpl.get(), ctx, idxs, draft);
+            out.dial += (int) by_dial.size();
             if (pq) {
                 pq->check_end(seq, false);
             }
@@ -322,6 +336,9 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
         // the server's restore and replay at the last position: a check that restores (the sampler and the memory
         // put back), then the replay of the words it returned, from the same anchor
         common_sampler_ptr save(common_sampler_clone(smpl.get()));
+        const std::mt19937 len_save = len_rng;
+        std::optional<std::mt19937> len_after;
+        std::mt19937 len_check_end;
         out.lat.push_back(fake_lattice(98, stride));
         pq->draft(seq, n_past, { out.lat.back().data(), stride, N_POS, K }, {});
         llama_tokens draft_t = { out.text[0], out.text[1] };
@@ -342,10 +359,17 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
             for (size_t i = 0; i < idxs.size(); i++) {
                 idxs[i] = (int32_t) i;
             }
-            out.tail.push_back(pq->accept_n(smpl.get(), ctx, idxs, draft_t, seq, n_past, replay));
+            out.tail.push_back(pq->accept_n(smpl.get(), ctx, idxs, draft_t, seq, n_past, replay, dial));
             pq->check_end(seq, /* restore */ !replay);
             llama_memory_seq_rm(llama_get_memory(ctx), seq, n_past, -1);
             common_sampler_copy(save.get(), smpl.get());
+            if (!replay) {
+                len_check_end = len_rng;
+                common_spec_lenient_restore(len_rng, len_save, len_after);
+            } else {
+                common_spec_lenient_replayed(len_rng, len_after);
+                out.len_resumed = len_rng == len_check_end;
+            }
             draft_t = out.tail.back(); // the replay re-checks the words the check returned
         }
     }

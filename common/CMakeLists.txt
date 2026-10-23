@@ -115,6 +115,8 @@ add_library(${TARGET}
     speculative-pq-record.h
     speculative-pq-record-draft.cpp
     speculative-pq-record-util.h
+    speculative-lenient.cpp
+    speculative-lenient.h
     speculative-dflash-walk.h
     speculative-chain.h
     spec-phase-log.cpp

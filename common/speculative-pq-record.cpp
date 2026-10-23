@@ -4,6 +4,7 @@
 #include "common.h"
 #include "sampling.h"
 #include "speculative-dflash-walk.h"
+#include "speculative-lenient.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -158,7 +159,8 @@ common_spec_pq_record::position common_spec_pq_record::read_position(common_samp
 }
 
 std::vector<llama_token> common_spec_pq_record::accept_n(common_sampler * smpl, llama_context * ctx,
-        const std::vector<int32_t> & idxs, const std::vector<llama_token> & draft, int seq, int pos, bool replay) {
+        const std::vector<int32_t> & idxs, const std::vector<llama_token> & draft, int seq, int pos, bool replay,
+        const common_spec_lenient_draw * len) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 
     pending_check scratch;
@@ -177,11 +179,18 @@ std::vector<llama_token> common_spec_pq_record::accept_n(common_sampler * smpl, 
     size_t i = 0;
     for (; i < draft.size(); i++) {
         const uint64_t r0 = common_sampler_get_draw_state(smpl).n_resample;
-        const llama_token id = common_sampler_sample(smpl, ctx, idxs[i]);
+        const llama_token drawn = common_sampler_sample(smpl, ctx, idxs[i]);
 
         int64_t t0 = steady_us();
-        pc.p.push_back(read_position(smpl, id, r0));
+        pc.p.push_back(read_position(smpl, drawn, r0));
         t_rec += steady_us() - t0;
+
+        // the lenient check (speculative-lenient.h): the dial may write the drafted word over the draw
+        const bool dial = len != nullptr && common_spec_lenient_keep(*len->lp, smpl, draft[i], drawn, r0, *len->rng);
+        const llama_token id = dial ? draft[i] : drawn;
+        if (dial) {
+            pc.len.push_back((int) i);
+        }
 
         common_sampler_ptr past;
         if (id != draft[i] && !replay && !(pc.p.back().g & 1)) {
@@ -302,6 +311,10 @@ void common_spec_pq_record::write_line(const char * kind, int seq, const pending
     s += ",\"words\":";    add_ids(s, pc.words);
     s += ",\"p\":";        add_positions(s, pc.p);
     s += ",\"x\":";        add_positions(s, pc.x);
+    if (!pc.len.empty()) {
+        s += ",\"len\":";
+        add_ids(s, std::vector<llama_token>(pc.len.begin(), pc.len.end()));
+    }
 
     // the draft from this line's anchor rides on its first line; a replay drafts nothing
     pending_draft & d = drafts[seq];

@@ -41,6 +41,8 @@
 //   {"line":"check"|"plain","i":..,"answer":A,"seq":s,"pos":P,"replay":0|1,"restore":0|1,"wall_us":..,
 //    "n":drafted words checked,"acc":words the check returned,"kept":..,"draft":[ids],"words":[ids],
 //    "p":[[drawn,g,b,refused,size,id,p,id,p,..],..],"x":[[-1,g,b,refused,size,id,p,..],..],
+//    [,"len":[i,..]] (only with LLAMA_SPEC_LENIENT, and only when the dial kept a word: p[i].drawn is the library's draw,
+//    words[i] the drafted word written over it)
 //    "lat":{"pos0":P,"k":16,"walk":[ids],"ids":[[16 ids],..],"s":[[256 scores],..][,"lse":[..],"top":[[id,logit,..],..]]}
 //    | "mtp":{"pos0":P,"cap":C,"walk":[ids],"q":[[pick,conf,id,q,id,q,..],..]}}
 //   {"end":"spec-pq","lines":..,"orphans":..,"record_us":..}                           the record closes
@@ -68,6 +70,7 @@ struct common_sampler;
 struct common_speculative;
 struct common_dflash2_lattice;
 struct common_params_sampling;
+struct common_spec_lenient_draw;
 
 class common_spec_pq_record {
 public:
@@ -123,9 +126,12 @@ public:
     // at most n e^-30); NaN with no row
     static std::vector<std::pair<llama_token, float>> logits_top(const float * logits, int n, int k, double & lse);
 
-    // the check side: the library's accept loop, recorded; `pos` is the anchor's position
+    // the check side: the library's accept loop, recorded; `pos` is the anchor's position. With `len` (the lenient
+    // check, speculative-lenient.h) the dial runs between the draw and its accept, and the line names the drafted
+    // words it wrote over the library's draw (`len`)
     std::vector<llama_token> accept_n(common_sampler * smpl, llama_context * ctx, const std::vector<int32_t> & idxs,
-            const std::vector<llama_token> & draft, int seq, int pos, bool replay);
+            const std::vector<llama_token> & draft, int seq, int pos, bool replay,
+            const common_spec_lenient_draw * len = nullptr);
     void check_end(int seq, bool restore); // writes the check's line
 
     // a word written with no draft, right after its draw
@@ -163,6 +169,7 @@ private:
         std::vector<llama_token> words;
         std::vector<position>    p;
         std::vector<position>    x;
+        std::vector<int>         len; // the drafted words the lenient check wrote over the draw (p[i].drawn is the draw)
     };
 
     void read_past_miss(common_sampler * smpl, llama_context * ctx, const std::vector<int32_t> & idxs,
