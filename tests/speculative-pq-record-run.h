@@ -105,7 +105,30 @@ struct run_out {
     std::vector<std::vector<float>> lat; // the made-up lattice handed over before each check
     std::vector<llama_tokens> tail;      // the replay's and the restoring check's words, after the rounds
     int                      replaced = 0; // MTP drafts the made-up lattice took the place of (each an orphan)
+    // the whole-vocabulary logits handed with each made-up lattice (FAIR-CHECK-PLAN step 3d): the library's own from
+    // the round before's check (a round whose check before decoded fewer than N_POS words hands none, `wide` 0), and
+    // what the record should write for them, worked out here the plain way (a full sort, a double log-sum-exp)
+    std::vector<int>         wide;
+    std::vector<std::vector<std::vector<std::pair<llama_token, float>>>> wide_top;
+    std::vector<std::vector<double>> wide_lse;
 };
+
+// the top k (id, logit) of a row by a full sort (ties: the lower id first), and the log-sum-exp of the whole row
+inline std::vector<std::pair<llama_token, float>> plain_top(const float * l, int n, int k, double & lse) {
+    std::vector<std::pair<llama_token, float>> all;
+    double best = -INFINITY, total = 0.0;
+    for (int i = 0; i < n; i++) {
+        all.push_back({ (llama_token) i, l[i] });
+        best = std::max(best, (double) l[i]);
+    }
+    for (int i = 0; i < n; i++) {
+        total += std::exp((double) l[i] - best);
+    }
+    lse = best + std::log(total);
+    std::stable_sort(all.begin(), all.end(), [](const auto & a, const auto & b) { return a.second > b.second; });
+    all.resize(std::min<size_t>(all.size(), (size_t) k));
+    return all;
+}
 
 inline std::vector<float> fake_lattice(int round, size_t stride) {
     std::vector<float> rows_(N_POS * stride, 0.0f);
@@ -210,6 +233,8 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
     common_speculative_begin(spec, seq, prompt_tgt);
 
     const size_t stride = K + K * K + 3; // a row's floats, padded like the real lattice
+    const int    n_vocab = llama_vocab_n_tokens(vocab);
+    int          n_out   = 0; // the outputs of ctx's last decode
     llama_tokens draft;
     while (ok && (int) out.text.size() < N_PREDICT) {
         const int  r       = (int) out.rounds.size();
@@ -234,7 +259,16 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
             out.replaced += n_draft_max > 0; // the MTP head's own draft from this anchor, never checked
             out.lat.push_back(fake_lattice(r, stride));
             const common_dflash2_lattice lat = { out.lat.back().data(), stride, N_POS, K };
-            pq->draft(seq, r == 3 ? n_past + 1 : n_past, lat, draft);
+            const bool wide = n_out >= N_POS; // the round before's check logits, at outputs 0..N_POS-1
+            out.wide.push_back(wide);
+            out.wide_top.emplace_back();
+            out.wide_lse.emplace_back();
+            for (int i = 0; wide && i < N_POS; i++) {
+                out.wide_lse.back().push_back(0.0);
+                out.wide_top.back().push_back(plain_top(llama_get_logits_ith(ctx, i), n_vocab,
+                        common_spec_pq_record::TOP_L, out.wide_lse.back().back()));
+            }
+            pq->draft(seq, r == 3 ? n_past + 1 : n_past, lat, draft, wide ? ctx : nullptr, 0);
         }
         const int anchor = n_past;
         common_batch_clear(batch);
@@ -246,6 +280,7 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
         if (!ok) {
             break;
         }
+        n_out = batch.n_tokens;
         std::vector<int32_t> idxs(draft.size() + 1);
         for (size_t i = 0; i < idxs.size(); i++) {
             idxs[i] = (int32_t) i;

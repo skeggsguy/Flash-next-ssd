@@ -23,7 +23,14 @@
 //     top TOP_Q; not the draft sampler's top-k 10, renormalised), the word it drafted there (the sampler's top) and
 //     that word's share of the sampler's 10 (`conf`, what p-min and the chain stop cut on). The position a cut
 //     stopped at was decoded, so it is written too; the drafted words follow the greedy picks, so q at a position is
-//     conditioned on the drafted words before it.
+//     conditioned on the drafted words before it;
+//   - the draft side, DFlash 2's wider chances (FAIR-CHECK-PLAN step 3d): beside the lattice, for every drafted
+//     position, the top TOP_L (id, logit) of the draft's logits over the whole vocabulary (its `t_logits`, the
+//     library's own output head after the draft's last floor, the scores the selector picks its candidates from)
+//     and their log-sum-exp, so q = exp(logit - lse) at temperature 1. The DFlash 2 hook asks its draft batch for
+//     these logits only while the record is on (the daily library's draft asks for none, so nothing is copied);
+//     the block's positions are decoded at once, so a position's logits do not follow the drafted words before it
+//     (only the lattice's transition scores do).
 // The server's hooks are thin: accept_n in place of the library's loop, check_end once it knows whether the
 // check restored a checkpoint (a restore is checked again as a `replay`), plain after a plain draw, and
 // sampling when a slot takes a request.
@@ -34,7 +41,7 @@
 //   {"line":"check"|"plain","i":..,"answer":A,"seq":s,"pos":P,"replay":0|1,"restore":0|1,"wall_us":..,
 //    "n":drafted words checked,"acc":words the check returned,"kept":..,"draft":[ids],"words":[ids],
 //    "p":[[drawn,g,b,refused,size,id,p,id,p,..],..],"x":[[-1,g,b,refused,size,id,p,..],..],
-//    "lat":{"pos0":P,"k":16,"walk":[ids],"ids":[[16 ids],..],"s":[[256 scores],..]}
+//    "lat":{"pos0":P,"k":16,"walk":[ids],"ids":[[16 ids],..],"s":[[256 scores],..][,"lse":[..],"top":[[id,logit,..],..]]}
 //    | "mtp":{"pos0":P,"cap":C,"walk":[ids],"q":[[pick,conf,id,q,id,q,..],..]}}
 //   {"end":"spec-pq","lines":..,"orphans":..,"record_us":..}                           the record closes
 // `pos` is the anchor's position (the word the round drafts from, the draft's pos0); p[i] is the chain's
@@ -44,6 +51,8 @@
 // the restore. `lat` rides on the check or plain line of the draft's own position; a draft no line took
 // (another position, or overwritten) counts as an orphan; so does `mtp`, whose `cap` is the depth the draft was
 // allowed (0: the measured depth's shadow guess, drafted and never checked) and `q` one row a decoded position.
+// `lse` and `top` (a row a lattice position) come with the DFlash 2 hook's logits; a row the context could not give
+// is written empty, its lse NaN.
 // Read by the study's `sim/pq_record.py`.
 
 #include "llama.h"
@@ -64,6 +73,7 @@ class common_spec_pq_record {
 public:
     static constexpr int MAX_CAND = 32; // candidates written a position (the library's top-k 20 fits)
     static constexpr int TOP_Q    = 20; // the MTP head's chances written a position
+    static constexpr int TOP_L    = 64; // DFlash 2's whole-vocabulary logits written a position
 
     // one drawn (or read) position
     struct position {
@@ -89,8 +99,11 @@ public:
     void sampling(int seq, const common_params_sampling & params);
     void answer_begin(int seq, int n_prompt);
 
-    // the draft side: copies the lattice's rows and the walk's words (before the trim)
-    void draft(int seq, int pos0, const common_dflash2_lattice & lat, const std::vector<llama_token> & words);
+    // the draft side: copies the lattice's rows and the walk's words (before the trim); with `ctx_dft`, also the top
+    // TOP_L of each lattice position's whole-vocabulary logits (its output `idx0 + i` of ctx_dft's last decode) and
+    // their log-sum-exp
+    void draft(int seq, int pos0, const common_dflash2_lattice & lat, const std::vector<llama_token> & words,
+            llama_context * ctx_dft = nullptr, int idx0 = 0);
 
     // the draft side, MTP: a draft from `pos0` begins; the head decoded a position (its logits at `idx` of ctx_dft;
     // `pick` the word the sampler put first, `conf` its share of the sampler's candidates); the draft ends, `cap` its
@@ -104,6 +117,11 @@ public:
     // n e^-30 of the total)
     static constexpr float SKIP = 30.0f;
     static std::vector<std::pair<llama_token, float>> softmax_top(const float * logits, int n, int k);
+
+    // the top k (id, logit) of n logits, highest first (ties: the lower id first; masked words never), and in `lse`
+    // the log-sum-exp of all n (a word more than SKIP below the best left out of the sum, as softmax_top: lse short by
+    // at most n e^-30); NaN with no row
+    static std::vector<std::pair<llama_token, float>> logits_top(const float * logits, int n, int k, double & lse);
 
     // the check side: the library's accept loop, recorded; `pos` is the anchor's position
     std::vector<llama_token> accept_n(common_sampler * smpl, llama_context * ctx, const std::vector<int32_t> & idxs,
@@ -133,6 +151,9 @@ private:
         std::vector<llama_token> pick;        // a decoded position each
         std::vector<float>       conf;
         std::vector<std::vector<std::pair<llama_token, float>>> q;
+        bool                     wide = false; // DFlash 2's whole-vocabulary logits: a row a lattice position
+        std::vector<std::vector<std::pair<llama_token, float>>> top;
+        std::vector<double>      lse;
     };
     struct pending_check {
         bool                     active  = false;

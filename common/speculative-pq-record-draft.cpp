@@ -18,8 +18,18 @@ using pq_util::add_ids;
 using pq_util::steady_us;
 
 void common_spec_pq_record::draft(int seq, int pos0, const common_dflash2_lattice & lat,
-        const std::vector<llama_token> & words) {
+        const std::vector<llama_token> & words, llama_context * ctx_dft, int idx0) {
     const int64_t t0 = steady_us();
+    std::vector<std::vector<std::pair<llama_token, float>>> top;
+    std::vector<double> lse;
+    if (ctx_dft != nullptr) { // the logits the hook asked the draft batch for, read before the lock
+        const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx_dft)));
+        top.resize(std::max(lat.n_pos, 0));
+        lse.assign(top.size(), NAN);
+        for (int32_t i = 0; i < lat.n_pos; i++) {
+            top[i] = logits_top(llama_get_raw_logits_ith(ctx_dft, idx0 + i), n_vocab, TOP_L, lse[i]);
+        }
+    }
     std::lock_guard<std::mutex> lk(mtx);
     if (!valid(seq)) {
         return;
@@ -37,31 +47,41 @@ void common_spec_pq_record::draft(int seq, int pos0, const common_dflash2_lattic
     for (int32_t i = 0; i < lat.n_pos; i++) { // the buffer is the draft's output, reused by its next decode
         std::memcpy(d.rows.data() + (size_t) i * row, lat.rows + (size_t) i * lat.stride, row * sizeof(float));
     }
+    d.wide = ctx_dft != nullptr;
+    d.top  = std::move(top);
+    d.lse  = std::move(lse);
     t_self_us += steady_us() - t0;
 }
 
-std::vector<std::pair<llama_token, float>> common_spec_pq_record::softmax_top(const float * logits, int n, int k) {
+namespace {
+
+// the top k (id, logit) of n logits, highest first (ties: the lower id first), with the best logit and the sum of
+// exp(logit - best) over every logit no more than `skip` below it; `all`: the top k from every finite logit, else
+// only from those the sum takes; empty with no row, or none finite
+std::vector<std::pair<llama_token, float>> scan_top(const float * logits, int n, int k, float skip, bool all,
+        float & best, double & total) {
     std::vector<std::pair<llama_token, float>> top;
+    best  = -INFINITY;
+    total = 0.0;
     if (logits == nullptr || n <= 0 || k <= 0) {
         return top;
     }
-    float best = -INFINITY;
     for (int i = 0; i < n; i++) {
         best = std::max(best, logits[i]);
     }
     if (!std::isfinite(best)) {
         return top;
     }
-    const float lo = best - SKIP;
+    const float lo = best - skip;
     top.reserve((size_t) k + 1);
-    float  floor_ = -INFINITY; // the k-th best logit so far, once there are k
-    double total  = 0.0;
+    float floor_ = -INFINITY; // the k-th best logit so far, once there are k
     for (int i = 0; i < n; i++) {
         const float l = logits[i];
-        if (!(l >= lo)) {
+        if (l >= lo) {
+            total += std::exp((double) (l - best));
+        } else if (!all || !(l > -INFINITY)) {
             continue;
         }
-        total += std::exp((double) (l - best));
         if ((int) top.size() < k || l > floor_) {
             // after any equal logit: a lower id stays first
             const auto at = std::upper_bound(top.begin(), top.end(), l,
@@ -73,6 +93,24 @@ std::vector<std::pair<llama_token, float>> common_spec_pq_record::softmax_top(co
             floor_ = (int) top.size() < k ? -INFINITY : top.back().second;
         }
     }
+    return top;
+}
+
+} // namespace
+
+std::vector<std::pair<llama_token, float>> common_spec_pq_record::logits_top(const float * logits, int n, int k,
+        double & lse) {
+    float  best  = -INFINITY;
+    double total = 0.0;
+    auto   top   = scan_top(logits, n, k, SKIP, true, best, total);
+    lse = top.empty() ? NAN : (double) best + std::log(total);
+    return top;
+}
+
+std::vector<std::pair<llama_token, float>> common_spec_pq_record::softmax_top(const float * logits, int n, int k) {
+    float  best  = -INFINITY;
+    double total = 0.0;
+    auto   top   = scan_top(logits, n, k, SKIP, false, best, total);
     for (auto & e : top) {
         e.second = (float) (std::exp((double) (e.second - best)) / total);
     }
@@ -171,5 +209,29 @@ void common_spec_pq_record::add_draft(std::string & s, const pending_draft & d) 
         }
         s += ']';
     }
-    s += "]}";
+    s += ']';
+    if (d.wide) { // the whole-vocabulary logits, a row a lattice position
+        s += ",\"lse\":[";
+        for (size_t i = 0; i < d.lse.size(); i++) {
+            if (i > 0) {
+                s += ',';
+            }
+            add(s, "%.9g", d.lse[i]);
+        }
+        s += "],\"top\":[";
+        for (size_t i = 0; i < d.top.size(); i++) {
+            s += i > 0 ? ",[" : "[";
+            for (size_t c = 0; c < d.top[i].size(); c++) {
+                if (c > 0) {
+                    s += ',';
+                }
+                add_int(s, d.top[i][c].first);
+                s += ',';
+                add(s, "%.9g", (double) d.top[i][c].second);
+            }
+            s += ']';
+        }
+        s += ']';
+    }
+    s += '}';
 }

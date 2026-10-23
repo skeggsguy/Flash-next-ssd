@@ -1318,8 +1318,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             const int32_t n_block_tokens = n_draft + (is_dspark && sample_from_anchor ? 0 : 1);
             i_block_beg[seq_id] = batch.n_tokens;
             n_block    [seq_id] = n_block_tokens;
+            // DFlash 2 reads its lattice, not the logits: they are copied out only for the p/q record (step 3d)
+            const bool logits = !is_dflash2 || pq != nullptr;
             for (int32_t i = 0; i < n_block_tokens; ++i) {
-                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, !is_dflash2);
+                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, logits);
             }
         }
 
@@ -1357,7 +1359,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 const common_speculative_cut cut(params.p_min, chain_p);
                 if (!wants_conf()) {
                     common_dflash2_walk(lat, cut, params.n_min, result, nullptr);
-                    if (pq) { pq->draft(seq_id, dp.pos0, lat, result); } // before the next decode reuses the rows
+                    if (pq) { pq->draft(seq_id, dp.pos0, lat, result, ctx_dft, beg + 1); } // before the next decode
                     continue;
                 }
                 const int64_t t_walk = common_speculative_rate_trace::now_us();
@@ -1369,7 +1371,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 note_stop(seq_id, walk_seen.stop);
                 // the whole walk, confidences and argmax both: an upper bound on what the trace adds
                 trace->add_self_us(common_speculative_rate_trace::now_us() - t_walk);
-                if (pq) { pq->draft(seq_id, dp.pos0, lat, result); }
+                if (pq) { pq->draft(seq_id, dp.pos0, lat, result, ctx_dft, beg + 1); }
                 continue;
             }
 

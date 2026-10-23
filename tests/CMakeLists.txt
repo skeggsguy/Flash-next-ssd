@@ -777,6 +777,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-pq-record-mtp NAME test-speculative-pq-record-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-pq-record-mtp test-speculative-pq-record-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # FAIR-CHECK-PLAN step 3d: DFlash 2's wider chances in the p/q record (the top 64 of each drafted position's whole-
+    # vocabulary logits and their log-sum-exp), handed real logits on the MTP fixture: exact, and no word changed
+    llama_build(test-speculative-pq-record-wide.cpp)
+    llama_test(test-speculative-pq-record-wide NAME test-speculative-pq-record-wide     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-pq-record-wide NAME test-speculative-pq-record-wide-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-pq-record-wide test-speculative-pq-record-wide-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
     # the record's grammar flags need a vocabulary the fixture lacks: the sampler's draw state and refused count, vocab only
     llama_build(test-speculative-pq-record-grammar.cpp)
     llama_test(test-speculative-pq-record-grammar ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
