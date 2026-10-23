@@ -12,8 +12,16 @@
 //   lattice    a draft from the round's own position rides on its line with its ids and scores exactly; one from
 //              another position is not taken and counts as an orphan, as does one a replay from its position leaves
 //              untouched; a replay's kept is one less than its count, a restoring check's is what it kept
+//   mtp        the MTP head's own chances (FAIR-CHECK-PLAN step 3b) on the fixture's drafts: a row a position the head
+//              decoded, on its round's line, its top TOP_Q over the whole vocabulary at temperature 1 (summing under 1,
+//              the draft sampler's share of its top word their ratio), the drafted words first; under a p-min the
+//              position a cut stopped at too, and the same words with the record on as off (the fixture's head is
+//              near uniform, its top-10 share about 0.1, so the p-min sits between two of its own shares: a tenth of
+//              the drafted positions under it)
+//   softmax    softmax_top against a plain double softmax: ids, order, ties, a masked word, one word far above the rest
 // Mutation check (FAIR-CHECK-PLAN): reading past a miss on the library's own sampler instead of a clone turns
-// "words" red.
+// "words" red; recording the draft sampler's own 10 (renormalised) turns "mtp" red, and so does dropping the row a
+// cut stopped at.
 
 #include "speculative-pq-record-run.h"
 
@@ -141,13 +149,126 @@ void test_lines(const run_out & on, bool greedy) {
     check(acc_p >= 2 && field(rp, "replay") == "1" && field(rp, "restore") == "0" && field(rp, "lat").empty() &&
           std::atoi(field(rp, "kept").c_str()) == acc_p - 2, "its replay keeps one less than its count and takes no "
           "draft (kept " + field(rp, "kept") + " of " + std::to_string(acc_p) + " words)");
-    // round 3's draft, and the one the replay left
-    check(field(on.end, "lines") == std::to_string(n + 2) && field(on.end, "orphans") == "2",
-          "the closing line counts the lines and the two orphans (" + on.end + ")");
+    // round 3's draft, the one the replay left, and the MTP head's drafts the made-up lattice replaced
+    check(field(on.end, "lines") == std::to_string(n + 2) && field(on.end, "orphans") == std::to_string(2 + on.replaced),
+          "the closing line counts the lines and the orphans: two, and " + std::to_string(on.replaced) +
+          " MTP drafts replaced (" + on.end + ")");
+}
+
+// the MTP head's rows on a run with its own drafts (no made-up lattice): see the header
+void test_mtp_lines(const run_out & on, float p_min, const std::string & t) {
+    bool where = true, rows_ok = true, conf_ok = true, cut_ok = true;
+    int n_rows = 0, n_under = 0, n_stopped = 0, n_capped = 0;
+    for (size_t r = 0; r < on.rounds.size() && r < on.lines.size(); r++) {
+        const auto & rd = on.rounds[r];
+        const std::string & l = on.lines[r];
+        const std::string m = field(l, "mtp");
+        if (m.empty()) { // no draft call (every fifth word, or no room left)
+            where = where && rd.draft.empty() && (r % 5 == 4 || r + 1 == on.rounds.size());
+            continue;
+        }
+        const auto q = rows(field(m, "q"));
+        const size_t walk = rd.draft.size(), cap = (size_t) std::atoi(field(m, "cap").c_str());
+        where = where && field(m, "pos0") == field(l, "pos") && ids_of(m, "walk") == rd.draft && field(l, "lat").empty();
+        const bool capped = q.size() == walk && walk == cap, stopped = q.size() == walk + 1 && walk < cap;
+        cut_ok = cut_ok && (capped || stopped) && (p_min > 0.0f || capped);
+        n_capped += capped;
+        n_stopped += stopped;
+        for (size_t j = 0; j < q.size(); j++) {
+            const auto & row = q[j];
+            if (row.size() != 2 + 2 * (size_t) common_spec_pq_record::TOP_Q) {
+                rows_ok = false;
+                continue;
+            }
+            n_rows++;
+            double sum = 0.0, top10 = 0.0;
+            bool sorted = true;
+            for (size_t c = 2; c < row.size(); c += 2) {
+                sum += row[c + 1];
+                top10 += c < 22 ? row[c + 1] : 0.0;
+                sorted = sorted && (c == 2 || row[c + 1] <= row[c - 1]);
+            }
+            n_under += sum < 0.999;
+            rows_ok = rows_ok && sorted && sum <= 1.0 + 1e-5 && row[0] == row[2] && (j >= walk || row[0] == rd.draft[j]);
+            conf_ok = conf_ok && std::fabs(row[1] - row[3] / top10) <= 1e-4 * row[1];
+            // a drafted word passed the cut; the row a cut stopped at failed it
+            cut_ok = cut_ok && (j < walk ? row[1] >= p_min : row[1] < p_min);
+        }
+    }
+    check(where, t + ": each drafted round's line carries the head's rows from its own position, its walk the draft");
+    check(rows_ok && n_rows > 0 && n_under > n_rows / 2, t + ": " + std::to_string(n_rows) + " rows, each the top " +
+          std::to_string(common_spec_pq_record::TOP_Q) + " sorted, the drafted word first, summing to at most 1 (" +
+          std::to_string(n_under) + " under 0.999: the whole vocabulary's chances, not a renormalised list)");
+    check(conf_ok, t + ": the draft sampler's share of its top word is q[0] over its top 10's q (q at temperature 1)");
+    check(cut_ok && n_capped > 0 && (p_min == 0.0f || n_stopped > 0), t + ": a row a decoded position: " +
+          std::to_string(n_capped) + " drafts to their cap, " + std::to_string(n_stopped) + " cut short with the row "
+          "the cut stopped at (under p-min " + std::to_string(p_min).substr(0, 8) + ")");
+    check(field(on.end, "orphans") == "0", t + ": every MTP draft rides on its round's line (" + on.end + ")");
+}
+
+// a p-min between two of the head's own shares at temperature 0, a tenth of its drafted positions under it
+float tenth_conf(const run_out & on) {
+    std::vector<double> conf;
+    for (size_t r = 0; r < on.rounds.size() && r < on.lines.size(); r++) {
+        const std::string m = field(on.lines[r], "mtp");
+        const auto q = m.empty() ? std::vector<std::vector<double>>() : rows(field(m, "q"));
+        for (size_t j = 0; j < q.size() && j < on.rounds[r].draft.size(); j++) {
+            conf.push_back(q[j].size() > 1 ? q[j][1] : 0.0);
+        }
+    }
+    std::sort(conf.begin(), conf.end());
+    if (conf.size() < 8) {
+        return 0.0f;
+    }
+    const double v = conf[conf.size() / 10];
+    const auto above = std::upper_bound(conf.begin(), conf.end(), v);
+    return above == conf.end() ? 0.0f : (float) ((v + *above) / 2.0); // off the printed values' rounding
+}
+
+void test_softmax_top() {
+    std::mt19937 rng(3);
+    std::normal_distribution<float> nd(0.0f, 3.0f);
+    bool ok = common_spec_pq_record::softmax_top(nullptr, 10, 20).empty();
+    const int k = common_spec_pq_record::TOP_Q;
+    for (int trial = 0; trial < 60; trial++) {
+        const int n = 1 + (int) (rng() % 3000);
+        std::vector<float> l(n);
+        for (auto & v : l) {
+            v = nd(rng);
+        }
+        if (trial % 4 == 1) {
+            l[rng() % n] = -INFINITY;
+        } else if (trial % 4 == 2 && n > 3) {
+            l[1] = l[2] = 20.0f; // a tie at the top: the lower id first
+        } else if (trial % 4 == 3) {
+            l[n - 1] = 200.0f;   // one word far above the rest: the rest are under SKIP
+        }
+        double best = -INFINITY, total = 0.0;
+        for (float v : l) {
+            best = std::max(best, (double) v);
+        }
+        std::vector<int> ids;
+        for (int i = 0; i < n; i++) {
+            total += std::isfinite(l[i]) ? std::exp((double) l[i] - best) : 0.0;
+            if (l[i] >= best - common_spec_pq_record::SKIP) {
+                ids.push_back(i);
+            }
+        }
+        std::stable_sort(ids.begin(), ids.end(), [&](int a, int b) { return l[a] > l[b]; });
+        ids.resize(std::min<size_t>(ids.size(), k));
+        const auto top = common_spec_pq_record::softmax_top(l.data(), n, k);
+        ok = ok && top.size() == ids.size();
+        for (size_t i = 0; ok && i < top.size(); i++) {
+            ok = top[i].first == ids[i] && std::fabs(top[i].second - std::exp((double) l[ids[i]] - best) / total) <=
+                 1e-6 + n * std::exp(-30.0);
+        }
+    }
+    check(ok, "softmax_top: the top 20 of a plain softmax, in order (ties by id), q within 1e-6, over 60 spreads");
 }
 
 void test_prompt(const llama_tokens & prompt) {
     printf("prompt of %zu tokens, ngl %d\n", prompt.size(), g_ngl);
+    float p_cut = 0.0f;
     for (float temp : { 0.0f, 1.0f }) {
         const std::string t = "temperature " + std::to_string(temp).substr(0, 3);
         const run_out mtp_off = run(temp, 42, prompt, "", false);
@@ -155,6 +276,10 @@ void test_prompt(const llama_tokens & prompt) {
         check(mtp_off.ok && mtp_on.ok && mtp_off.text.size() > 50 && same(mtp_on, mtp_off),
               t + ", the fixture's drafts: the same words and rounds with the record on (" +
               std::to_string(mtp_on.rounds.size()) + " rounds)");
+        if (mtp_on.ok) {
+            test_mtp_lines(mtp_on, 0.0f, t);
+            p_cut = temp == 0.0f ? tenth_conf(mtp_on) : p_cut;
+        }
         const run_out off = run(temp, 42, prompt, "", false, &mtp_off.text);
         const run_out on  = run(temp, 42, prompt, "on", true, &mtp_off.text);
         int kept = 0, full = 0;
@@ -174,6 +299,16 @@ void test_prompt(const llama_tokens & prompt) {
         if (on.ok) {
             test_lines(on, temp == 0.0f);
         }
+    }
+    const std::string tc = "p-min " + std::to_string(p_cut).substr(0, 8);
+    check(p_cut > 0.0f, tc + ": a p-min between two of the head's shares");
+    g_p_min = p_cut; // the head's p-min: drafts cut short, the row they stopped at written
+    const run_out cut_off = run(0.0f, 42, prompt, "", false);
+    const run_out cut_on  = run(0.0f, 42, prompt, "mtp-pmin", false);
+    g_p_min = 0.0f;
+    check(cut_off.ok && cut_on.ok && same(cut_on, cut_off), tc + ": the same words and rounds with the record on");
+    if (cut_on.ok && p_cut > 0.0f) {
+        test_mtp_lines(cut_on, p_cut, tc);
     }
 }
 
@@ -196,6 +331,7 @@ int main(int argc, char ** argv) {
     common_init();
     llama_backend_init();
 
+    test_softmax_top();
     std::mt19937 rng(42);
     for (int n : { 37, 120 }) {
         llama_tokens prompt;

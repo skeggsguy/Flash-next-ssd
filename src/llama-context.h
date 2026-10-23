@@ -116,6 +116,7 @@ struct llama_context {
 
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
+    void set_raw_logits(bool keep); // copy the full logits out even under a backend sampler (the p/q record)
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
     void set_causal_attn(bool value);
@@ -329,6 +330,8 @@ private:
     };
 
     sampling_info sampling;
+
+    bool keep_raw_logits = false; // set_raw_logits
 
     // sequence embeddings output (map of [n_embd] vectors)
     // populated only when pooling_type != LLAMA_POOLING_TYPE_NONE

@@ -26,6 +26,7 @@ namespace pq_test {
 inline std::string g_path;
 inline int  g_ngl      = 99;
 inline int  g_failures = 0;
+inline float g_p_min   = 0.0f; // the MTP draft's p-min (0: it drafts to its cap)
 
 constexpr int N_MAX     = 6;
 constexpr int N_PREDICT = 160;
@@ -103,6 +104,7 @@ struct run_out {
     std::vector<int>         trace_kept; // the rate trace's kept, a cycle each
     std::vector<std::vector<float>> lat; // the made-up lattice handed over before each check
     std::vector<llama_tokens> tail;      // the replay's and the restoring check's words, after the rounds
+    int                      replaced = 0; // MTP drafts the made-up lattice took the place of (each an orphan)
 };
 
 inline std::vector<float> fake_lattice(int round, size_t stride) {
@@ -163,7 +165,7 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
     params.speculative.types       = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
     params.speculative.draft.n_max = N_MAX;
     params.speculative.draft.n_min = 0;
-    params.speculative.draft.p_min = 0.0f;
+    params.speculative.draft.p_min = g_p_min;
     const auto limits = common_speculative_get_output_limits(params.n_batch, params.n_parallel,
             common_speculative_n_max(&params.speculative));
     params.n_outputs_max         = limits.total;
@@ -229,6 +231,7 @@ inline run_out run(float temp, uint32_t seed, const llama_tokens & prompt, const
         }
         llama_memory_seq_rm(llama_get_memory(ctx_dft), seq, n_past, -1);
         if (pq && lattice) { // the draft side: from this round's anchor, but round 3's from the wrong position
+            out.replaced += n_draft_max > 0; // the MTP head's own draft from this anchor, never checked
             out.lat.push_back(fake_lattice(r, stride));
             const common_dflash2_lattice lat = { out.lat.back().data(), stride, N_POS, K };
             pq->draft(seq, r == 3 ? n_past + 1 : n_past, lat, draft);

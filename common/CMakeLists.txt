@@ -113,6 +113,8 @@ add_library(${TARGET}
     speculative-rate-trace.h
     speculative-pq-record.cpp
     speculative-pq-record.h
+    speculative-pq-record-draft.cpp
+    speculative-pq-record-util.h
     speculative-dflash-walk.h
     speculative-chain.h
     spec-phase-log.cpp

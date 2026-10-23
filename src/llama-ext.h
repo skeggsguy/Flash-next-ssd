@@ -95,6 +95,13 @@ LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_c
 // If masked == false, output the embeddings for all tokens in the batch regardless of batch.logits
 LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
 
+// Copy the full logits out of every decode even when each sequence has a backend sampler (which otherwise
+// leaves only its sampled candidates on the host). Read them with llama_get_raw_logits_ith, not
+// llama_get_logits_ith (that prefers the sampled logits). Used by the speculative p/q record.
+LLAMA_API void llama_set_raw_logits(struct llama_context * ctx, bool keep);
+
+LLAMA_API float * llama_get_raw_logits_ith(struct llama_context * ctx, int32_t i);
+
 // Select which appended NextN block the DECODER_MTP graph runs (offset past
 // the trunk: il = n_layer() + offset). Used by the speculative NextN driver to
 // chain multiple trained NextN heads. Default 0 (first head).

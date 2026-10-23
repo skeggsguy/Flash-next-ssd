@@ -1,4 +1,5 @@
 #include "speculative-pq-record.h"
+#include "speculative-pq-record-util.h"
 
 #include "common.h"
 #include "sampling.h"
@@ -13,43 +14,16 @@
 #include <cstring>
 #include <exception>
 
-namespace {
+using pq_util::add;
+using pq_util::add_int;
+using pq_util::add_ids;
+using pq_util::steady_us;
 
-int64_t steady_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+namespace {
 
 int64_t wall_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-}
-
-void add(std::string & out, const char * fmt, double v) {
-    if (!std::isfinite(v)) { // JSON has no inf or nan; these are the words Python's json reads (sim/pq_record.py)
-        out += std::isnan(v) ? "NaN" : v > 0 ? "Infinity" : "-Infinity";
-        return;
-    }
-    char buf[40];
-    snprintf(buf, sizeof(buf), fmt, v);
-    out += buf;
-}
-
-void add_int(std::string & out, int64_t v) {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "%" PRId64, v);
-    out += buf;
-}
-
-void add_ids(std::string & out, const std::vector<llama_token> & ids) {
-    out += '[';
-    for (size_t i = 0; i < ids.size(); i++) {
-        if (i > 0) {
-            out += ',';
-        }
-        add_int(out, ids[i]);
-    }
-    out += ']';
 }
 
 void add_positions(std::string & out, const std::vector<common_spec_pq_record::position> & ps) {
@@ -154,28 +128,6 @@ void common_spec_pq_record::answer_begin(int seq, int n_prompt) {
     s += sampling_of[seq];
     s += "}\n";
     put(s);
-    t_self_us += steady_us() - t0;
-}
-
-void common_spec_pq_record::draft(int seq, int pos0, const common_dflash2_lattice & lat,
-        const std::vector<llama_token> & words) {
-    const int64_t t0 = steady_us();
-    std::lock_guard<std::mutex> lk(mtx);
-    if (!valid(seq)) {
-        return;
-    }
-    pending_draft & d = drafts[seq];
-    orphans += d.active; // a draft no line took
-    d.active = true;
-    d.pos0   = pos0;
-    d.k      = lat.top_k;
-    d.n_pos  = lat.n_pos;
-    d.walk   = words;
-    const size_t row = (size_t) lat.top_k + (size_t) lat.top_k * lat.top_k;
-    d.rows.resize((size_t) lat.n_pos * row);
-    for (int32_t i = 0; i < lat.n_pos; i++) { // the buffer is the draft's output, reused by its next decode
-        std::memcpy(d.rows.data() + (size_t) i * row, lat.rows + (size_t) i * lat.stride, row * sizeof(float));
-    }
     t_self_us += steady_us() - t0;
 }
 
@@ -355,33 +307,7 @@ void common_spec_pq_record::write_line(const char * kind, int seq, const pending
     pending_draft & d = drafts[seq];
     if (d.active && !pc.replay) {
         if (d.pos0 == pc.pos) {
-            const size_t row = (size_t) d.k + (size_t) d.k * d.k;
-            s += ",\"lat\":{\"pos0\":"; add_int(s, d.pos0);
-            s += ",\"k\":";             add_int(s, d.k);
-            s += ",\"walk\":";          add_ids(s, d.walk);
-            s += ",\"ids\":[";
-            for (int i = 0; i < d.n_pos; i++) {
-                s += i > 0 ? ",[" : "[";
-                for (int c = 0; c < d.k; c++) {
-                    if (c > 0) {
-                        s += ',';
-                    }
-                    add_int(s, (int64_t) d.rows[(size_t) i * row + c]); // ids are floats in the lattice
-                }
-                s += ']';
-            }
-            s += "],\"s\":[";
-            for (int i = 0; i < d.n_pos; i++) {
-                s += i > 0 ? ",[" : "[";
-                for (int c = 0; c < d.k * d.k; c++) {
-                    if (c > 0) {
-                        s += ',';
-                    }
-                    add(s, "%.6g", (double) d.rows[(size_t) i * row + d.k + c]);
-                }
-                s += ']';
-            }
-            s += "]}";
+            add_draft(s, d);
         } else {
             orphans++;
         }

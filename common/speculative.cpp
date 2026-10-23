@@ -1887,6 +1887,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             n_drafting++;
             drafting[seq_id] = true;
             common_sampler_reset(smpls[seq_id].get());
+            if (pq) { // the p/q record (LLAMA_SPEC_PQ_RECORD): the head's own chances, so its full logits too
+                llama_set_raw_logits(ctx_dft, true);
+                pq->mtp_begin(seq_id, dp.pos0);
+            }
 
             // effective draft cap for this step: adaptive depth (or the user n_max),
             // then clamped by the per-call context bound from the server
@@ -1982,6 +1986,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
+                if (pq) { pq->mtp_step(seq_id, ctx_dft, i_last[seq_id], id, cur_p->data[0].p); } // before any cut
 
                 if (rate_trace) {
                     rate_trace->draft_step(seq_id, cur_p->data[0].p);
@@ -2057,6 +2062,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             const int  n_drafted = (int) dp.result->size();
             const bool shadow    = rate_mode && rate_ctrl[seq_id].k_next == 0;
+            if (pq) { pq->mtp_end(seq_id, shadow ? 0 : n_cap[seq_id], *dp.result); } // before the shadow's clear
 
             if (shadow) {
                 // depth 0: keep the guess to score against the real next token, verify nothing
