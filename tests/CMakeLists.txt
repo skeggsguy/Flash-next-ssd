@@ -769,6 +769,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-chain-mtp test-speculative-chain-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
+    # FAIR-CHECK-PLAN step 1: the p/q record (LLAMA_SPEC_PQ_RECORD) on the MTP fixture: the same words and rounds with it
+    # on as off at temperature 0 and at 1.0 (seeded), one line a round holding its words, candidates and kept (the rate
+    # trace's), the reading past a miss, and a draft's lattice on its own round's line only
+    llama_build(test-speculative-pq-record-mtp.cpp)
+    llama_test(test-speculative-pq-record-mtp NAME test-speculative-pq-record-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-pq-record-mtp NAME test-speculative-pq-record-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-pq-record-mtp test-speculative-pq-record-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # the record's grammar flags need a vocabulary the fixture lacks: the sampler's draw state and refused count, vocab only
+    llama_build(test-speculative-pq-record-grammar.cpp)
+    llama_test(test-speculative-pq-record-grammar ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
+
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses
     # when the top word is listed, the best listed word when it is not; a bad list fails the apprentice's context

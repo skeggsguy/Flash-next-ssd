@@ -13,6 +13,7 @@
 #include "speculative-rate.h"
 #include "speculative-rate2.h"
 #include "speculative-rate-trace.h"
+#include "speculative-pq-record.h"
 #include "speculative-chain.h"
 #include "speculative-dflash-walk.h"
 #include "spec-phase-log.h"
@@ -230,6 +231,7 @@ struct common_speculative_impl {
     // the wrapper then opens none: one writer a file.
     common_speculative_rate_trace * trace = nullptr; // the wrapper's, set only while the trace is on
     bool accept_replay = false; // set for the accept call: the server re-checked a draft cut short
+    common_spec_pq_record * pq = nullptr; // the wrapper's p/q record (LLAMA_SPEC_PQ_RECORD), set only while it is on
 
     virtual bool has_own_trace() const { return false; }
     virtual int32_t trained_block() const { return 0; } // a block draft's trained block size, for the header
@@ -1355,6 +1357,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 const common_speculative_cut cut(params.p_min, chain_p);
                 if (!wants_conf()) {
                     common_dflash2_walk(lat, cut, params.n_min, result, nullptr);
+                    if (pq) { pq->draft(seq_id, dp.pos0, lat, result); } // before the next decode reuses the rows
                     continue;
                 }
                 const int64_t t_walk = common_speculative_rate_trace::now_us();
@@ -1366,6 +1369,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 note_stop(seq_id, walk_seen.stop);
                 // the whole walk, confidences and argmax both: an upper bound on what the trace adds
                 trace->add_self_us(common_speculative_rate_trace::now_us() - t_walk);
+                if (pq) { pq->draft(seq_id, dp.pos0, lat, result); }
                 continue;
             }
 
@@ -2549,7 +2553,14 @@ struct common_speculative {
 
     // the rate trace for any draft that does not write its own (LLAMA_SPEC_RATE_TRACE, CHAIN-PLAN step 1)
     std::unique_ptr<common_speculative_rate_trace> trace;
+
+    // the p/q record (LLAMA_SPEC_PQ_RECORD, FAIR-CHECK-PLAN step 1)
+    std::unique_ptr<common_spec_pq_record> pq;
 };
+
+common_spec_pq_record * common_speculative_pq_record(const common_speculative * spec) {
+    return spec ? spec->pq.get() : nullptr;
+}
 
 // the wrapper traces only when no impl writes its own trace: one writer a file
 static bool common_speculative_wrapper_traces(const std::vector<std::unique_ptr<common_speculative_impl>> & impls) {
@@ -3210,6 +3221,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
     }
 
     common_speculative_open_trace(result.get(), params, n_seq);
+    result->pq = common_spec_pq_record::open_from_env("LLAMA_SPEC_PQ_RECORD", n_seq);
+    for (auto & impl : result->impls) {
+        impl->pq = result->pq.get();
+    }
 
     return result.release();
 }
@@ -3251,6 +3266,9 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
     if (spec->trace) {
         spec->trace->answer_begin(seq_id, (int) prompt.size(), common_speculative_rate_trace::now_us(),
                 common_speculative_rate_trace::wall_now_us());
+    }
+    if (spec->pq) {
+        spec->pq->answer_begin(seq_id, (int) prompt.size());
     }
 
     for (auto & impl : spec->impls) {

@@ -16,6 +16,7 @@
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
+#include "speculative-pq-record.h"
 #include "spec-phase-log.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -2158,6 +2159,9 @@ private:
             SLT_TRC(slot, "sampler chain: %s\n", common_sampler_print(slot.smpl.get()).c_str());
             SLT_TRC(slot, "sampler params: \n%s\n", task.params.sampling.print().c_str());
 
+            if (common_spec_pq_record * pq = common_speculative_pq_record(spec.get())) {
+                pq->sampling(slot.id, task.params.sampling); // written on the answer's line
+            }
             if (spec && !common_speculative_get_synth_probs(spec.get()).empty()) {
                 const uint32_t seed = task.params.sampling.seed == LLAMA_DEFAULT_SEED
                     ? std::random_device{}()
@@ -4465,6 +4469,9 @@ private:
                 scoped_timer timer(t_sampl, n_sampl);
                 id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, tok_idx);
             }
+            if (common_spec_pq_record * pq = slot.wants_speculation() ? common_speculative_pq_record(spec.get()) : nullptr) {
+                pq->plain(slot.id, slot.prompt.tokens.pos_next() - 1, slot.smpl.get(), id); // a word with no draft
+            }
 
             slot.i_batch = -1;
 
@@ -4523,8 +4530,13 @@ private:
 
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
                 const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
+                // the p/q record (LLAMA_SPEC_PQ_RECORD) checks with the library's own loop, recorded
+                common_spec_pq_record * pq = common_speculative_pq_record(spec.get());
+                const int pos_anchor = slot.prompt.tokens.pos_next() - (int) n_draft - 1;
                 auto accepted = synth_probs.empty()
-                    ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
+                    ? (pq ? pq->accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, slot.id,
+                                         pos_anchor, slot.spec_is_replay)
+                          : common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft))
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
@@ -4545,6 +4557,8 @@ private:
                         if (trace > 0) {
                             SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
                         }
+
+                        if (pq) { pq->check_end(slot.id, /* restore */ true); }
 
                         // partial acceptance is not supported by the context -> truncate the draft and restore the state
                         slot.spec_is_replay = true;
@@ -4577,6 +4591,7 @@ private:
                     SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
                 }
 
+                if (pq) { pq->check_end(slot.id, /* restore */ false); }
                 common_speculative_accept(spec.get(), slot.id, accepted.size() - 1, slot.spec_is_replay);
 
                 slot.spec_draft = std::move(accepted);
