@@ -20,12 +20,25 @@ SSDs, the DFlash draft and both trained guessers on ([what each extra is worth](
 Sources and method are in [Results](docs/flashnext/results.md).
 
 The writing speeds come from two sets of the author's own work, each replayed turn by turn:
-coding-agent conversations at high thinking effort, and chat conversations at medium effort.
+coding-agent conversations at high thinking effort, and chat conversations at medium effort. Each
+conversation is sorted by its context size when it starts, so you can see how writing holds up as
+the context grows.
 
-| | |
+**Writing (decode), tokens/s, by context size**
+
+| | Short (under 16K) | Medium (16-40K) | Long (40-80K) | Over (80K+) | All |
+|---|---|---|---|---|---|
+| **Coding agent** | 29.7 | 26.9 | 25.3 | 25.8 | **26.5** |
+| **Chat** | 28.9 | 30.3 | 29.3 | | **29.3** |
+
+Each size holds 2 to 7 of a set's 12 conversations, so a gap of a token/s or so between neighbouring
+sizes is within one conversation's swing. The chat set has no conversation over 80K. "All" counts
+every written token, so it leans to the sizes that wrote most.
+
+**Reading (prompt processing) and quality**
+
+| | Results |
 |---|---|
-| **Writing (decode), coding agent** | **26.5 tokens/s** |
-| **Writing (decode), chat** | **29.3 tokens/s** |
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup (sat with the MTP draft head: a draft only suggests tokens, and the model checks every one) |

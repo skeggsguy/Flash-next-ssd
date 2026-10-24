@@ -141,6 +141,14 @@ and 39.4 s against 38.4 on coding; the server's peak memory was 43.2 GiB against
 voided and swap stayed at 0. At temperature 0, DFlash at depths 3 and 7 wrote the model's own words
 on the three fixed answers (DF2's checks); those checks ran without the chain stop.
 
+The winner by context size, the README's headline table (tokens/s; each conversation sorted by its
+context when it starts; conversations in brackets):
+
+| Set | Short (under 16K) | Medium (16-40K) | Long (40-80K) | Over (80K+) | All |
+|---|---|---|---|---|---|
+| Coding | 29.74 (4) | 26.93 (2) | 25.28 (3) | 25.75 (3) | 26.47 (12) |
+| Chat | 28.88 (7) | 30.26 (3) | 29.34 (2) | | 29.31 (12) |
+
 From this release DFlash's values are the defaults whenever you choose it: with
 `--spec-type draft-dflash`, the chain stop is 0.5 unless you set `LLAMA_SPEC_CHAIN_P`, and
 `--flashnext` sets depth 7 and p-min 0 ([Settings](settings.md#a-dflash-draft-instead-of-the-head)).
