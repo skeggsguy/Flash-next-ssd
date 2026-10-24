@@ -35,8 +35,9 @@ Each size holds 2 to 7 of a set's 12 conversations, so a gap of a token/s or so 
 sizes is within one conversation's swing. The chat set has no conversation over 80K. "All" counts
 every written token, so it leans to the sizes that wrote most.
 
+| | Performance |
+|---|---|
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
-|:---|:---|
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup (sat with the MTP draft head: a draft only suggests tokens, and the model checks every one) |
 
