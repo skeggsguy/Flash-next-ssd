@@ -144,7 +144,7 @@ on the three fixed answers (DF2's checks); those checks ran without the chain st
 The winner by context size, the README's headline table (tokens/s; each conversation sorted by its
 context when it starts; conversations in brackets):
 
-| Set | Under 16K | 16-40K | 40-80K | Over 80K | All |
+| Set | Short (under 16K) | Medium (16-40K) | Long (40-80K) | Over (80K+) | All |
 |---|---|---|---|---|---|
 | Coding | 29.74 (4) | 26.93 (2) | 25.28 (3) | 25.75 (3) | 26.47 (12) |
 | Chat | 28.88 (7) | 30.26 (3) | 29.34 (2) | | 29.31 (12) |

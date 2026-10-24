@@ -19,14 +19,14 @@ Measured on a Mac mini M5 Pro (64 GB) with Unsloth's UD-Q4_K_XL quant, a 28 GiB 
 SSDs, the DFlash draft and both trained guessers on ([what each extra is worth](#what-each-extra-is-worth)).
 Sources and method are in [Results](docs/flashnext/results.md).
 
-The writing speeds come from two sets of the author's own work, each replayed turn by turn at
-temperature 0: coding-agent conversations at high thinking effort, and chat conversations at medium
-effort. Each conversation is sorted by its context size when it starts, so you can see how writing
-holds up as the context grows.
+The writing speeds come from two sets of the author's own work, each replayed turn by turn:
+coding-agent conversations at high thinking effort, and chat conversations at medium effort. Each
+conversation is sorted by its context size when it starts, so you can see how writing holds up as
+the context grows.
 
 **Writing (decode), tokens/s, by context size**
 
-| | Small (under 16K) | Medium (16-40K) | Large (40-80K) | Over 80K | All |
+| | Short (under 16K) | Medium (16-40K) | Long (40-80K) | Over (80K+) | All |
 |---|---|---|---|---|---|
 | **Coding agent** | 29.7 | 26.9 | 25.3 | 25.8 | **26.5** |
 | **Chat** | 28.9 | 30.3 | 29.3 | | **29.3** |
