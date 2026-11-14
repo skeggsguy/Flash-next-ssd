@@ -151,6 +151,7 @@ endif ()
 llama_build(test-recurrent-state-rollback.cpp)
 llama_build(test-rs-skip-slots.cpp)
 llama_build(test-save-load-state.cpp)
+llama_build(test-state-seq-stream.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
@@ -550,6 +551,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         ARGS --models "${MODEL_DIR}"
     )
     set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED generate-models)
+
+    # BOOKMARK-SHELF-PLAN step 2: llama_state_seq_write_stream / _read_stream give get_data_ext's bytes, on a dense
+    # model and on hybrid (KV + recurrent) ones
+    foreach (STREAM_MODEL qwen3-dense qwen35-dense qwen4exp-moe)
+        llama_test(
+            test-state-seq-stream
+            NAME test-state-seq-stream-${STREAM_MODEL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${STREAM_MODEL}.gguf" -ngl 0
+        )
+        set_tests_properties(test-state-seq-stream-${STREAM_MODEL} PROPERTIES FIXTURES_REQUIRED generate-models)
+    endforeach()
 
     # qwen4exp's indexer cache, with the QSA block summaries rebuilt every ubatch (switch off) and kept (patch 4i)
     llama_test(
