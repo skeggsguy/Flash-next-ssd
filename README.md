@@ -20,12 +20,25 @@ SSDs, the DFlash draft and both trained guessers on ([what each extra is worth](
 Sources and method are in [Results](docs/flashnext/results.md).
 
 The writing speeds come from two sets of the author's own work, each replayed turn by turn:
-coding-agent conversations at high thinking effort, and chat conversations at medium effort.
+coding-agent conversations at high thinking effort, and chat conversations at medium effort. Each
+conversation is sorted by its context size when it starts, so you can see how writing holds up as
+the context grows.
 
-| | |
+**Writing (decode), tokens/s, by context size**
+
+| | Short (under 16K) | Medium (16-40K) | Long (40-80K) | Over (80K+) | All |
+|---|---|---|---|---|---|
+| **Coding agent** | 29.7 | 26.9 | 25.3 | 25.8 | **26.5** |
+| **Chat** | 28.9 | 30.3 | 29.3 | | **29.3** |
+
+Each size holds 2 to 7 of a set's 12 conversations, so a gap of a token/s or so between neighbouring
+sizes is within one conversation's swing. The chat set has no conversation over 80K. "All" counts
+every written token, so it leans to the sizes that wrote most.
+
+**Reading (prompt processing) and quality**
+
+| | Results |
 |---|---|
-| **Writing (decode), coding agent** | **26.5 tokens/s** |
-| **Writing (decode), chat** | **29.3 tokens/s** |
 | **A new chat while a coding agent works** | **3.5-4.1 s** to the first token, from 14.2 s: the chat's opening comes back from RAM instead of being read in again, also when the agent had the server first |
 | **Reading a prompt (prefill)** | **523 / 430 / 391 tokens/s** at 4K / 32K / 100K tokens, from cold |
 | **Quality** | **18/20** on a fixed 20-task exam, the same score as the plain setup (sat with the MTP draft head: a draft only suggests tokens, and the model checks every one) |
@@ -129,6 +142,31 @@ header (`X-Lane: code`). `--flashnext` turns it on at 90 s (`--chat-window 90`);
 it changes nothing.
 
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
+
+### The bookmark shelf (optional)
+
+The server has one slot. When another conversation takes it, the old conversation's place (its KV cache
+and recurrent state) is overwritten, and when that conversation comes back the server reads its whole
+history in again: minutes at 100K tokens and more. With `--cache-disk DIR`, every conversation leaving
+the slot is saved whole to a file in that folder (the model's state, the draft's state and the context
+checkpoints) and read back when it returns, so only its new text is read in. In the study, a 150K-token
+conversation came back to its first written token in 4.5 s (a 1.25 s load) instead of about 6 minutes,
+with the same output as if it had never left.
+
+- **Any SSD, internal or external.** The files are written and read past macOS's file cache, so a
+  multi-GB save doesn't crowd the model's memory.
+- **Sizes:** about 0.5 GiB plus 27 KiB a token with the DFlash draft and `-ctxcp 3` (the three
+  checkpoints are 338 MiB of it, the draft's state about 43 MiB): 1.7 GiB at 50K tokens, 4.3 GiB at
+  150K, about 5.6 GiB at 200K.
+- **The limit:** `--cache-disk-gib N` (default 100); the oldest conversations are deleted first. At
+  start it is capped to the drive's free space less 10% of it (one log line says so), and before each
+  save the free space is checked again.
+- **Off by default**, and `--flashnext` doesn't turn it on: not everyone has the room. Without it, the
+  RAM copy of chat's opening (`--cache-ram 400 --cache-ram-opening`) works as before; with it, the shelf
+  takes that copy's place.
+- The folder must exist; its `bookmark-*.shelf` files are deleted when the server starts, and it is one
+  server per folder. The log shows each `bookmark shelf: saved` and `loaded` line with tokens, MiB and ms
+  ([Settings](docs/flashnext/settings.md)).
 
 ### And smaller wins, all on by default
 
@@ -247,6 +285,12 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
 - **Pictures:** add `--mmproj ~/models/flashnext/mmproj-BF16.gguf`.
 - **A coding agent sharing the server:** have it send the header `X-Lane: code`. `--flashnext`
   already turns on the 90-second [chat window](#the-chat-window), so your chats go first.
+- **Keep every conversation's place on an SSD (the bookmark shelf):** make a folder on any SSD, internal or
+  external, and add `--cache-disk /path/to/shelf --cache-disk-gib 300`. When another conversation takes the
+  server (a coding agent after your chat, a sub-agent after its parent), the one leaving is saved there whole,
+  and it is read back when it returns: a 150K-token conversation is back writing in about 4.5 s instead of
+  reading its whole history in again (about 6 minutes). Off unless you give the folder
+  ([the bookmark shelf](#the-bookmark-shelf-optional)).
 - **Or the MTP draft head instead of DFlash (1.9 GB):** download it and give it to `-md` in step 4
   in place of the DFlash file. `--flashnext` picks its settings from the file. DFlash writes about
   9-11% faster ([what each extra is worth](#what-each-extra-is-worth)).
@@ -258,8 +302,9 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
   shasum -a 256 $D/mtp-shared-Q4_K_M.gguf   # 2b468e0a490c7a8e46c66e6e9feb8c02a9c5d8f2aed276a951ef10f8c227f12c
   ```
 
-With all three, you're running the study's everyday server. The only differences are where its
-files sit and the statistics it records for the study.
+With the second SSD, pictures, the coding agent's header and the bookmark shelf, you're running the
+study's everyday server. The only differences are where its files sit and the statistics it records
+for the study.
 
 **Watch your memory.** Leave about 18 GiB free for macOS and your apps, more if you run heavy ones
 ([Choose your size](#choose-your-size)). If you see swap (`sysctl vm.swapusage`), step the cache
@@ -396,7 +441,7 @@ upstream's defaults are untouched.
 | `-np 1` | One conversation at a time: each extra one costs memory the expert cache needs. |
 | `-fa on` | Flash attention, which this model's sparse attention needs to read a prompt. |
 | `--cache-reuse 0` | Off, as the study ran it. |
-| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. |
+| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. With [the bookmark shelf](#the-bookmark-shelf-optional) on, the shelf takes its place. |
 | `--chat-window 90` | Chat goes first when a coding agent shares the server. Does nothing until a client sends `X-Lane: code`. |
 | `--jinja --reasoning-format deepseek` | The model's chat template, with its thinking returned apart from the answer. |
 | With the DFlash draft (`-md` and its file): `--spec-type draft-dflash`, from the file, `--spec-draft-n-max 7 --spec-draft-p-min 0 --spec-draft-ngl 99 --spec-max-prompt 0` | The DFlash draft, up to 7 tokens ahead, cut by the chain stop rather than by each token's confidence, on the GPU, for prompts of any length. |
@@ -418,6 +463,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | The two trained guessers (downloads, 121 and 123 MB) | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=` and `LLAMA_MOE_STREAM_GUESSER1=`, each with its file | Environment variables, not flags. Naming the two-layer guesser also turns on its tuning and the keep rule. |
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
 | A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
+| The bookmark shelf | `--cache-disk` with a folder on any SSD, `--cache-disk-gib 300` | Every conversation's place kept on the SSD, read back when it returns ([The bookmark shelf](#the-bookmark-shelf-optional)). The study's everyday server keeps it on its second SSD. |
 | The GPU's wired-memory limit | `sudo sysctl iogpu.wired_limit_mb=59392` | [Quick start](#quick-start), step 3. |
 
 ## What each extra is worth
@@ -434,6 +480,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | Or the MTP draft head (download, 1.9 GB) | **+23%** writing on agent work (tool calls, code) over no draft; about even on plain prose | Plain one-token-at-a-time writing |
 | The two trained guessers (downloads, 121 + 123 MB) | About **+12%** coding, **+16%** chat (an estimate from two runs) | The engine's own rougher guess |
 | A second SSD | **+15%** writing, **-31%** time to first token | One drive does all the reading |
+| The bookmark shelf | A conversation coming back after another took the server: first token in **4.5 s** at 150K instead of about 6 minutes | It reads its whole history in again |
 
 These were measured one at a time, at different stages of the tuning, so don't just add them up. Each one counts, though.
 

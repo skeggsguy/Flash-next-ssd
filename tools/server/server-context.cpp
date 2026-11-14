@@ -6,6 +6,7 @@
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
+#include "server-shelf.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -1180,6 +1181,9 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
+    // the bookmark shelf (--cache-disk, server-shelf.h): when on, it takes the prompt cache's place
+    std::unique_ptr<server_shelf> shelf;
+
     server_metrics metrics;
 
     // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
@@ -1280,6 +1284,10 @@ private:
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
+
+        if (!shelf_open()) {
+            return false;
+        }
 
         const bool has_mmproj = !params.mmproj.path.empty();
         const bool has_draft = params.speculative.has_dft();
@@ -1671,7 +1679,10 @@ private:
             batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
-        if (params_base.cache_ram_mib != 0) {
+        if (shelf) {
+            SRV_WRN("bookmark shelf: on, it replaces the RAM cache (--cache-ram %d MiB%s: not used)\n",
+                    params_base.cache_ram_mib, params_base.cache_ram_opening ? ", --cache-ram-opening's opening-only rule" : "");
+        } else if (params_base.cache_ram_mib != 0) {
             if (params_base.cache_ram_mib < 0) {
                 SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
             } else {
@@ -1683,7 +1694,7 @@ private:
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
-        if (params_base.cache_ram_opening) {
+        if (params_base.cache_ram_opening && !shelf) {
             if (!prompt_cache) {
                 SRV_WRN("%s", "opening copy: off, it needs --cache-ram\n");
             } else if (!ckpt_pin || params_base.n_ctx_checkpoints < 2) {
@@ -1770,7 +1781,7 @@ private:
         metrics.init();
 
         if (params_base.cache_idle_slots) {
-            if (params_base.cache_ram_mib == 0) {
+            if (params_base.cache_ram_mib == 0 && !shelf) {
                 SRV_WRN("%s", "--cache-idle-slots requires --cache-ram, disabling\n");
                 params_base.cache_idle_slots = false;
             } else {
@@ -1986,6 +1997,11 @@ private:
         }
 
         if (ret) {
+            // never a seat still running a task (a slot asked for by id can be busy: the task then waits)
+            if (shelf && task.type == SERVER_TASK_TYPE_COMPLETION && !ret->is_processing()) {
+                shelf_hand_on(*ret, task, update_cache);
+            }
+
             update_cache = update_cache && prompt_cache;
 
             // cache prompts only for completion tasks
@@ -2680,6 +2696,57 @@ private:
         return true;
     }
 
+    // --cache-disk: opens the bookmark shelf (server-shelf.h), or refuses the start with why; off: nothing
+    bool shelf_open() {
+        shelf.reset();
+        if (params_base.cache_disk_dir.empty()) {
+            return true;
+        }
+        auto sh = std::make_unique<server_shelf>();
+        const uint64_t asked = (uint64_t) params_base.cache_disk_gib * 1024ull * 1024ull * 1024ull;
+        const std::string why = sh->open(params_base.cache_disk_dir, asked);
+        if (!why.empty()) {
+            SRV_ERR("bookmark shelf: --cache-disk %s: %s; the server does not start without it\n",
+                    params_base.cache_disk_dir.c_str(), why.c_str());
+            return false;
+        }
+        const double gib = 1024.0 * 1024.0 * 1024.0;
+        if (sh->lim.capped) {
+            SRV_WRN("bookmark shelf: --cache-disk-gib %d asked, the drive has %.1f GiB free, the shelf uses %.1f GiB "
+                    "(%.1f GiB, 10%% of the free space, is kept free)\n", params_base.cache_disk_gib,
+                    sh->free_at_open / gib, sh->lim.limit / gib, sh->lim.reserve / gib);
+        }
+        SRV_WRN("bookmark shelf: %s, limit %.1f GiB, the drive has %.1f GiB free; every conversation leaving the seat "
+                "is saved there and read back when it returns\n", sh->dir.c_str(), sh->lim.limit / gib,
+                sh->free_at_open / gib);
+        shelf = std::move(sh);
+        return true;
+    }
+
+    server_shelf_seat shelf_seat(const server_slot & slot) const {
+        return { slot.ctx_tgt, slot.ctx_dft, slot.spec, slot.id };
+    }
+
+    // The bookmark shelf's hand-over (--cache-disk, server_shelf_hand_on): every lane saves and loads, and the RAM
+    // store's lane rules (--cache-ram-opening) do not apply. The bookmark about to be loaded is never dropped to make
+    // room for the seat's save. A failed load clears the seat, which then reads in, as the store does.
+    void shelf_hand_on(server_slot & slot, const server_task & task, bool losing) {
+        const size_t n_seat = slot.prompt.tokens.size();
+        const size_t lcp    = n_seat > 0 ? slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+        if (server_shelf_carries_on(n_seat, lcp)) {
+            return;
+        }
+
+        const uint64_t pick = shelf->pick(slot.prompt.tokens, task.tokens);
+        const server_shelf_hand hand = server_shelf_hand_on(n_seat, lcp, losing, pick);
+        if (hand.save) {
+            server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, pick);
+        }
+        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), pick, slot.prompt, slot.spec_context_synced)) {
+            slot.prompt_clear();
+        }
+    }
+
     // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the
     // seat is first stepped back to its pinned copy with the checkpoint restore (load the fixed summary, drop the
     // context memory past it in the library and the apprentice, trim the tokens, keep only that copy), or nothing is
@@ -2687,6 +2754,9 @@ private:
     // carries no copies, the seat keeps its pin. The caller decides the lane, and must overwrite or clear the seat
     // after a step back.
     bool slot_store_save(server_slot & slot) {
+        if (shelf) {
+            return server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, 0);
+        }
         if (!params_base.cache_ram_opening) {
             return slot.prompt_save(*prompt_cache);
         }
@@ -2931,12 +3001,14 @@ private:
                                 SLT_TRC(slot, "%s", "saving idle slot to prompt cache\n");
 
                                 // --cache-ram-opening steps the seat back, so only when it is cleared right after
-                                const bool save = !params_base.cache_ram_opening ||
+                                const bool save = shelf || !params_base.cache_ram_opening ||
                                     (params_base.kv_unified && slot.lane_last != SERVER_LANE_CODE);
 
                                 if (save && slot_store_save(slot)) {
                                     SLT_DBG(slot, "%s", "__TEST_TAG_CACHE_IDLE_SLOT__\n");
-                                    prompt_cache->update();
+                                    if (prompt_cache) {
+                                        prompt_cache->update();
+                                    }
                                 }
 
                                 if (params_base.kv_unified) {

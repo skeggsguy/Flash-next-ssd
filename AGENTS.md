@@ -11,6 +11,8 @@ Apple Silicon. Read [README.md](README.md) and [docs/flashnext/](docs/flashnext/
 - The draft head's recording and token list: `src/llama-mtp-record.cpp`, `src/llama-mtp-vocab.cpp`.
 - The n-gram shelf: `src/llama-ple-shelf*.cpp`.
 - The chat window: `tools/server/server-lane.cpp`.
+- The bookmark shelf (the prompt cache on disk, `--cache-disk`): `tools/server/server-shelf*.cpp`, and
+  `llama_state_seq_write_stream` / `_read_stream` in `src/llama-context.cpp`.
 - Command-line options: `common/arg.cpp`. Every flag in the guides must exist there.
 - Tests: `tests/test-moe-*.cpp`, `tests/test-qsa-*.cpp`, `tests/test-*mtp*.cpp`, `tests/test-server-*.cpp`.
 
