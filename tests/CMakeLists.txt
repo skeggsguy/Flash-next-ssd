@@ -289,6 +289,10 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # PLAN #31: the pin learns lanes, the opening copy refuses a pin inside the system prompt, test-server-ckpt-pin-lanes.cpp
     llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp test-server-ckpt-pin-opening.cpp test-server-ckpt-pin-lanes.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    # BOOKMARK-SHELF-PLAN.md step 2: the bookmark shelf (--cache-disk, server-shelf.h): its rules, files and folder, no model
+    llama_build_and_test(test-server-shelf.cpp test-server-shelf-file.cpp)
+    target_include_directories(test-server-shelf PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-shelf PRIVATE server-context)
     # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
     llama_build_and_test(test-server-anthropic.cpp)
     target_include_directories(test-server-anthropic PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)

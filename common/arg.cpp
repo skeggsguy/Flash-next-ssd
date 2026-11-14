@@ -1773,6 +1773,29 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_RAM_OPENING").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--cache-disk"}, "DIR",
+        "keep the prompt cache on disk: a folder on any SSD, internal or external. Every conversation leaving a slot "
+        "is saved there whole (with the draft model's state and the context checkpoints), one file each, and read "
+        "back when it returns instead of being processed again (~1-2 s for a 200K-token conversation). Replaces the "
+        "RAM cache: --cache-ram's limit and --cache-ram-opening's opening-only rule do not apply. The folder must "
+        "exist; its bookmark-*.shelf files are deleted at start. One server per folder (default: off)",
+        [](common_params & params, const std::string & value) {
+            params.cache_disk_dir = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_DISK").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--cache-disk-gib"}, "N",
+        string_format("with --cache-disk: the most it may hold in GiB, oldest conversations deleted first; capped at "
+            "start to the drive's free space less 10%% of it, and a save is skipped when the drive has filled up "
+            "(default: %d)", params.cache_disk_gib),
+        [](common_params & params, int value) {
+            if (value <= 0) {
+                throw std::invalid_argument("--cache-disk-gib must be at least 1");
+            }
+            params.cache_disk_gib = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_DISK_GIB").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--context-shift"},
         {"--no-context-shift"},
         string_format("whether to use context shift on infinite text generation (default: %s)", params.ctx_shift ? "enabled" : "disabled"),
