@@ -13,6 +13,10 @@
 // the shelf's files are deleted at open (a bookmark is only valid for the engine and model that wrote it); a save
 // that does not fit is skipped, never half-written. Off unless --cache-disk is given.
 //
+// And borrowing (study SHELF-BORROW-PLAN.md, server-shelf-borrow.cpp): when the 25% rule finds nothing, a new
+// conversation may load an old bookmark only to step back to one of its saved copies (usually the pinned one at the
+// end of the shared opening) and read in just its own text; that file stays on the shelf, moved to the newest end.
+//
 // Rules and the file format live here, free of a model, so test-server-shelf covers them; the llama side (a seat's
 // states streamed in and out) is in server-shelf-seat.cpp, and server-context.cpp decides when to save and load.
 
@@ -84,6 +88,37 @@ struct server_shelf_entry {
     server_tokens tokens;   // the conversation, for the choice; everything else is in the file
     std::string   path;
     uint64_t      size = 0; // the file's bytes
+
+    std::vector<int64_t> copies;           // the saved copies' positions (each copy's n_tokens), for borrowing
+    bool                 spec_synced = true; // the apprentice's memory covers the whole conversation (the file's flag)
+};
+
+// the saved copies' positions (each copy's n_tokens), in the list's order
+std::vector<int64_t> server_shelf_copy_positions(const std::list<common_prompt_checkpoint> & ckpts);
+
+// Borrowing's time rule (server-shelf-borrow.cpp): a borrow loads a whole bookmark to skip reading in part of one, so
+// it must save at least SERVER_SHELF_BORROW_MARGIN_S. The rates are the study's measured ones (results/bookmark-shelf,
+// desk 28, the annex), each taken at the end that makes a borrow look worse: reading in at its fastest (407-440
+// tokens a second measured, 440 at 48K) and loading at its slowest (3.7-4.7 GB/s measured, 3.71 at 150K), so a
+// borrow is only taken when it surely saves the margin. Other drives and models move both rates; the margin absorbs
+// some of it, and a borrow of a ~4K opening saves ~9 s, far past it.
+constexpr double SERVER_SHELF_BORROW_READ_TPS = 440.0; // reading in, tokens a second
+constexpr double SERVER_SHELF_BORROW_LOAD_BPS = 3.7e9; // loading a bookmark, bytes a second
+constexpr double SERVER_SHELF_BORROW_MARGIN_S = 1.0;   // seconds a borrow must save
+
+// does loading size bytes instead of reading in n_read tokens save at least the margin
+bool server_shelf_borrow_saves(int64_t n_read, uint64_t size);
+
+// how much of the task the seat keeps by itself (the read-in's own reuse, server-context.cpp SLOT_STATE_STARTED):
+// all the tokens it shares when its memory can drop its tail anywhere (cuts_anywhere: no recurrent part, as the
+// read-in finds it from the memory's pos_min); otherwise only up to its newest saved copy within them, or nothing
+int64_t server_shelf_seat_reach(const server_prompt & seat, const server_tokens & task, bool cuts_anywhere);
+
+// what a task takes from the shelf: the store's pick, or a borrow
+struct server_shelf_take {
+    uint64_t id     = 0;  // the entry, 0: none
+    int64_t  borrow = -1; // a borrow: the copy's position the read-in steps back to; -1: the store's pick
+    int64_t  shared = 0;  // (a borrow) the tokens the entry shares with the task
 };
 
 struct server_shelf {
@@ -110,6 +145,16 @@ struct server_shelf {
     // covered (f_sim), never one keeping under 25% of itself; its id, or 0
     uint64_t pick(const server_tokens & seat, const server_tokens & task) const;
 
+    // borrowing (server-shelf-borrow.cpp), for when pick finds nothing: an entry with a saved copy at p where p is no
+    // more than the tokens it shares with the task (the read-in's restore can land on it) and under the task's
+    // length, past the seat's own reach (server_shelf_seat_reach), and where loading the file instead of reading in
+    // p less that reach saves time (server_shelf_borrow_saves). Entries whose apprentice is behind are passed over
+    // (the read-in would start from 0). The largest p wins; on a tie, the smallest file; then the oldest
+    server_shelf_take borrow_pick(const server_prompt & seat, const server_tokens & task, bool seat_cuts_anywhere) const;
+
+    // pick, else borrow_pick
+    server_shelf_take take(const server_prompt & seat, const server_tokens & task, bool seat_cuts_anywhere) const;
+
     // an entry already holds all of tokens: a save would add nothing
     bool holds(const server_tokens & tokens) const;
 
@@ -124,6 +169,14 @@ struct server_shelf {
 
     // the entry leaves the shelf and its file is deleted
     void drop(uint64_t id);
+
+    // a saved bookmark joins the shelf at the newest end, with its copies' positions
+    void add(uint64_t id, server_tokens tokens, const std::string & path, uint64_t size,
+            const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced);
+
+    // after a load: the entry's tokens; a borrow (keep) leaves the file on the shelf and moves the entry to the
+    // newest end, so the shelf's best opening is not the first deleted for room; otherwise the entry is dropped
+    server_tokens hand_out(uint64_t id, bool keep);
 };
 
 //
@@ -171,6 +224,8 @@ bool server_shelf_save_seat(server_shelf & shelf, const server_shelf_seat & seat
         bool spec_synced, uint64_t keep_id);
 
 // loads entry id into the seat: its states, prompt (tokens and copies) and the apprentice's carry state, reset
-// first; the entry leaves the shelf either way. false: the seat's memory is half-written, the caller clears it
+// first. The entry leaves the shelf, unless the load is a borrow (borrow_at >= 0, the copy the read-in will step
+// back to, for the log): then its file stays and it moves to the newest end. A file that fails to load is dropped
+// either way. false: the seat's memory is half-written, the caller clears it
 bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat, uint64_t id,
-        server_prompt & prompt, bool & spec_synced);
+        server_prompt & prompt, bool & spec_synced, int64_t borrow_at = -1);

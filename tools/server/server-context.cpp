@@ -1668,8 +1668,15 @@ private:
         }
 
         if (shelf) {
-            SRV_WRN("bookmark shelf: on, it replaces the RAM cache (--cache-ram %d MiB%s: not used)\n",
-                    params_base.cache_ram_mib, params_base.cache_ram_opening ? ", --cache-ram-opening's opening-only rule" : "");
+            // --cache-ram-opening's RAM copy goes with the RAM cache, but its pin (server_ckpt_pin_first_user) stays:
+            // it is the copy at the end of the opening that a new chat borrows from an old bookmark
+            const bool pin_ok = ckpt_pin && params_base.n_ctx_checkpoints >= 2;
+            const char * opening = !params_base.cache_ram_opening ? "" :
+                pin_ok ? "; --cache-ram-opening's pin stays on: a chat's first user message keeps a copy, which a new "
+                         "chat can borrow from the shelf" :
+                         "; --cache-ram-opening is given, but with no bookmark pin nothing keeps the opening's copy";
+            SRV_WRN("bookmark shelf: on, it replaces the RAM cache (--cache-ram %d MiB: not used)%s\n",
+                    params_base.cache_ram_mib, opening);
         } else if (params_base.cache_ram_mib != 0) {
             if (params_base.cache_ram_mib < 0) {
                 SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
@@ -2710,7 +2717,9 @@ private:
 
     // The bookmark shelf's hand-over (--cache-disk, server_shelf_hand_on): every lane saves and loads, and the RAM
     // store's lane rules (--cache-ram-opening) do not apply. The bookmark about to be loaded is never dropped to make
-    // room for the seat's save. A failed load clears the seat, which then reads in, as the store does.
+    // room for the seat's save. A failed load clears the seat, which then reads in, as the store does. When the 25%
+    // rule finds nothing, the task may borrow (server_shelf::borrow_pick): the same save and load, the file kept,
+    // and the read-in then steps back to the borrowed copy.
     void shelf_hand_on(server_slot & slot, const server_task & task, bool losing) {
         const size_t n_seat = slot.prompt.tokens.size();
         const size_t lcp    = n_seat > 0 ? slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
@@ -2718,14 +2727,32 @@ private:
             return;
         }
 
-        const uint64_t pick = shelf->pick(slot.prompt.tokens, task.tokens);
-        const server_shelf_hand hand = server_shelf_hand_on(n_seat, lcp, losing, pick);
-        if (hand.save) {
-            server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, pick);
+        server_shelf_take take;
+        take.id = shelf->pick(slot.prompt.tokens, task.tokens);
+        if (take.id == 0 && task.params.cache_prompt) { // a task not reusing the cache reads in from 0 anyway
+            take = shelf->borrow_pick(slot.prompt, task.tokens, shelf_seat_cuts_anywhere(slot, task, lcp));
         }
-        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), pick, slot.prompt, slot.spec_context_synced)) {
+        const server_shelf_hand hand = server_shelf_hand_on(n_seat, lcp, losing, take.id);
+        if (hand.save) {
+            server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, take.id);
+        }
+        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), take.id, slot.prompt,
+                    slot.spec_context_synced, take.borrow)) {
             slot.prompt_clear();
         }
+    }
+
+    // can the seat keep the lcp tokens it shares with the task without a saved copy? The read-in's own test
+    // (SLOT_STATE_STARTED): its memory's first position lies below the point past which a copy is needed. A recurrent
+    // part (qwen3next's hybrid memory) starts at the end, so it never does
+    bool shelf_seat_cuts_anywhere(const server_slot & slot, const server_task & task, size_t lcp) const {
+        if (lcp == 0) {
+            return false;
+        }
+        const llama_pos pos_next       = slot.prompt.tokens.pos_next((int64_t) lcp);
+        const bool      has_new_tokens = lcp < task.tokens.size();
+        const llama_pos thold          = std::max(0, pos_next - n_swa - (has_new_tokens ? 0 : 1));
+        return llama_memory_seq_pos_min(llama_get_memory(slot.ctx_tgt), slot.id) < thold;
     }
 
     // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the

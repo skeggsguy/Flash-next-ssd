@@ -197,6 +197,43 @@ void server_shelf::drop(uint64_t id) {
     }
 }
 
+void server_shelf::add(uint64_t id, server_tokens tokens, const std::string & path, uint64_t size,
+        const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced) {
+    server_shelf_entry e;
+    e.id          = id;
+    e.tokens      = std::move(tokens);
+    e.path        = path;
+    e.size        = size;
+    e.copies      = server_shelf_copy_positions(ckpts);
+    e.spec_synced = spec_synced;
+    entries.push_back(std::move(e));
+}
+
+server_tokens server_shelf::hand_out(uint64_t id, bool keep) {
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+        if (it->id != id) {
+            continue;
+        }
+        if (keep) {
+            entries.splice(entries.end(), entries, it); // the newest end; the entry itself is not moved in memory
+            return it->tokens.clone();
+        }
+        server_tokens tokens = std::move(it->tokens);
+        drop(id);
+        return tokens;
+    }
+    return server_tokens();
+}
+
+std::vector<int64_t> server_shelf_copy_positions(const std::list<common_prompt_checkpoint> & ckpts) {
+    std::vector<int64_t> res;
+    res.reserve(ckpts.size());
+    for (const auto & c : ckpts) {
+        res.push_back(c.n_tokens);
+    }
+    return res;
+}
+
 //
 // the file
 //
