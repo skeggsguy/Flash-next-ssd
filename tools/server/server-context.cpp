@@ -591,8 +591,8 @@ struct server_slot {
 
     // where the seat's own reply began (server_shelf_reply_from of the task that wrote it), for the bookmark shelf's
     // save: a later request sharing that much is the same conversation coming back (SHELF-BORROW-PLAN step 5). Kept
-    // past the task (the save runs after reset() has moved it to task_prev); set at launch, from the entry after a
-    // shelf load, 0 when the seat is cleared, and the seat's whole length on any other path that rewrites its tokens
+    // past the task (the save runs after reset() has moved it to task_prev); set at the read-in, from the entry after a
+    // shelf load, 0 when the seat is cleared (tokens only follow a launch, which makes it strict), and the seat's whole length on any other path that rewrites its tokens
     int64_t reply_from = 0;
 
     // sampling
@@ -2207,7 +2207,9 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
-        slot.reply_from = server_shelf_reply_from(slot.task->params.message_spans, slot.task->n_tokens());
+        // the task's own anchor is taken at the read-in (SLOT_STATE_STARTED), where the seat's tokens are rewritten;
+        // until then (a task released before it, an error) the seat holds the old tokens, so the strict anchor
+        slot.reply_from = slot.prompt.n_tokens();
         slot.lane_prev = slot.lane_last;
         slot.lane_last = slot.task->lane;
 
@@ -4080,6 +4082,8 @@ private:
                         metrics.add_prompt_cached(n_past);
 
                         slot.prompt.tokens.keep_first(n_past);
+                        // from here the seat's tokens past n_past are this task's: its reply began at its own anchor
+                        slot.reply_from = server_shelf_reply_from(slot.task->params.message_spans, slot.task->n_tokens());
 
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
