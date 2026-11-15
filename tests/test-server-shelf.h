@@ -1,7 +1,7 @@
 #pragma once
 
-// helpers shared by test-server-shelf.cpp, test-server-shelf-file.cpp and test-server-shelf-borrow.cpp (one test,
-// three files to stay short)
+// helpers shared by test-server-shelf.cpp, test-server-shelf-file.cpp, test-server-shelf-borrow.cpp and
+// test-server-shelf-reply.cpp (one test, four files to stay short)
 
 #include "server-shelf.h"
 
@@ -52,3 +52,6 @@ void test_folder();
 
 // in test-server-shelf-borrow.cpp
 void test_borrow();
+
+// in test-server-shelf-reply.cpp
+void test_reply();

@@ -157,7 +157,7 @@ server_shelf_room server_shelf::room_for(const server_tokens & tokens, uint64_t 
         server_shelf_room_item it;
         it.size       = e.size;
         it.keep       = e.id == keep_id;
-        it.superseded = e.tokens.get_common_prefix(tokens) == e.tokens.size();
+        it.superseded = (int64_t) e.tokens.get_common_prefix(tokens) >= e.reply_start(); // the same conversation
         items.push_back(it);
     }
 
@@ -198,7 +198,7 @@ void server_shelf::drop(uint64_t id) {
 }
 
 void server_shelf::add(uint64_t id, server_tokens tokens, const std::string & path, uint64_t size,
-        const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced) {
+        const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced, int64_t reply_from) {
     server_shelf_entry e;
     e.id          = id;
     e.tokens      = std::move(tokens);
@@ -206,6 +206,7 @@ void server_shelf::add(uint64_t id, server_tokens tokens, const std::string & pa
     e.size        = size;
     e.copies      = server_shelf_copy_positions(ckpts);
     e.spec_synced = spec_synced;
+    e.reply_from  = reply_from;
     entries.push_back(std::move(e));
 }
 

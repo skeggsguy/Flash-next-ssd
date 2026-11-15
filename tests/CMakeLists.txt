@@ -292,7 +292,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     # BOOKMARK-SHELF-PLAN.md step 2: the bookmark shelf (--cache-disk, server-shelf.h): its rules, files and folder, no model
     # SHELF-BORROW-PLAN.md step 2: borrowing, a new conversation loading an old bookmark for the opening it shares
-    llama_build_and_test(test-server-shelf.cpp test-server-shelf-file.cpp test-server-shelf-borrow.cpp)
+    llama_build_and_test(test-server-shelf.cpp test-server-shelf-file.cpp test-server-shelf-borrow.cpp test-server-shelf-reply.cpp)
     target_include_directories(test-server-shelf PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-server-shelf PRIVATE server-context)
     # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model

@@ -90,13 +90,26 @@ server_shelf_take server_shelf::take(const server_prompt & seat, const server_to
     return borrow_pick(seat, task, seat_cuts_anywhere);
 }
 
+int64_t server_shelf_reply_from(const common_chat_msg_spans & spans, int64_t n_tokens) {
+    n_tokens = std::max<int64_t>(0, n_tokens);
+    if (!spans.spans.empty() && spans.spans.back().role == COMMON_CHAT_ROLE_ASSISTANT) {
+        return std::min<int64_t>((int64_t) spans.spans.back().pos, n_tokens);
+    }
+    return std::max<int64_t>(0, n_tokens - 4);
+}
+
+// The same conversation (SHELF-BORROW-PLAN.md step 5): a return never matches its bookmark word for word (the template
+// re-renders the last reply: tool calls re-written, whitespace tidied), so "shares all of it" kept every return's old
+// file beside its next save. A return shares everything up to where the library's reply began (reply_start); another
+// conversation that the 25% rule picks (a new chat at 34% of a short one, an edited last message, a sub-agent sharing
+// a system prompt) parts before it.
 server_shelf_take server_shelf::pick_take(const server_tokens & seat, const server_tokens & task) const {
     server_shelf_take res;
     res.id = pick(seat, task);
     for (const auto & e : entries) {
         if (e.id == res.id && res.id != 0) {
             res.shared = (int64_t) e.tokens.get_common_prefix(task);
-            res.keep   = res.shared < (int64_t) e.tokens.size();
+            res.keep   = res.shared < e.reply_start(); // parts before the old reply began: another conversation
         }
     }
     return res;
