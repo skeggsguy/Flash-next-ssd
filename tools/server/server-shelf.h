@@ -16,6 +16,9 @@
 // And borrowing (study SHELF-BORROW-PLAN.md, server-shelf-borrow.cpp): when the 25% rule finds nothing, a new
 // conversation may load an old bookmark only to step back to one of its saved copies (usually the pinned one at the
 // end of the shared opening) and read in just its own text; that file stays on the shelf, moved to the newest end.
+// The same conversation is told by where its reply began (study SHELF-BORROW-PLAN.md step 5, reply_from): a request
+// sharing that much is a return, which takes its file off and supersedes it at the next save; one parting before it
+// is another conversation, which keeps it.
 //
 // Rules and the file format live here, free of a model, so test-server-shelf covers them; the llama side (a seat's
 // states streamed in and out) is in server-shelf-seat.cpp, and server-context.cpp decides when to save and load.
@@ -91,7 +94,23 @@ struct server_shelf_entry {
 
     std::vector<int64_t> copies;           // the saved copies' positions (each copy's n_tokens), for borrowing
     bool                 spec_synced = true; // the apprentice's memory covers the whole conversation (the file's flag)
+
+    // where the library's own writing began in this conversation (server_shelf_reply_from of the task that wrote
+    // it); -1: not known. A request sharing at least this much is the same conversation coming back (a return never
+    // matches its bookmark word for word: the template re-renders the last reply)
+    int64_t reply_from = -1;
+
+    // reply_from within the bookmark; not known: the whole bookmark, so only a request continuing all of it returns
+    int64_t reply_start() const {
+        const int64_t n = (int64_t) tokens.size();
+        return reply_from < 0 || reply_from > n ? n : reply_from;
+    }
 };
+
+// where a task's reply begins (the library's own writing): the final message span's position when it is the
+// assistant's (the generation prompt); otherwise, or with no spans, the task's last 4 tokens (max(0, n_tokens - 4));
+// always within [0, n_tokens]
+int64_t server_shelf_reply_from(const common_chat_msg_spans & spans, int64_t n_tokens);
 
 // the saved copies' positions (each copy's n_tokens), in the list's order
 std::vector<int64_t> server_shelf_copy_positions(const std::list<common_prompt_checkpoint> & ckpts);
@@ -119,8 +138,9 @@ struct server_shelf_take {
     uint64_t id     = 0;  // the entry, 0: none
     int64_t  borrow = -1; // a borrow: the copy's position the read-in steps back to; -1: the store's pick
     int64_t  shared = 0;  // the tokens the entry shares with the task
-    // the file stays and the entry moves to the newest end: a borrow, or a pick the task only diverges from (shares
-    // fewer tokens than the entry holds), so the old conversation, not continued, keeps its bookmark
+    // the file stays and the entry moves to the newest end: a borrow, or a pick that is another conversation (shares
+    // less than the entry's reply_start: it parts before the library's reply began), so the old conversation keeps
+    // its bookmark; a return (shares the reply's start) takes the file off
     bool     keep   = false;
 };
 
@@ -155,8 +175,8 @@ struct server_shelf {
     // (the read-in would start from 0). The largest p wins; on a tie, the smallest file; then the oldest
     server_shelf_take borrow_pick(const server_prompt & seat, const server_tokens & task, bool seat_cuts_anywhere) const;
 
-    // pick as a take: the entry, the tokens it shares with the task, and keep when the task diverges from it
-    // (shares fewer tokens than the entry holds) rather than continuing the whole entry, a true return
+    // pick as a take: the entry, the tokens it shares with the task, and keep when the task is another conversation
+    // (shares less than the entry's reply_start) rather than the same one coming back, a return
     server_shelf_take pick_take(const server_tokens & seat, const server_tokens & task) const;
 
     // pick_take, else borrow_pick
@@ -166,7 +186,8 @@ struct server_shelf {
     bool holds(const server_tokens & tokens) const;
 
     // the room a save of size_new bytes of tokens needs (server_shelf_make_room on the drive's free space now);
-    // keep_id is never dropped. Nothing is dropped here: drop() what it lists
+    // keep_id is never dropped. An entry the save shares at least its reply_start with is superseded: the save is
+    // the same conversation, further on. Nothing is dropped here: drop() what it lists
     server_shelf_room room_for(const server_tokens & tokens, uint64_t size_new, uint64_t keep_id) const;
 
     // the ids at room.drop's indices
@@ -177,9 +198,10 @@ struct server_shelf {
     // the entry leaves the shelf and its file is deleted
     void drop(uint64_t id);
 
-    // a saved bookmark joins the shelf at the newest end, with its copies' positions
+    // a saved bookmark joins the shelf at the newest end, with its copies' positions and where its reply began
+    // (-1: not known)
     void add(uint64_t id, server_tokens tokens, const std::string & path, uint64_t size,
-            const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced);
+            const std::list<common_prompt_checkpoint> & ckpts, bool spec_synced, int64_t reply_from = -1);
 
     // after a load: the entry's tokens; a borrow (keep) leaves the file on the shelf and moves the entry to the
     // newest end, so the shelf's best opening is not the first deleted for room; otherwise the entry is dropped
@@ -223,17 +245,21 @@ struct server_shelf_seat {
     llama_context      * ctx_dft = nullptr; // the apprentice's context, if it has one
     common_speculative * spec    = nullptr;
     llama_seq_id         id      = 0;
+    // where the seat's own reply began (server_slot::reply_from), for the save; clamped to the seat's tokens there,
+    // so the default (not known) is the whole seat
+    int64_t              reply_from = INT64_MAX;
 };
 
 // saves the seat's prompt with its states to a new file, keep_id (the entry about to be loaded) never dropped to make
-// room; false if nothing was saved (already on the shelf, no room, or a write failed: logged)
+// room, the entry's reply_from the seat's clamped to [0, n_tokens]; false if nothing was saved (already on the shelf,
+// no room, or a write failed: logged)
 bool server_shelf_save_seat(server_shelf & shelf, const server_shelf_seat & seat, const server_prompt & prompt,
         bool spec_synced, uint64_t keep_id);
 
-// loads entry id into the seat: its states, prompt (tokens and copies) and the apprentice's carry state, reset
-// first. The entry leaves the shelf, unless the load is a borrow (borrow_at >= 0, the copy the read-in will step
-// back to, for the log) or keep (a new chat diverging from the entry, server_shelf_take::keep): then its file stays
-// and it moves to the newest end. A file that fails to load is dropped
-// either way. false: the seat's memory is half-written, the caller clears it
-bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat, uint64_t id,
-        server_prompt & prompt, bool & spec_synced, int64_t borrow_at = -1, bool keep = false);
+// loads take's entry into the seat: its states, prompt (tokens and copies) and the apprentice's carry state, reset
+// first; reply_from becomes the entry's reply_start, the seat's anchor until a task launches on it. The entry leaves
+// the shelf, unless the load is a borrow (take.borrow >= 0, the copy the read-in will step back to, for the log) or
+// take.keep (another conversation, server_shelf_take::keep): then its file stays and it moves to the newest end.
+// A file that fails to load is dropped either way. false: the seat's memory is half-written, the caller clears it
+bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat, const server_shelf_take & take,
+        server_prompt & prompt, bool & spec_synced, int64_t & reply_from);

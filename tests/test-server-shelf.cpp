@@ -14,6 +14,8 @@
 // - in test-server-shelf-file.cpp: the files (straight through, the file cache bypassed), the record and the folder
 // - in test-server-shelf-borrow.cpp: borrowing (SHELF-BORROW-PLAN.md), a new conversation loading an old bookmark
 //   for the opening it shares, the file kept
+// - in test-server-shelf-reply.cpp: the same conversation judged by where its reply began (SHELF-BORROW-PLAN.md
+//   step 5), for the load's keep and the save's superseding
 
 #include "test-server-shelf.h"
 
@@ -345,6 +347,7 @@ int main() {
     test_record();
     test_folder();
     test_borrow();
+    test_reply();
 
     if (n_fail > 0) {
         std::fprintf(stderr, "test-server-shelf: %d failures\n", n_fail);

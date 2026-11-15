@@ -55,8 +55,8 @@ static server_prompt seat_of(const llama_tokens & t, const std::vector<int64_t> 
 
 // a bookmark the borrowing rule sees, without a file
 static void add_borrowable(server_shelf & shelf, uint64_t id, const llama_tokens & t, uint64_t size,
-        const std::vector<int64_t> & at, bool spec_synced = true) {
-    shelf.add(id, st(t), "", size, copies_at(at), spec_synced);
+        const std::vector<int64_t> & at, bool spec_synced = true, int64_t reply_from = -1) {
+    shelf.add(id, st(t), "", size, copies_at(at), spec_synced, reply_from);
 }
 
 static void test_borrow_saves() {
@@ -175,44 +175,6 @@ static void test_borrow_choice() {
     CHECK(t.id == 5 && t.borrow == 4250 && t.shared == 4250);
 }
 
-static fs::path borrow_dir();
-static void touch(const std::string & p);
-// an ordinary pick keeps the bookmark when the new chat only diverges from the entry (a short old chat sharing >=25%
-// of itself with a new chat's opening), and drops it only on a true return (the task continues the whole entry)
-static void test_pick_keeps_when_diverging() {
-    const server_prompt b = seat_of(toks(0, 3, 300000, 2000), { 1500 });
-    const llama_tokens old = toks(0, 4200, 100000, 8000);
-    server_shelf shelf;
-    add_borrowable(shelf, 1, old, 100 * MiB, { 4200 });
-    // a new chat with the same 4.2K opening shares 34%: the 25% rule picks it, but it diverges
-    auto t = shelf.take(b, st(toks(0, 4200, 200000, 300)), false);
-    CHECK(t.id == 1 && t.borrow == -1 && t.shared == 4200 && t.keep);
-    // the old chat returning, longer: the whole entry is shared, the bookmark leaves
-    t = shelf.take(b, st(extend(old, 500000, 40)), false);
-    CHECK(t.id == 1 && t.borrow == -1 && t.shared == (int64_t) old.size() && !t.keep);
-    server_shelf big;
-    add_borrowable(big, 1, toks(0, 4200, 100000, 45800), 1861813976ull, { 4200 });
-    t = big.take(b, st(toks(0, 4200, 200000, 300)), false);
-    CHECK(t.id == 1 && t.borrow == 4200 && t.keep);
-
-    // keep: the file stays, the entry is newest; without it both go
-    const fs::path d = borrow_dir();
-    server_shelf s2;
-    s2.dir = d.string();
-    for (uint64_t id = 1; id <= 2; id++) {
-        touch(s2.path_for(id));
-        s2.add(id, st(toks(0, 4200, 100000 * (llama_token) id, 8000)), s2.path_for(id), 100 * MiB, copies_at({ 4200 }), true);
-    }
-    const auto pk = s2.pick_take(b.tokens, st(toks(0, 4200, 100000, 100)));
-    CHECK(pk.id == 1 && pk.keep);
-    s2.hand_out(pk.id, pk.keep || pk.borrow >= 0);
-    CHECK(fs::exists(s2.path_for(1)) && s2.entries.back().id == 1);
-    s2.hand_out(2, s2.pick_take(b.tokens, st(extend(toks(0, 4200, 200000, 8000), 9, 5))).keep);
-    CHECK(!fs::exists(s2.path_for(2)) && s2.entries.size() == 1);
-    std::error_code ec;
-    fs::remove_all(d, ec);
-}
-
 // invariants over generated shelves: a borrow qualifies, nothing qualifying beats it, and the pick comes first
 static void test_borrow_generated() {
     std::mt19937 rng(41);
@@ -299,6 +261,44 @@ static fs::path borrow_dir() {
 
 static void touch(const std::string & p) {
     std::ofstream(p) << "x";
+}
+
+// an ordinary pick keeps the bookmark when the task is another conversation (a short old chat sharing >=25% of itself
+// with a new chat's opening, parting before the old reply began at 12,000), and drops it on a return (step 5)
+static void test_pick_keeps_when_diverging() {
+    const server_prompt b = seat_of(toks(0, 3, 300000, 2000), { 1500 });
+    const llama_tokens old = toks(0, 4200, 100000, 8000);
+    server_shelf shelf;
+    add_borrowable(shelf, 1, old, 100 * MiB, { 4200 }, true, 12000);
+    // a new chat with the same 4.2K opening shares 34%: the 25% rule picks it, but it is another conversation
+    auto t = shelf.take(b, st(toks(0, 4200, 200000, 300)), false);
+    CHECK(t.id == 1 && t.borrow == -1 && t.shared == 4200 && t.keep);
+    // the old chat returning: longer (all shared), or re-rendering its reply (sharing its start and 4 more): it leaves
+    t = shelf.take(b, st(extend(old, 500000, 40)), false);
+    CHECK(t.id == 1 && t.borrow == -1 && t.shared == (int64_t) old.size() && !t.keep);
+    t = shelf.take(b, st(extend(toks(0, 4200, 100000, 7804), 500000, 40)), false);
+    CHECK(t.id == 1 && t.borrow == -1 && t.shared == 12004 && !t.keep);
+    server_shelf big;
+    add_borrowable(big, 1, toks(0, 4200, 100000, 45800), 1861813976ull, { 4200 });
+    t = big.take(b, st(toks(0, 4200, 200000, 300)), false);
+    CHECK(t.id == 1 && t.borrow == 4200 && t.keep);
+
+    // keep: the file stays, the entry is newest; without it both go
+    const fs::path d = borrow_dir();
+    server_shelf s2;
+    s2.dir = d.string();
+    for (uint64_t id = 1; id <= 2; id++) {
+        touch(s2.path_for(id));
+        s2.add(id, st(toks(0, 4200, 100000 * (llama_token) id, 8000)), s2.path_for(id), 100 * MiB, {}, true, 12000);
+    }
+    const auto pk = s2.pick_take(b.tokens, st(toks(0, 4200, 100000, 100)));
+    CHECK(pk.id == 1 && pk.keep);
+    s2.hand_out(pk.id, pk.keep || pk.borrow >= 0);
+    CHECK(fs::exists(s2.path_for(1)) && s2.entries.back().id == 1);
+    s2.hand_out(2, s2.pick_take(b.tokens, st(extend(toks(0, 4200, 200000, 8000), 9, 5))).keep);
+    CHECK(!fs::exists(s2.path_for(2)) && s2.entries.size() == 1);
+    std::error_code ec;
+    fs::remove_all(d, ec);
 }
 
 static std::vector<uint64_t> ids(const server_shelf & shelf) {

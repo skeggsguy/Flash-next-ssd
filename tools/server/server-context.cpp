@@ -574,6 +574,7 @@ struct server_slot {
         spec_context_synced = true;
 
         prompt.clear();
+        reply_from = 0;
     }
 
     std::vector<common_adapter_lora_info> lora;
@@ -593,6 +594,12 @@ struct server_slot {
     // the first user message's start of the task that set the seat's pin (0: none known): the opening copy refuses
     // a pin below it, inside the system prompt (server_ckpt_keep_pin). Kept past the task, as the pin is
     int64_t opening_floor = 0;
+
+    // where the seat's own reply began (server_shelf_reply_from of the task that wrote it), for the bookmark shelf's
+    // save: a later request sharing that much is the same conversation coming back (SHELF-BORROW-PLAN step 5). Kept
+    // past the task (the save runs after reset() has moved it to task_prev); set at the read-in, from the entry after a
+    // shelf load, 0 when the seat is cleared (tokens only follow a launch, which makes it strict), and the seat's whole length on any other path that rewrites its tokens
+    int64_t reply_from = 0;
 
     // sampling
     json json_schema;
@@ -991,6 +998,7 @@ struct server_slot {
         other.stats = stats;
 
         other.prompt = prompt.clone();
+        other.reply_from = reply_from;
         other.init_sampler();
     }
 };
@@ -2035,8 +2043,12 @@ private:
                     slot_store_save(*ret);
                 }
 
-                if (hand.load && !ret->prompt_load(*prompt_cache, task.tokens)) {
-                    ret->prompt_clear();
+                if (hand.load) {
+                    if (ret->prompt_load(*prompt_cache, task.tokens)) {
+                        ret->reply_from = ret->prompt.n_tokens(); // the RAM store keeps no anchor
+                    } else {
+                        ret->prompt_clear();
+                    }
                 }
 
                 prompt_cache->update();
@@ -2214,6 +2226,9 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+        // the task's own anchor is taken at the read-in (SLOT_STATE_STARTED), where the seat's tokens are rewritten;
+        // until then (a task released before it, an error) the seat holds the old tokens, so the strict anchor
+        slot.reply_from = slot.prompt.n_tokens();
         slot.lane_prev = slot.lane_last;
         slot.lane_last = slot.task->lane;
 
@@ -2731,7 +2746,7 @@ private:
     }
 
     server_shelf_seat shelf_seat(const server_slot & slot) const {
-        return { slot.ctx_tgt, slot.ctx_dft, slot.spec, slot.id };
+        return { slot.ctx_tgt, slot.ctx_dft, slot.spec, slot.id, slot.reply_from };
     }
 
     // The bookmark shelf's hand-over (--cache-disk, server_shelf_hand_on): every lane saves and loads, and the RAM
@@ -2754,8 +2769,8 @@ private:
         if (hand.save) {
             server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, take.id);
         }
-        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), take.id, slot.prompt,
-                    slot.spec_context_synced, take.borrow, take.keep)) {
+        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), take, slot.prompt,
+                    slot.spec_context_synced, slot.reply_from)) {
             slot.prompt_clear();
         }
     }
@@ -2813,6 +2828,7 @@ private:
 
         slot.prompt.tokens.keep_first(pin->n_tokens);
         slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+        slot.reply_from = slot.prompt.n_tokens();
 
         // the entry carries no copies: one copy of the opening, the state itself (server_ckpt_save_without_copies)
         const size_t n_states = prompt_cache->states.size();
@@ -3253,6 +3269,7 @@ private:
                         slot->prompt.clear();
                         slot->prompt.tokens = std::move(restored);
                         slot->prompt.checkpoints = std::move(checkpoints);
+                        slot->reply_from = slot->prompt.n_tokens(); // the file keeps no anchor
 
                         // The main state file does not contain the current draft context. Even when
                         // checkpoints were recovered, force a synchronized prefill before a later
@@ -3587,6 +3604,7 @@ private:
 
                     slot.prompt.clear();
                     slot.prompt.tokens.insert(new_tokens);
+                    slot.reply_from = slot.prompt.n_tokens(); // the task's positions moved
                 }
 
                 slot.truncated = true;
@@ -4083,6 +4101,8 @@ private:
                         metrics.add_prompt_cached(n_past);
 
                         slot.prompt.tokens.keep_first(n_past);
+                        // from here the seat's tokens past n_past are this task's: its reply began at its own anchor
+                        slot.reply_from = server_shelf_reply_from(slot.task->params.message_spans, slot.task->n_tokens());
 
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
