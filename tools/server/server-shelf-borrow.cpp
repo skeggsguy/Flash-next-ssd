@@ -74,6 +74,7 @@ server_shelf_take server_shelf::borrow_pick(const server_prompt & seat, const se
             best.id     = e.id;
             best.borrow = p;
             best.shared = n_shared;
+            best.keep   = true;
             best_size   = e.size;
         }
     }
@@ -82,10 +83,21 @@ server_shelf_take server_shelf::borrow_pick(const server_prompt & seat, const se
 
 server_shelf_take server_shelf::take(const server_prompt & seat, const server_tokens & task,
         bool seat_cuts_anywhere) const {
-    server_shelf_take res;
-    res.id = pick(seat.tokens, task);
+    server_shelf_take res = pick_take(seat.tokens, task);
     if (res.id != 0) {
         return res;
     }
     return borrow_pick(seat, task, seat_cuts_anywhere);
+}
+
+server_shelf_take server_shelf::pick_take(const server_tokens & seat, const server_tokens & task) const {
+    server_shelf_take res;
+    res.id = pick(seat, task);
+    for (const auto & e : entries) {
+        if (e.id == res.id && res.id != 0) {
+            res.shared = (int64_t) e.tokens.get_common_prefix(task);
+            res.keep   = res.shared < (int64_t) e.tokens.size();
+        }
+    }
+    return res;
 }

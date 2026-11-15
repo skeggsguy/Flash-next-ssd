@@ -2727,8 +2727,7 @@ private:
             return;
         }
 
-        server_shelf_take take;
-        take.id = shelf->pick(slot.prompt.tokens, task.tokens);
+        server_shelf_take take = shelf->pick_take(slot.prompt.tokens, task.tokens);
         if (take.id == 0 && task.params.cache_prompt) { // a task not reusing the cache reads in from 0 anyway
             take = shelf->borrow_pick(slot.prompt, task.tokens, shelf_seat_cuts_anywhere(slot, task, lcp));
         }
@@ -2737,7 +2736,7 @@ private:
             server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, take.id);
         }
         if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), take.id, slot.prompt,
-                    slot.spec_context_synced, take.borrow)) {
+                    slot.spec_context_synced, take.borrow, take.keep)) {
             slot.prompt_clear();
         }
     }

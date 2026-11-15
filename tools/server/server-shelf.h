@@ -118,7 +118,10 @@ int64_t server_shelf_seat_reach(const server_prompt & seat, const server_tokens 
 struct server_shelf_take {
     uint64_t id     = 0;  // the entry, 0: none
     int64_t  borrow = -1; // a borrow: the copy's position the read-in steps back to; -1: the store's pick
-    int64_t  shared = 0;  // (a borrow) the tokens the entry shares with the task
+    int64_t  shared = 0;  // the tokens the entry shares with the task
+    // the file stays and the entry moves to the newest end: a borrow, or a pick the task only diverges from (shares
+    // fewer tokens than the entry holds), so the old conversation, not continued, keeps its bookmark
+    bool     keep   = false;
 };
 
 struct server_shelf {
@@ -152,7 +155,11 @@ struct server_shelf {
     // (the read-in would start from 0). The largest p wins; on a tie, the smallest file; then the oldest
     server_shelf_take borrow_pick(const server_prompt & seat, const server_tokens & task, bool seat_cuts_anywhere) const;
 
-    // pick, else borrow_pick
+    // pick as a take: the entry, the tokens it shares with the task, and keep when the task diverges from it
+    // (shares fewer tokens than the entry holds) rather than continuing the whole entry, a true return
+    server_shelf_take pick_take(const server_tokens & seat, const server_tokens & task) const;
+
+    // pick_take, else borrow_pick
     server_shelf_take take(const server_prompt & seat, const server_tokens & task, bool seat_cuts_anywhere) const;
 
     // an entry already holds all of tokens: a save would add nothing
@@ -225,7 +232,8 @@ bool server_shelf_save_seat(server_shelf & shelf, const server_shelf_seat & seat
 
 // loads entry id into the seat: its states, prompt (tokens and copies) and the apprentice's carry state, reset
 // first. The entry leaves the shelf, unless the load is a borrow (borrow_at >= 0, the copy the read-in will step
-// back to, for the log): then its file stays and it moves to the newest end. A file that fails to load is dropped
+// back to, for the log) or keep (a new chat diverging from the entry, server_shelf_take::keep): then its file stays
+// and it moves to the newest end. A file that fails to load is dropped
 // either way. false: the seat's memory is half-written, the caller clears it
 bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat, uint64_t id,
-        server_prompt & prompt, bool & spec_synced, int64_t borrow_at = -1);
+        server_prompt & prompt, bool & spec_synced, int64_t borrow_at = -1, bool keep = false);
