@@ -1,6 +1,7 @@
 #pragma once
 
-// helpers shared by test-server-shelf.cpp and test-server-shelf-file.cpp (one test, two files to stay short)
+// helpers shared by test-server-shelf.cpp, test-server-shelf-file.cpp and test-server-shelf-borrow.cpp (one test,
+// three files to stay short)
 
 #include "server-shelf.h"
 
@@ -48,3 +49,6 @@ inline void add_entry(server_shelf & shelf, uint64_t id, const llama_tokens & t,
 void test_files();
 void test_record();
 void test_folder();
+
+// in test-server-shelf-borrow.cpp
+void test_borrow();

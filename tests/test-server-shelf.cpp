@@ -12,6 +12,8 @@
 // - the hand-over: save when the task keeps under half of the seat or a bookmark replaces it, load the pick
 // - the two options: off by default, 100 GiB, from the command line and environment, 0 refused
 // - in test-server-shelf-file.cpp: the files (straight through, the file cache bypassed), the record and the folder
+// - in test-server-shelf-borrow.cpp: borrowing (SHELF-BORROW-PLAN.md), a new conversation loading an old bookmark
+//   for the opening it shares, the file kept
 
 #include "test-server-shelf.h"
 
@@ -342,6 +344,7 @@ int main() {
     test_files();
     test_record();
     test_folder();
+    test_borrow();
 
     if (n_fail > 0) {
         std::fprintf(stderr, "test-server-shelf: %d failures\n", n_fail);

@@ -1,6 +1,7 @@
 // A seat on the bookmark shelf (server-shelf.h): the library's and the apprentice's states streamed straight between
 // their contexts and the shelf's file (llama_state_seq_write_stream / _read_stream, a few MiB at a time), and the
-// log lines a probe reads: "bookmark shelf: saved <n> tokens, <MiB> MiB, <ms> ms" and "... loaded ...".
+// log lines a probe reads: "bookmark shelf: saved <n> tokens, <MiB> MiB, <ms> ms", "... loaded ..." and a borrow's
+// "bookmark shelf: borrowed <p> of <n> tokens from a bookmark, <MiB> MiB, <ms> ms (kept on the shelf ...)".
 
 #include "server-shelf.h"
 
@@ -124,7 +125,7 @@ bool server_shelf_save_seat(server_shelf & shelf, const server_shelf_seat & seat
         return false;
     }
 
-    shelf.entries.push_back({ id, prompt.tokens.clone(), path, size_new });
+    shelf.add(id, prompt.tokens.clone(), path, size_new, prompt.checkpoints, spec_synced);
 
     const double ms = (ggml_time_us() - t_start) / 1000.0;
     SRV_WRN("bookmark shelf: saved %d tokens, %.1f MiB, %.0f ms (apprentice %.1f MiB, %zu copies %.1f MiB%s; "
@@ -136,7 +137,7 @@ bool server_shelf_save_seat(server_shelf & shelf, const server_shelf_seat & seat
 }
 
 bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat, uint64_t id,
-        server_prompt & prompt, bool & spec_synced) {
+        server_prompt & prompt, bool & spec_synced, int64_t borrow_at, bool keep) {
     auto * e = shelf.find(id);
     if (e == nullptr) {
         return false;
@@ -173,16 +174,24 @@ bool server_shelf_load_seat(server_shelf & shelf, const server_shelf_seat & seat
         common_speculative_set_state(seat.spec, seat.id, data_spec);
     }
 
-    prompt.tokens      = std::move(e->tokens);
+    const bool borrow = borrow_at >= 0;
+
+    prompt.tokens      = shelf.hand_out(id, keep || borrow); // e is not used past here
     prompt.checkpoints = std::move(ckpts);
     spec_synced        = head.spec_synced;
 
-    shelf.drop(id);
-
     const double ms = (ggml_time_us() - t_start) / 1000.0;
-    SRV_WRN("bookmark shelf: loaded %d tokens, %.1f MiB, %.0f ms (apprentice %.1f MiB%s, %zu copies; "
+    if (borrow) {
+        SRV_WRN("bookmark shelf: borrowed %" PRId64 " of %d tokens from a bookmark, %.1f MiB, %.0f ms (kept on the "
+                "shelf, now the newest; apprentice %.1f MiB, %zu copies; shelf: %zu bookmarks, %.2f GiB)\n", borrow_at,
+                n_tokens, shelf_mib(size), ms, shelf_mib(size_dft), prompt.checkpoints.size(), shelf.entries.size(),
+                shelf_gib(shelf.size()));
+        return true;
+    }
+    SRV_WRN("bookmark shelf: loaded %d tokens, %.1f MiB, %.0f ms (apprentice %.1f MiB%s, %zu copies%s; "
             "shelf: %zu bookmarks, %.2f GiB)\n", n_tokens, shelf_mib(size), ms, shelf_mib(size_dft),
             head.spec_synced ? "" : ", behind the library: rebuilt at the next draft", prompt.checkpoints.size(),
+            keep ? ", the new chat diverges: kept on the shelf, now the newest" : "",
             shelf.entries.size(), shelf_gib(shelf.size()));
     return true;
 }
