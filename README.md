@@ -161,12 +161,20 @@ with the same output as if it had never left.
 - **The limit:** `--cache-disk-gib N` (default 100); the oldest conversations are deleted first. At
   start it is capped to the drive's free space less 10% of it (one log line says so), and before each
   save the free space is checked again.
+- **A new chat borrows its opening.** A new chat shares only its opening (the system prompt and tools)
+  with an old conversation, too little of it for that conversation's file to be handed over whole. So
+  when nothing else fits, the new chat loads an old file only to step back to its saved copy at the end
+  of the opening (the checkpoint `--cache-ram-opening` pins at a chat's first user message) and reads in
+  just its own text. The file stays on the shelf, so its own conversation still comes back to it. A
+  borrow is taken only when it saves at least a second (reading in at 440 tokens/s against loading at
+  3.7 GB/s). In the study, a new chat after the coding agent had the server started writing in 2.0 s
+  instead of 5.1 s with a ~2.2K-token opening, a 0.5 s load; the longer the opening, the more it saves.
 - **Off by default**, and `--flashnext` doesn't turn it on: not everyone has the room. Without it, the
   RAM copy of chat's opening (`--cache-ram 400 --cache-ram-opening`) works as before; with it, the shelf
-  takes that copy's place.
+  does that copy's job: `--cache-ram` is not used, and `--cache-ram-opening` keeps only its pin.
 - The folder must exist; its `bookmark-*.shelf` files are deleted when the server starts, and it is one
-  server per folder. The log shows each `bookmark shelf: saved` and `loaded` line with tokens, MiB and ms
-  ([Settings](docs/flashnext/settings.md)).
+  server per folder. The log shows each `bookmark shelf: saved`, `loaded` and `borrowed` line with tokens,
+  MiB and ms ([Settings](docs/flashnext/settings.md)).
 
 ### And smaller wins, all on by default
 
@@ -441,7 +449,7 @@ upstream's defaults are untouched.
 | `-np 1` | One conversation at a time: each extra one costs memory the expert cache needs. |
 | `-fa on` | Flash attention, which this model's sparse attention needs to read a prompt. |
 | `--cache-reuse 0` | Off, as the study ran it. |
-| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. With [the bookmark shelf](#the-bookmark-shelf-optional) on, the shelf takes its place. |
+| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. With [the bookmark shelf](#the-bookmark-shelf-optional) on, the shelf does its job (a new chat borrows the opening from an old conversation's file) and `--cache-ram-opening` keeps only its pin. |
 | `--chat-window 90` | Chat goes first when a coding agent shares the server. Does nothing until a client sends `X-Lane: code`. |
 | `--jinja --reasoning-format deepseek` | The model's chat template, with its thinking returned apart from the answer. |
 | With the DFlash draft (`-md` and its file): `--spec-type draft-dflash`, from the file, `--spec-draft-n-max 7 --spec-draft-p-min 0 --spec-draft-ngl 99 --spec-max-prompt 0` | The DFlash draft, up to 7 tokens ahead, cut by the chain stop rather than by each token's confidence, on the GPU, for prompts of any length. |
