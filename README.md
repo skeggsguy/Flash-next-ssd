@@ -253,6 +253,20 @@ LLAMA_MOE_STREAM_GUESSER1=$HOME/models/flashnext/c1-guesser-gap1.gguf \
 
 `--moe-stream-cache 28` is your size from [Choose your size](#choose-your-size).
 
+**Recommended: add the bookmark shelf.** As written, the server keeps one RAM copy of chat's opening
+(the default). To keep every conversation's place instead, make a folder on any SSD and add two flags:
+
+```sh
+mkdir -p ~/flashnext-shelf     # internal SSD; or /Volumes/<your drive>/shelf on an external one
+  --cache-disk ~/flashnext-shelf --cache-disk-gib 100     # add to the command above
+```
+
+The RAM copy of chat's opening goes off with it: the shelf does its job, so a new chat borrows its
+opening from an old conversation's file instead. A conversation that comes back after another has
+had the server (a coding agent after your chat, a sub-agent after its parent) is back writing in
+seconds instead of reading its history in again: 4.5 s against about 6 minutes at 150K tokens
+([the bookmark shelf](#the-bookmark-shelf-not-default-but-recommended)).
+
 That's it: your files, the cache size, and `--flashnext` for everything else. The guessers are
 named by environment variables; the model and the draft by flags. `--flashnext` reads from the
 draft's file that it is DFlash and uses DFlash's own settings (7 tokens ahead, no confidence cut, the
@@ -269,12 +283,6 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
 - **Pictures:** add `--mmproj ~/models/flashnext/mmproj-BF16.gguf`.
 - **A coding agent sharing the server:** have it send the header `X-Lane: code`. `--flashnext`
   already turns on the 90-second [chat window](#the-chat-window), so your chats go first.
-- **Keep every conversation's place on an SSD (the bookmark shelf):** make a folder on any SSD, internal or
-  external, and add `--cache-disk /path/to/shelf --cache-disk-gib 300`. When another conversation takes the
-  server (a coding agent after your chat, a sub-agent after its parent), the one leaving is saved there whole,
-  and it is read back when it returns: a 150K-token conversation is back writing in about 4.5 s instead of
-  reading its whole history in again (about 6 minutes). Off unless you give the folder
-  ([the bookmark shelf](#the-bookmark-shelf-not-default-but-recommended)).
 - **Or the MTP draft head instead of DFlash (1.9 GB):** download it and give it to `-md` in step 4
   in place of the DFlash file. `--flashnext` picks its settings from the file. DFlash writes about
   9-11% faster ([what each extra is worth](#what-each-extra-is-worth)).
