@@ -158,10 +158,6 @@ More in [Settings](docs/flashnext/settings.md).
 
 ## Quick start
 
-### Advice from the author
-
-<!-- Tom: the best way to run this, from a user's point of view (one session at a time). -->
-
 ### Choose your size
 
 <p align="center"><img src="media/flashnext/choose-your-size.svg" width="760" alt="Speed by expert cache size, 8 to 28 GiB. Writing (decode) goes from 12.7 to 29.3 tokens/s for chat and 10.9 to 27.1 for coding; reading a cold 150K-token prompt (prefill) from 376 to 387 tokens/s. Total memory 24.4 to 44.5 GiB. Max cache with about 18 GiB left free: 12 GiB on a 48 GB Mac, 28 GiB on a 64 GB Mac."></p>
