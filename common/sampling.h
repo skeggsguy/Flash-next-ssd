@@ -93,6 +93,19 @@ uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 // force the reasoning budget sampler (if any) to begin forcing its end sequence now.
 bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl);
 
+// The p/q record's view of a sampler (LLAMA_SPEC_PQ_RECORD, common/speculative-pq-record.h): reads only, so a
+// recording never changes a word.
+struct common_sampler_draw_state {
+    bool     grammar    = false; // a grammar applies now (a lazy one still waiting for its trigger included)
+    bool     lazy       = false; // that grammar is lazy
+    int      budget     = -1;    // the reasoning budget's state (common_reasoning_budget_state), -1: no budget
+    uint64_t n_resample = 0;     // draws redone grammar first (the drawn word broke the grammar) since it was made
+};
+common_sampler_draw_state common_sampler_get_draw_state(struct common_sampler * gsmpl);
+
+// how many of the n words the grammar would refuse now (0 when none applies, or a lazy one awaits its trigger)
+size_t common_sampler_grammar_refuses(struct common_sampler * gsmpl, const llama_token * ids, size_t n);
+
 // helpers
 
 // access the internal list of current candidate tokens

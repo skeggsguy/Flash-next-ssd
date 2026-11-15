@@ -995,6 +995,30 @@ extern "C" {
                     llama_seq_id   dest_seq_id,
            llama_state_seq_flags   flags);
 
+    // Stream the state of a single sequence through a callback, a piece of at most a few MiB at a time, so a large
+    // state never needs a buffer of its own size (e.g. to write it to a file). The bytes are exactly those of
+    // llama_state_seq_get_data_ext, so either side can read the other's. A callback returns false to fail the call.
+    // Not with LLAMA_STATE_SEQ_FLAGS_ON_DEVICE.
+    // Returns:
+    //  - Positive: the number of bytes written / read
+    //  - Zero: failed (a failed read can leave the sequence half restored: clear it)
+    typedef bool (*llama_state_write_cb)(const void * src, size_t size, void * user_data);
+    typedef bool (*llama_state_read_cb)(void * dst, size_t size, void * user_data);
+
+    LLAMA_API size_t llama_state_seq_write_stream(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+            llama_state_write_cb   cb,
+                            void * user_data);
+
+    LLAMA_API size_t llama_state_seq_read_stream(
+            struct llama_context * ctx,
+                    llama_seq_id   dest_seq_id,
+           llama_state_seq_flags   flags,
+             llama_state_read_cb   cb,
+                            void * user_data);
+
     //
     // Decoding
     //

@@ -653,6 +653,8 @@ struct common_params {
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
     bool    cache_ram_opening   = false; // the store keeps chat's opening only (tools/server/server-ckpt-pin.h)
+    std::string cache_disk_dir;          // the bookmark shelf's folder (tools/server/server-shelf.h), empty = off
+    int32_t cache_disk_gib      = 100;   // the bookmark shelf's limit in GiB, capped to what the drive can spare
 
     // --flashnext: the everyday values of the general flags, each only where the user did not pass it (flashnext.h)
     bool flashnext = false;

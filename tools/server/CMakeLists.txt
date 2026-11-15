@@ -27,6 +27,12 @@ add_library(${TARGET} STATIC
     server-mcp.h
     server-schema.cpp
     server-schema.h
+    server-shelf.cpp
+    server-shelf.h
+    server-shelf-borrow.cpp
+    server-shelf-io.cpp
+    server-shelf-io.h
+    server-shelf-seat.cpp
 )
 
 if (BUILD_SHARED_LIBS)

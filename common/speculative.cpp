@@ -13,6 +13,7 @@
 #include "speculative-rate.h"
 #include "speculative-rate2.h"
 #include "speculative-rate-trace.h"
+#include "speculative-pq-record.h"
 #include "speculative-chain.h"
 #include "speculative-dflash-walk.h"
 #include "spec-phase-log.h"
@@ -230,6 +231,7 @@ struct common_speculative_impl {
     // the wrapper then opens none: one writer a file.
     common_speculative_rate_trace * trace = nullptr; // the wrapper's, set only while the trace is on
     bool accept_replay = false; // set for the accept call: the server re-checked a draft cut short
+    common_spec_pq_record * pq = nullptr; // the wrapper's p/q record (LLAMA_SPEC_PQ_RECORD), set only while it is on
 
     virtual bool has_own_trace() const { return false; }
     virtual int32_t trained_block() const { return 0; } // a block draft's trained block size, for the header
@@ -1316,8 +1318,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             const int32_t n_block_tokens = n_draft + (is_dspark && sample_from_anchor ? 0 : 1);
             i_block_beg[seq_id] = batch.n_tokens;
             n_block    [seq_id] = n_block_tokens;
+            // DFlash 2 reads its lattice, not the logits: they are copied out only for the p/q record (step 3d)
+            const bool logits = !is_dflash2 || pq != nullptr;
             for (int32_t i = 0; i < n_block_tokens; ++i) {
-                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, !is_dflash2);
+                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, logits);
             }
         }
 
@@ -1355,6 +1359,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 const common_speculative_cut cut(params.p_min, chain_p);
                 if (!wants_conf()) {
                     common_dflash2_walk(lat, cut, params.n_min, result, nullptr);
+                    if (pq) { pq->draft(seq_id, dp.pos0, lat, result, ctx_dft, beg + 1); } // before the next decode
                     continue;
                 }
                 const int64_t t_walk = common_speculative_rate_trace::now_us();
@@ -1366,6 +1371,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 note_stop(seq_id, walk_seen.stop);
                 // the whole walk, confidences and argmax both: an upper bound on what the trace adds
                 trace->add_self_us(common_speculative_rate_trace::now_us() - t_walk);
+                if (pq) { pq->draft(seq_id, dp.pos0, lat, result, ctx_dft, beg + 1); }
                 continue;
             }
 
@@ -1883,6 +1889,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             n_drafting++;
             drafting[seq_id] = true;
             common_sampler_reset(smpls[seq_id].get());
+            if (pq) { // the p/q record (LLAMA_SPEC_PQ_RECORD): the head's own chances, so its full logits too
+                llama_set_raw_logits(ctx_dft, true);
+                pq->mtp_begin(seq_id, dp.pos0);
+            }
 
             // effective draft cap for this step: adaptive depth (or the user n_max),
             // then clamped by the per-call context bound from the server
@@ -1978,6 +1988,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
+                if (pq) { pq->mtp_step(seq_id, ctx_dft, i_last[seq_id], id, cur_p->data[0].p); } // before any cut
 
                 if (rate_trace) {
                     rate_trace->draft_step(seq_id, cur_p->data[0].p);
@@ -2053,6 +2064,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             const int  n_drafted = (int) dp.result->size();
             const bool shadow    = rate_mode && rate_ctrl[seq_id].k_next == 0;
+            if (pq) { pq->mtp_end(seq_id, shadow ? 0 : n_cap[seq_id], *dp.result); } // before the shadow's clear
 
             if (shadow) {
                 // depth 0: keep the guess to score against the real next token, verify nothing
@@ -2549,7 +2561,14 @@ struct common_speculative {
 
     // the rate trace for any draft that does not write its own (LLAMA_SPEC_RATE_TRACE, CHAIN-PLAN step 1)
     std::unique_ptr<common_speculative_rate_trace> trace;
+
+    // the p/q record (LLAMA_SPEC_PQ_RECORD, FAIR-CHECK-PLAN step 1)
+    std::unique_ptr<common_spec_pq_record> pq;
 };
+
+common_spec_pq_record * common_speculative_pq_record(const common_speculative * spec) {
+    return spec ? spec->pq.get() : nullptr;
+}
 
 // the wrapper traces only when no impl writes its own trace: one writer a file
 static bool common_speculative_wrapper_traces(const std::vector<std::unique_ptr<common_speculative_impl>> & impls) {
@@ -3210,6 +3229,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
     }
 
     common_speculative_open_trace(result.get(), params, n_seq);
+    result->pq = common_spec_pq_record::open_from_env("LLAMA_SPEC_PQ_RECORD", n_seq);
+    for (auto & impl : result->impls) {
+        impl->pq = result->pq.get();
+    }
 
     return result.release();
 }
@@ -3251,6 +3274,9 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
     if (spec->trace) {
         spec->trace->answer_begin(seq_id, (int) prompt.size(), common_speculative_rate_trace::now_us(),
                 common_speculative_rate_trace::wall_now_us());
+    }
+    if (spec->pq) {
+        spec->pq->answer_begin(seq_id, (int) prompt.size());
     }
 
     for (auto & impl : spec->impls) {

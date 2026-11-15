@@ -121,6 +121,8 @@ struct common_sampler {
 
     llama_token_data_array cur_p;
 
+    uint64_t n_resample = 0; // draws redone grammar first, for the p/q record (common_sampler_get_draw_state)
+
     void reset() {
         prev.clear();
 
@@ -660,6 +662,7 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
 
     // resampling:
     // if the token is not valid, sample again, but first apply the grammar sampler and then the sampling chain
+    gsmpl->n_resample++;
     gsmpl->set_logits(ctx, idx);
 
     llama_sampler_apply(rbudget,  &cur_p);
@@ -726,6 +729,36 @@ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
     }
 
     return common_reasoning_budget_force(gsmpl->rbudget);
+}
+
+common_sampler_draw_state common_sampler_get_draw_state(struct common_sampler * gsmpl) {
+    common_sampler_draw_state st;
+    if (!gsmpl) {
+        return st;
+    }
+    st.grammar    = grammar_should_apply(gsmpl);
+    st.lazy       = gsmpl->grmr != nullptr && gsmpl->params.grammar_lazy;
+    st.budget     = gsmpl->rbudget ? (int) common_reasoning_budget_get_state(gsmpl->rbudget) : -1;
+    st.n_resample = gsmpl->n_resample;
+    return st;
+}
+
+size_t common_sampler_grammar_refuses(struct common_sampler * gsmpl, const llama_token * ids, size_t n) {
+    if (!gsmpl || !grammar_should_apply(gsmpl) || n == 0) {
+        return 0;
+    }
+    // the sampler's own single-word test (common_sampler_sample), on a copy: applying a grammar reads its stacks only
+    std::vector<llama_token_data> cands(n);
+    for (size_t i = 0; i < n; ++i) {
+        cands[i] = { ids[i], 1.0f, 0.0f };
+    }
+    llama_token_data_array arr = { cands.data(), cands.size(), -1, false };
+    llama_sampler_apply(gsmpl->grmr, &arr);
+    size_t refused = 0;
+    for (size_t i = 0; i < arr.size; ++i) {
+        refused += arr.data[i].logit == -INFINITY;
+    }
+    return refused;
 }
 
 // helpers

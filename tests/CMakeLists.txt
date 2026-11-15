@@ -151,6 +151,7 @@ endif ()
 llama_build(test-recurrent-state-rollback.cpp)
 llama_build(test-rs-skip-slots.cpp)
 llama_build(test-save-load-state.cpp)
+llama_build(test-state-seq-stream.cpp)
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
@@ -289,6 +290,11 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # PLAN #31: the pin learns lanes, the opening copy refuses a pin inside the system prompt, test-server-ckpt-pin-lanes.cpp
     llama_build_and_test(test-server-ckpt-pin.cpp test-server-ckpt-pin-chats.cpp test-server-ckpt-pin-opening.cpp test-server-ckpt-pin-lanes.cpp ${PROJECT_SOURCE_DIR}/tools/server/server-ckpt-pin.cpp)
     target_include_directories(test-server-ckpt-pin PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    # BOOKMARK-SHELF-PLAN.md step 2: the bookmark shelf (--cache-disk, server-shelf.h): its rules, files and folder, no model
+    # SHELF-BORROW-PLAN.md step 2: borrowing, a new conversation loading an old bookmark for the opening it shares
+    llama_build_and_test(test-server-shelf.cpp test-server-shelf-file.cpp test-server-shelf-borrow.cpp test-server-shelf-reply.cpp)
+    target_include_directories(test-server-shelf PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
+    target_link_libraries(test-server-shelf PRIVATE server-context)
     # LANES-PLAN.md step 1: the Anthropic endpoint carries id_slot (the seat) through its conversion, no model
     llama_build_and_test(test-server-anthropic.cpp)
     target_include_directories(test-server-anthropic PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
@@ -547,6 +553,18 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     )
     set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED generate-models)
 
+    # BOOKMARK-SHELF-PLAN step 2: llama_state_seq_write_stream / _read_stream give get_data_ext's bytes, on a dense
+    # model and on hybrid (KV + recurrent) ones
+    foreach (STREAM_MODEL qwen3-dense qwen35-dense qwen4exp-moe)
+        llama_test(
+            test-state-seq-stream
+            NAME test-state-seq-stream-${STREAM_MODEL}
+            LABEL main
+            ARGS -m "${MODEL_DIR}/${STREAM_MODEL}.gguf" -ngl 0
+        )
+        set_tests_properties(test-state-seq-stream-${STREAM_MODEL} PROPERTIES FIXTURES_REQUIRED generate-models)
+    endforeach()
+
     # qwen4exp's indexer cache, with the QSA block summaries rebuilt every ubatch (switch off) and kept (patch 4i)
     llama_test(
         test-recurrent-state-rollback
@@ -768,6 +786,36 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
     llama_test(test-speculative-chain-mtp NAME test-speculative-chain-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
     set_tests_properties(test-speculative-chain-mtp test-speculative-chain-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # FAIR-CHECK-PLAN step 1: the p/q record (LLAMA_SPEC_PQ_RECORD) on the MTP fixture: the same words and rounds with it
+    # on as off at temperature 0 and at 1.0 (seeded), one line a round holding its words, candidates and kept (the rate
+    # trace's), the reading past a miss, and a draft's lattice on its own round's line only
+    llama_build(test-speculative-pq-record-mtp.cpp)
+    llama_test(test-speculative-pq-record-mtp NAME test-speculative-pq-record-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-pq-record-mtp NAME test-speculative-pq-record-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-pq-record-mtp test-speculative-pq-record-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # FAIR-CHECK-PLAN step 3d: DFlash 2's wider chances in the p/q record (the top 64 of each drafted position's whole-
+    # vocabulary logits and their log-sum-exp), handed real logits on the MTP fixture: exact, and no word changed
+    llama_build(test-speculative-pq-record-wide.cpp)
+    llama_test(test-speculative-pq-record-wide NAME test-speculative-pq-record-wide     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-pq-record-wide NAME test-speculative-pq-record-wide-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-pq-record-wide test-speculative-pq-record-wide-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
+
+    # the record's grammar flags need a vocabulary the fixture lacks: the sampler's draw state and refused count, vocab only
+    llama_build(test-speculative-pq-record-grammar.cpp)
+    llama_test(test-speculative-pq-record-grammar ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
+
+    # FAIR-CHECK-PLAN L3: the lenient check (LLAMA_SPEC_LENIENT, the gamma dial). Its rule on hand-set chances over a real
+    # vocabulary (parse, the extra chance, the request test, the written words' law by chi-square, the fall-backs: a
+    # grammar, a redraw, the reasoning budget forcing); then on the MTP fixture with the library's own draws (the law,
+    # the sampler told the word written, gamma 1 and temperature 0 writing today's words, the record naming the dial's)
+    llama_build(test-speculative-lenient.cpp)
+    llama_test(test-speculative-lenient ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-gpt-2.gguf)
+    llama_build(test-speculative-lenient-mtp.cpp)
+    llama_test(test-speculative-lenient-mtp NAME test-speculative-lenient-mtp     LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf")
+    llama_test(test-speculative-lenient-mtp NAME test-speculative-lenient-mtp-cpu LABEL main ARGS -m "${MODEL_DIR}/mtp/qwen4exp-moe-e64mtp.gguf" -ngl 0)
+    set_tests_properties(test-speculative-lenient-mtp test-speculative-lenient-mtp-cpu PROPERTIES FIXTURES_REQUIRED generate-models-e64mtp)
 
     # WRITING-PLAN step 4b: the apprentice's word list (LLAMA_MTP_VOCAB) on the MTP fixture: unset and "0" are today's
     # bytes; with a list, the listed words' scores are the whole head's byte for byte, the rest -INF, the same guesses

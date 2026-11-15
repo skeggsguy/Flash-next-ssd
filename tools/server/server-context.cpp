@@ -6,6 +6,7 @@
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
+#include "server-shelf.h"
 #include "server-stream.h"
 
 #include "build-info.h"
@@ -16,6 +17,8 @@
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
+#include "speculative-pq-record.h"
+#include "speculative-lenient.h"
 #include "spec-phase-log.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -26,6 +29,7 @@
 #include <exception>
 #include <memory>
 #include <filesystem>
+#include <optional>
 #include <list>
 #include <random>
 #include <utility>
@@ -485,6 +489,9 @@ struct server_slot {
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
+    bool spec_lenient = false;        // the lenient check runs for this request (LLAMA_SPEC_LENIENT)
+    std::mt19937 spec_lenient_rng;    // its own stream, seeded from the request's (never the sampler's)
+    std::optional<std::mt19937> spec_lenient_after; // where a restored check left the stream, for after its replay
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -567,6 +574,7 @@ struct server_slot {
         spec_context_synced = true;
 
         prompt.clear();
+        reply_from = 0;
     }
 
     std::vector<common_adapter_lora_info> lora;
@@ -586,6 +594,12 @@ struct server_slot {
     // the first user message's start of the task that set the seat's pin (0: none known): the opening copy refuses
     // a pin below it, inside the system prompt (server_ckpt_keep_pin). Kept past the task, as the pin is
     int64_t opening_floor = 0;
+
+    // where the seat's own reply began (server_shelf_reply_from of the task that wrote it), for the bookmark shelf's
+    // save: a later request sharing that much is the same conversation coming back (SHELF-BORROW-PLAN step 5). Kept
+    // past the task (the save runs after reset() has moved it to task_prev); set at the read-in, from the entry after a
+    // shelf load, 0 when the seat is cleared (tokens only follow a launch, which makes it strict), and the seat's whole length on any other path that rewrites its tokens
+    int64_t reply_from = 0;
 
     // sampling
     json json_schema;
@@ -615,6 +629,7 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+        spec_lenient_after.reset();
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -983,6 +998,7 @@ struct server_slot {
         other.stats = stats;
 
         other.prompt = prompt.clone();
+        other.reply_from = reply_from;
         other.init_sampler();
     }
 };
@@ -1147,6 +1163,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    common_spec_lenient spec_lenient; // LLAMA_SPEC_LENIENT (speculative-lenient.h), read at load
 
     bool add_bos_token = true;
 
@@ -1171,6 +1188,9 @@ private:
     int n_empty_consecutive = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
+
+    // the bookmark shelf (--cache-disk, server-shelf.h): when on, it takes the prompt cache's place
+    std::unique_ptr<server_shelf> shelf;
 
     server_metrics metrics;
 
@@ -1273,6 +1293,10 @@ private:
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
+        if (!shelf_open()) {
+            return false;
+        }
+
         const bool has_mmproj = !params.mmproj.path.empty();
         const bool has_draft = params.speculative.has_dft();
         const bool spec_mtp = std::find(params_base.speculative.types.begin(),
@@ -1288,9 +1312,13 @@ private:
         if (has_spec) {
             try {
                 common_flashnext_chain_p(std::getenv("LLAMA_SPEC_CHAIN_P"), COMMON_SPECULATIVE_TYPE_NONE);
+                spec_lenient = common_spec_lenient_from_env(); // a bad dial fails the start too
             } catch (const std::exception & e) {
                 SRV_ERR("%s\n", e.what());
                 return false;
+            }
+            if (spec_lenient.on) {
+                fprintf(stderr, "%s\n", common_spec_lenient_load_line(spec_lenient).c_str());
             }
         }
 
@@ -1659,7 +1687,17 @@ private:
             batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
-        if (params_base.cache_ram_mib != 0) {
+        if (shelf) {
+            // --cache-ram-opening's RAM copy goes with the RAM cache, but its pin (server_ckpt_pin_first_user) stays:
+            // it is the copy at the end of the opening that a new chat borrows from an old bookmark
+            const bool pin_ok = ckpt_pin && params_base.n_ctx_checkpoints >= 2;
+            const char * opening = !params_base.cache_ram_opening ? "" :
+                pin_ok ? "; --cache-ram-opening's pin stays on: a chat's first user message keeps a copy, which a new "
+                         "chat can borrow from the shelf" :
+                         "; --cache-ram-opening is given, but with no bookmark pin nothing keeps the opening's copy";
+            SRV_WRN("bookmark shelf: on, it replaces the RAM cache (--cache-ram %d MiB: not used)%s\n",
+                    params_base.cache_ram_mib, opening);
+        } else if (params_base.cache_ram_mib != 0) {
             if (params_base.cache_ram_mib < 0) {
                 SRV_TRC("prompt cache is enabled, size limit: %s\n", "no limit");
             } else {
@@ -1671,7 +1709,7 @@ private:
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
-        if (params_base.cache_ram_opening) {
+        if (params_base.cache_ram_opening && !shelf) {
             if (!prompt_cache) {
                 SRV_WRN("%s", "opening copy: off, it needs --cache-ram\n");
             } else if (!ckpt_pin || params_base.n_ctx_checkpoints < 2) {
@@ -1758,7 +1796,7 @@ private:
         metrics.init();
 
         if (params_base.cache_idle_slots) {
-            if (params_base.cache_ram_mib == 0) {
+            if (params_base.cache_ram_mib == 0 && !shelf) {
                 SRV_WRN("%s", "--cache-idle-slots requires --cache-ram, disabling\n");
                 params_base.cache_idle_slots = false;
             } else {
@@ -1974,6 +2012,11 @@ private:
         }
 
         if (ret) {
+            // never a seat still running a task (a slot asked for by id can be busy: the task then waits)
+            if (shelf && task.type == SERVER_TASK_TYPE_COMPLETION && !ret->is_processing()) {
+                shelf_hand_on(*ret, task, update_cache);
+            }
+
             update_cache = update_cache && prompt_cache;
 
             // cache prompts only for completion tasks
@@ -2000,8 +2043,12 @@ private:
                     slot_store_save(*ret);
                 }
 
-                if (hand.load && !ret->prompt_load(*prompt_cache, task.tokens)) {
-                    ret->prompt_clear();
+                if (hand.load) {
+                    if (ret->prompt_load(*prompt_cache, task.tokens)) {
+                        ret->reply_from = ret->prompt.n_tokens(); // the RAM store keeps no anchor
+                    } else {
+                        ret->prompt_clear();
+                    }
                 }
 
                 prompt_cache->update();
@@ -2158,6 +2205,13 @@ private:
             SLT_TRC(slot, "sampler chain: %s\n", common_sampler_print(slot.smpl.get()).c_str());
             SLT_TRC(slot, "sampler params: \n%s\n", task.params.sampling.print().c_str());
 
+            if (common_spec_pq_record * pq = common_speculative_pq_record(spec.get())) {
+                pq->sampling(slot.id, task.params.sampling); // written on the answer's line
+            }
+            slot.spec_lenient = spec && common_spec_lenient_request(spec_lenient, task.params.sampling, use_backend_sampling);
+            if (slot.spec_lenient) {
+                common_spec_lenient_seed(slot.spec_lenient_rng, common_sampler_get_seed(slot.smpl.get()));
+            }
             if (spec && !common_speculative_get_synth_probs(spec.get()).empty()) {
                 const uint32_t seed = task.params.sampling.seed == LLAMA_DEFAULT_SEED
                     ? std::random_device{}()
@@ -2172,6 +2226,9 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+        // the task's own anchor is taken at the read-in (SLOT_STATE_STARTED), where the seat's tokens are rewritten;
+        // until then (a task released before it, an error) the seat holds the old tokens, so the strict anchor
+        slot.reply_from = slot.prompt.n_tokens();
         slot.lane_prev = slot.lane_last;
         slot.lane_last = slot.task->lane;
 
@@ -2661,6 +2718,76 @@ private:
         return true;
     }
 
+    // --cache-disk: opens the bookmark shelf (server-shelf.h), or refuses the start with why; off: nothing
+    bool shelf_open() {
+        shelf.reset();
+        if (params_base.cache_disk_dir.empty()) {
+            return true;
+        }
+        auto sh = std::make_unique<server_shelf>();
+        const uint64_t asked = (uint64_t) params_base.cache_disk_gib * 1024ull * 1024ull * 1024ull;
+        const std::string why = sh->open(params_base.cache_disk_dir, asked);
+        if (!why.empty()) {
+            SRV_ERR("bookmark shelf: --cache-disk %s: %s; the server does not start without it\n",
+                    params_base.cache_disk_dir.c_str(), why.c_str());
+            return false;
+        }
+        const double gib = 1024.0 * 1024.0 * 1024.0;
+        if (sh->lim.capped) {
+            SRV_WRN("bookmark shelf: --cache-disk-gib %d asked, the drive has %.1f GiB free, the shelf uses %.1f GiB "
+                    "(%.1f GiB, 10%% of the free space, is kept free)\n", params_base.cache_disk_gib,
+                    sh->free_at_open / gib, sh->lim.limit / gib, sh->lim.reserve / gib);
+        }
+        SRV_WRN("bookmark shelf: %s, limit %.1f GiB, the drive has %.1f GiB free; every conversation leaving the seat "
+                "is saved there and read back when it returns\n", sh->dir.c_str(), sh->lim.limit / gib,
+                sh->free_at_open / gib);
+        shelf = std::move(sh);
+        return true;
+    }
+
+    server_shelf_seat shelf_seat(const server_slot & slot) const {
+        return { slot.ctx_tgt, slot.ctx_dft, slot.spec, slot.id, slot.reply_from };
+    }
+
+    // The bookmark shelf's hand-over (--cache-disk, server_shelf_hand_on): every lane saves and loads, and the RAM
+    // store's lane rules (--cache-ram-opening) do not apply. The bookmark about to be loaded is never dropped to make
+    // room for the seat's save. A failed load clears the seat, which then reads in, as the store does. When the 25%
+    // rule finds nothing, the task may borrow (server_shelf::borrow_pick): the same save and load, the file kept,
+    // and the read-in then steps back to the borrowed copy.
+    void shelf_hand_on(server_slot & slot, const server_task & task, bool losing) {
+        const size_t n_seat = slot.prompt.tokens.size();
+        const size_t lcp    = n_seat > 0 ? slot.prompt.tokens.get_common_prefix(task.tokens) : 0;
+        if (server_shelf_carries_on(n_seat, lcp)) {
+            return;
+        }
+
+        server_shelf_take take = shelf->pick_take(slot.prompt.tokens, task.tokens);
+        if (take.id == 0 && task.params.cache_prompt) { // a task not reusing the cache reads in from 0 anyway
+            take = shelf->borrow_pick(slot.prompt, task.tokens, shelf_seat_cuts_anywhere(slot, task, lcp));
+        }
+        const server_shelf_hand hand = server_shelf_hand_on(n_seat, lcp, losing, take.id);
+        if (hand.save) {
+            server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, take.id);
+        }
+        if (hand.load && !server_shelf_load_seat(*shelf, shelf_seat(slot), take, slot.prompt,
+                    slot.spec_context_synced, slot.reply_from)) {
+            slot.prompt_clear();
+        }
+    }
+
+    // can the seat keep the lcp tokens it shares with the task without a saved copy? The read-in's own test
+    // (SLOT_STATE_STARTED): its memory's first position lies below the point past which a copy is needed. A recurrent
+    // part (qwen3next's hybrid memory) starts at the end, so it never does
+    bool shelf_seat_cuts_anywhere(const server_slot & slot, const server_task & task, size_t lcp) const {
+        if (lcp == 0) {
+            return false;
+        }
+        const llama_pos pos_next       = slot.prompt.tokens.pos_next((int64_t) lcp);
+        const bool      has_new_tokens = lcp < task.tokens.size();
+        const llama_pos thold          = std::max(0, pos_next - n_swa - (has_new_tokens ? 0 : 1));
+        return llama_memory_seq_pos_min(llama_get_memory(slot.ctx_tgt), slot.id) < thold;
+    }
+
     // The store's save of a seat being handed on. Stock: the whole seat. --cache-ram-opening (server-ckpt-pin.h): the
     // seat is first stepped back to its pinned copy with the checkpoint restore (load the fixed summary, drop the
     // context memory past it in the library and the apprentice, trim the tokens, keep only that copy), or nothing is
@@ -2668,6 +2795,9 @@ private:
     // carries no copies, the seat keeps its pin. The caller decides the lane, and must overwrite or clear the seat
     // after a step back.
     bool slot_store_save(server_slot & slot) {
+        if (shelf) {
+            return server_shelf_save_seat(*shelf, shelf_seat(slot), slot.prompt, slot.spec_context_synced, 0);
+        }
         if (!params_base.cache_ram_opening) {
             return slot.prompt_save(*prompt_cache);
         }
@@ -2698,6 +2828,7 @@ private:
 
         slot.prompt.tokens.keep_first(pin->n_tokens);
         slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+        slot.reply_from = slot.prompt.n_tokens();
 
         // the entry carries no copies: one copy of the opening, the state itself (server_ckpt_save_without_copies)
         const size_t n_states = prompt_cache->states.size();
@@ -2912,12 +3043,14 @@ private:
                                 SLT_TRC(slot, "%s", "saving idle slot to prompt cache\n");
 
                                 // --cache-ram-opening steps the seat back, so only when it is cleared right after
-                                const bool save = !params_base.cache_ram_opening ||
+                                const bool save = shelf || !params_base.cache_ram_opening ||
                                     (params_base.kv_unified && slot.lane_last != SERVER_LANE_CODE);
 
                                 if (save && slot_store_save(slot)) {
                                     SLT_DBG(slot, "%s", "__TEST_TAG_CACHE_IDLE_SLOT__\n");
-                                    prompt_cache->update();
+                                    if (prompt_cache) {
+                                        prompt_cache->update();
+                                    }
                                 }
 
                                 if (params_base.kv_unified) {
@@ -3136,6 +3269,7 @@ private:
                         slot->prompt.clear();
                         slot->prompt.tokens = std::move(restored);
                         slot->prompt.checkpoints = std::move(checkpoints);
+                        slot->reply_from = slot->prompt.n_tokens(); // the file keeps no anchor
 
                         // The main state file does not contain the current draft context. Even when
                         // checkpoints were recovered, force a synchronized prefill before a later
@@ -3470,6 +3604,7 @@ private:
 
                     slot.prompt.clear();
                     slot.prompt.tokens.insert(new_tokens);
+                    slot.reply_from = slot.prompt.n_tokens(); // the task's positions moved
                 }
 
                 slot.truncated = true;
@@ -3966,6 +4101,8 @@ private:
                         metrics.add_prompt_cached(n_past);
 
                         slot.prompt.tokens.keep_first(n_past);
+                        // from here the seat's tokens past n_past are this task's: its reply began at its own anchor
+                        slot.reply_from = server_shelf_reply_from(slot.task->params.message_spans, slot.task->n_tokens());
 
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
@@ -4465,6 +4602,9 @@ private:
                 scoped_timer timer(t_sampl, n_sampl);
                 id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, tok_idx);
             }
+            if (common_spec_pq_record * pq = slot.wants_speculation() ? common_speculative_pq_record(spec.get()) : nullptr) {
+                pq->plain(slot.id, slot.prompt.tokens.pos_next() - 1, slot.smpl.get(), id); // a word with no draft
+            }
 
             slot.i_batch = -1;
 
@@ -4523,8 +4663,18 @@ private:
 
                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
                 const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
+                // the p/q record (LLAMA_SPEC_PQ_RECORD) checks with the library's own loop, recorded
+                common_spec_pq_record * pq = common_speculative_pq_record(spec.get());
+                const int pos_anchor = slot.prompt.tokens.pos_next() - (int) n_draft - 1;
+                // the lenient check (LLAMA_SPEC_LENIENT): its stream is put back with the sampler on a restore
+                const common_spec_lenient_draw len_draw = { &spec_lenient, &slot.spec_lenient_rng };
+                const common_spec_lenient_draw * len = slot.spec_lenient ? &len_draw : nullptr;
+                const std::optional<std::mt19937> lenient_save = len ? std::optional<std::mt19937>(slot.spec_lenient_rng) : std::nullopt;
                 auto accepted = synth_probs.empty()
-                    ? common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
+                    ? (pq ? pq->accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, slot.id,
+                                         pos_anchor, slot.spec_is_replay, len)
+                          : len ? common_spec_lenient_accept_n(*len, slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft)
+                          : common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft))
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
@@ -4545,6 +4695,8 @@ private:
                         if (trace > 0) {
                             SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
                         }
+
+                        if (pq) { pq->check_end(slot.id, /* restore */ true); }
 
                         // partial acceptance is not supported by the context -> truncate the draft and restore the state
                         slot.spec_is_replay = true;
@@ -4568,6 +4720,9 @@ private:
 
                         slot.prompt.tokens.keep_first(ckpt.n_tokens);
                         common_sampler_copy(smpl_save.get(), slot.smpl.get());
+                        if (lenient_save) {
+                            common_spec_lenient_restore(slot.spec_lenient_rng, *lenient_save, slot.spec_lenient_after);
+                        }
 
                         return;
                     }
@@ -4577,6 +4732,11 @@ private:
                     SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
                 }
 
+                if (slot.spec_is_replay) {
+                    common_spec_lenient_replayed(slot.spec_lenient_rng, slot.spec_lenient_after);
+                }
+
+                if (pq) { pq->check_end(slot.id, /* restore */ false); }
                 common_speculative_accept(spec.get(), slot.id, accepted.size() - 1, slot.spec_is_replay);
 
                 slot.spec_draft = std::move(accepted);
