@@ -169,6 +169,9 @@ with the same output as if it had never left.
   borrow is taken only when it saves at least a second (reading in at 440 tokens/s against loading at
   3.7 GB/s). In the study, a new chat after the coding agent had the server started writing in 2.0 s
   instead of 5.1 s with a ~2.2K-token opening, a 0.5 s load; the longer the opening, the more it saves.
+- **A return takes its own file off; anyone else leaves it.** Each file remembers where the server's own
+  writing began. A request that matches past that point is the same conversation coming back (however the
+  client re-sends the last reply); one that parts earlier is another conversation, so the file stays.
 - **Off by default**, and `--flashnext` doesn't turn it on: not everyone has the room. Without it, the
   RAM copy of chat's opening (`--cache-ram 400 --cache-ram-opening`) works as before; with it, the shelf
   does that copy's job: `--cache-ram` is not used, and `--cache-ram-opening` keeps only its pin.
