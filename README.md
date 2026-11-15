@@ -130,52 +130,19 @@ it changes nothing.
 
 <p align="center"><img src="media/flashnext/chat-window.svg" width="760" alt="The chat window: a chat request cuts a running coding request off, its retry is held while the window is open, and coding resumes when the window lapses"></p>
 
-### The bookmark shelf (recommended)
+### The bookmark shelf (not default, but recommended)
 
-The server has one slot. When another conversation takes it, the old conversation's place (its KV cache
-and recurrent state) is overwritten, and when that conversation comes back the server reads its whole
-history in again: minutes at 100K tokens and more. With `--cache-disk DIR`, every conversation leaving
-the slot is saved whole to a file in that folder (the model's state, the draft's state and the context
-checkpoints) and read back when it returns, so only its new text is read in. In the study, a 150K-token
-conversation came back to its first written token in 4.5 s (a 1.25 s load) instead of about 6 minutes,
-with the same output as if it had never left.
+<p align="center"><img src="media/flashnext/shelf.svg" width="760" alt="Before: when the coding agent takes the server, a chat loses its place and reads its whole 150K history in again, about 6 minutes. After: with the bookmark shelf the chat is saved to the SSD and loaded back, first word in 4.5 s; a new chat borrows its opening, 2.0 s instead of 5.1 s"></p>
 
-- **Any SSD, internal or external.** Point `--cache-disk` at a folder on whichever drive has the room:
-  `--cache-disk ~/flashnext-shelf` on the internal SSD, or `--cache-disk /Volumes/<your drive>/shelf` on an
-  external one. The files are written and read past macOS's file cache, so a multi-GB save doesn't crowd
-  the model's memory.
-- **SSD wear.** The shelf writes a conversation's whole file each time it leaves the server: 0.5-5.6 GB a
-  save. One person switching between chats and a coding agent writes little: a busy day in the study
-  wrote 8.4 GiB in 11 saves. A 2 TB Samsung 990 PRO is rated for 1,200 TB written, so even eight times
-  that use takes about 50 years to wear it out (check your own drive's rating; smaller drives are rated
-  lower). Swarms of agents running at once are different: they take turns on the one slot, so each
-  switch saves a whole conversation, and the writes, and the wear, multiply with every agent.
-- **Sizes:** about 0.5 GiB plus 27 KiB a token with the DFlash draft and `-ctxcp 3` (the three
-  checkpoints are 338 MiB of it, the draft's state about 43 MiB): 1.7 GiB at 50K tokens, 4.3 GiB at
-  150K, about 5.6 GiB at 200K.
-- **The limit:** `--cache-disk-gib N` (default 100); the oldest conversations are deleted first. At
-  start it is capped to the drive's free space less 10% of it (one log line says so), and before each
-  save the free space is checked again.
-- **A new chat borrows its opening.** A new chat shares only its opening (the system prompt and tools)
-  with an old conversation, too little of it for that conversation's file to be handed over whole. So
-  when nothing else fits, the new chat loads an old file only to step back to its saved copy at the end
-  of the opening (the checkpoint `--cache-ram-opening` pins at a chat's first user message) and reads in
-  just its own text. The file stays on the shelf, so its own conversation still comes back to it. A
-  borrow is taken only when it saves at least a second (reading in at 440 tokens/s against loading at
-  3.7 GB/s). In the study, a new chat after the coding agent had the server started writing in 2.0 s
-  instead of 5.1 s with a ~2.2K-token opening, a 0.5 s load; the longer the opening, the more it saves.
-- **A return takes its own file off; anyone else leaves it.** Each file remembers where the server's own
-  writing began. A request that matches past that point is the same conversation coming back (however the
-  client re-sends the last reply); one that parts earlier is another conversation, so the file stays.
-- **Off by default, and the recommended way to run.** Out of the box (and with `--flashnext`), the server
-  keeps a RAM copy of chat's opening instead (`--cache-ram 400 --cache-ram-opening`), because not everyone
-  has the room for a shelf. The better setup is the shelf on and that RAM copy off: add `--cache-disk`
-  with a folder, and the shelf does the RAM copy's job (a new chat borrows the opening), so
-  `--cache-ram` is no longer used and `--cache-ram-opening` keeps only its pin. That is how the study's
-  everyday server runs.
-- The folder must exist; its `bookmark-*.shelf` files are deleted when the server starts, and it is one
-  server per folder. The log shows each `bookmark shelf: saved`, `loaded` and `borrowed` line with tokens,
-  MiB and ms ([Settings](docs/flashnext/settings.md)).
+`--cache-disk DIR` saves every conversation leaving the server to a folder on any SSD, internal
+(`~/flashnext-shelf`) or external (`/Volumes/<your drive>/shelf`), and reads it back when it returns.
+It replaces the default RAM copy of chat's opening: with it on, `--cache-ram` goes unused and
+`--cache-ram-opening` keeps only its pin. `--cache-disk-gib N` caps it (default 100, oldest out first);
+the folder is emptied when the server starts.
+
+**SSD wear:** a busy day in the study wrote 8.4 GiB. A 2 TB 990 PRO is rated for 1,200 TB written, so
+even eight times that lasts about 50 years. Swarms of agents running at once multiply the writes.
+More in [Settings](docs/flashnext/settings.md).
 
 ### And smaller wins, all on by default
 
@@ -307,7 +274,7 @@ Anthropic-style `/v1/messages` works too). `--host` and `--port` change the addr
   server (a coding agent after your chat, a sub-agent after its parent), the one leaving is saved there whole,
   and it is read back when it returns: a 150K-token conversation is back writing in about 4.5 s instead of
   reading its whole history in again (about 6 minutes). Off unless you give the folder
-  ([the bookmark shelf](#the-bookmark-shelf-recommended)).
+  ([the bookmark shelf](#the-bookmark-shelf-not-default-but-recommended)).
 - **Or the MTP draft head instead of DFlash (1.9 GB):** download it and give it to `-md` in step 4
   in place of the DFlash file. `--flashnext` picks its settings from the file. DFlash writes about
   9-11% faster ([what each extra is worth](#what-each-extra-is-worth)).
@@ -458,7 +425,7 @@ upstream's defaults are untouched.
 | `-np 1` | One conversation at a time: each extra one costs memory the expert cache needs. |
 | `-fa on` | Flash attention, which this model's sparse attention needs to read a prompt. |
 | `--cache-reuse 0` | Off, as the study ran it. |
-| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. With [the bookmark shelf](#the-bookmark-shelf-recommended) on, the shelf does its job (a new chat borrows the opening from an old conversation's file) and `--cache-ram-opening` keeps only its pin. |
+| `--cache-ram 400 --cache-ram-opening` | One RAM copy of chat's opening (~232 MiB), so a new chat doesn't read it in again ([the chat window](#the-chat-window)). Nothing else is kept in RAM: on 64 GB that memory belongs to the expert cache. With [the bookmark shelf](#the-bookmark-shelf-not-default-but-recommended) on, the shelf does its job (a new chat borrows the opening from an old conversation's file) and `--cache-ram-opening` keeps only its pin. |
 | `--chat-window 90` | Chat goes first when a coding agent shares the server. Does nothing until a client sends `X-Lane: code`. |
 | `--jinja --reasoning-format deepseek` | The model's chat template, with its thinking returned apart from the answer. |
 | With the DFlash draft (`-md` and its file): `--spec-type draft-dflash`, from the file, `--spec-draft-n-max 7 --spec-draft-p-min 0 --spec-draft-ngl 99 --spec-max-prompt 0` | The DFlash draft, up to 7 tokens ahead, cut by the chain stop rather than by each token's confidence, on the GPU, for prompts of any length. |
@@ -480,7 +447,7 @@ These are yours: the downloads, and the choices that depend on your Mac.
 | The two trained guessers (downloads, 121 and 123 MB) | `LLAMA_MOE_STREAM_LOOKAHEAD_GUESSER=` and `LLAMA_MOE_STREAM_GUESSER1=`, each with its file | Environment variables, not flags. Naming the two-layer guesser also turns on its tuning and the keep rule. |
 | The image encoder (download, 908 MB) | `--mmproj` and its file | Lets the model read pictures; about 0.9 GB beside the cache. |
 | A second SSD | `--moe-stream-alt-path` with the copy's first file, `--moe-stream-alt-split 53` | +15% writing ([Two drives](#two-drives)). |
-| The bookmark shelf | `--cache-disk` with a folder on the internal or an external SSD, `--cache-disk-gib 100` | Recommended, in place of the RAM copy of chat's opening. Every conversation's place kept on the SSD, read back when it returns ([The bookmark shelf](#the-bookmark-shelf-recommended)). The study's everyday server keeps it on its second SSD. |
+| The bookmark shelf | `--cache-disk` with a folder on the internal or an external SSD, `--cache-disk-gib 100` | Recommended, in place of the RAM copy of chat's opening. Every conversation's place kept on the SSD, read back when it returns ([The bookmark shelf](#the-bookmark-shelf-not-default-but-recommended)). The study's everyday server keeps it on its second SSD. |
 | The GPU's wired-memory limit | `sudo sysctl iogpu.wired_limit_mb=59392` | [Quick start](#quick-start), step 3. |
 
 ## What each extra is worth

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 760 390" width="760" height="390" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Before: when the coding agent takes the server, a chat loses its place and reads its whole 150K history in again, about 6 minutes. After: with the bookmark shelf the chat is saved to the SSD and loaded back in 1.25 s, first word in 4.5 s; a new chat borrows its opening, 2.0 s instead of 5.1 s">
+<rect width="760" height="390" fill="#ffffff"/>
+<text x="20" y="30" font-size="16" font-weight="700" fill="#1b2228">Before: a conversation that leaves the server loses its place</text>
+<text x="20" y="48" font-size="11.5" fill="#5a6670">One slot (-np 1). When the coding agent takes it, chat's place is overwritten, so chat reads its whole history in again</text>
+<text x="20" y="80" font-size="12" font-weight="600" fill="#1b2228">Chat</text>
+<text x="20" y="114" font-size="12" font-weight="600" fill="#1b2228">Coding</text>
+<rect x="70" y="66" width="110" height="22" fill="#1b2228"/>
+<rect x="180" y="100" width="130" height="22" fill="#0f6e72"/>
+<rect x="310" y="66" width="330" height="22" fill="#d98a1c"/>
+<text x="475" y="81" font-size="11" fill="#1b2228" text-anchor="middle">reads its 150K-token history in again: about 6 minutes</text>
+<rect x="640" y="66" width="40" height="22" fill="#1b2228"/>
+<line x1="680" y1="60" x2="680" y2="130" stroke="#9a5b00" stroke-dasharray="3 3"/>
+<text x="686" y="81" font-size="11" fill="#9a5b00">writes</text>
+
+<text x="20" y="180" font-size="16" font-weight="700" fill="#1b2228">After: the shelf saves it to the SSD and reads it back</text>
+<text x="20" y="198" font-size="11.5" fill="#5a6670">--cache-disk: every conversation leaving the slot is saved whole; on its return it loads its file and reads in only its new text</text>
+<text x="20" y="230" font-size="12" font-weight="600" fill="#1b2228">Chat</text>
+<text x="20" y="264" font-size="12" font-weight="600" fill="#1b2228">Coding</text>
+<text x="20" y="298" font-size="12" font-weight="600" fill="#1b2228">SSD</text>
+<rect x="70" y="216" width="110" height="22" fill="#1b2228"/>
+<rect x="180" y="250" width="130" height="22" fill="#0f6e72"/>
+<rect x="180" y="284" width="130" height="22" fill="#eef1f3" stroke="#c4ccd2"/>
+<text x="245" y="299" font-size="10.5" fill="#5a6670" text-anchor="middle">chat's file waits here</text>
+<rect x="310" y="216" width="22" height="22" fill="#d98a1c"/>
+<rect x="332" y="216" width="40" height="22" fill="#1b2228"/>
+<line x1="372" y1="210" x2="372" y2="280" stroke="#0f6e72" stroke-dasharray="3 3"/>
+<text x="378" y="231" font-size="11" fill="#0f6e72">writes</text>
+<text x="321" y="252" font-size="10.5" fill="#9a5b00" text-anchor="middle">load</text>
+<rect x="470" y="212" width="272" height="96" rx="6" fill="#e2f0f0"/>
+<text x="606" y="232" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">Measured: a 150K return writes in 4.5 s</text>
+<text x="606" y="248" font-size="12" font-weight="600" fill="#0f6e72" text-anchor="middle">instead of about 6 minutes</text>
+<text x="606" y="266" font-size="11" fill="#1b2228" text-anchor="middle">a new chat borrows its opening</text>
+<text x="606" y="280" font-size="11" fill="#1b2228" text-anchor="middle">from an old file: 2.0 s instead of 5.1 s</text>
+<text x="606" y="298" font-size="10.5" fill="#5a6670" text-anchor="middle">same output, zero swap</text>
+<rect x="70" y="326" width="12" height="12" fill="#1b2228"/><text x="88" y="336" font-size="11.5" fill="#1b2228">chat writing</text>
+<rect x="196" y="326" width="12" height="12" fill="#0f6e72"/><text x="214" y="336" font-size="11.5" fill="#1b2228">the coding agent</text>
+<rect x="346" y="326" width="12" height="12" fill="#d98a1c"/><text x="364" y="336" font-size="11.5" fill="#1b2228">reading in, or loading the file</text>
+<text x="20" y="362" font-size="10.5" fill="#5a6670">Schematic, not to scale. Any SSD, internal or external; about 0.5 GiB + 27 KiB a token per conversation.</text>
+<text x="20" y="378" font-size="10.5" fill="#5a6670">Measured in the study (results/bookmark-shelf): the 150K return with a 1.25 s load; the new chat after the coding agent, a 0.5 s load.</text>
+</svg>
